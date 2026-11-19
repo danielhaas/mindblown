@@ -40,6 +40,10 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     percentComplete: (get('percentComplete', 'percent_complete') as number) ?? null,
     status: (get('status', 'status') as string) ?? null,
     blockedReason: (get('blockedReason', 'blocked_reason') as string) ?? null,
+    blockedAt: (get('blockedAt', 'blocked_at') instanceof Date
+      ? (get('blockedAt', 'blocked_at') as Date).toISOString()
+      : (get('blockedAt', 'blocked_at') as string)) ?? null,
+    blockerInfo: (get('blockerInfo', 'blocker_info') as CoreNode['blockerInfo']) ?? null,
     assigneeIds: (get('assigneeIds', 'assignee_ids') as string[]) ?? [],
     priority: (get('priority', 'priority') as CoreNode['priority']) ?? null,
     dueDate: (get('dueDate', 'due_date') as string) ?? null,
@@ -156,6 +160,7 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     triageLabelWriteback: (get('triageLabelWriteback', 'triage_label_writeback') as boolean) ?? false,
     aiEstimateDrafts: (get('aiEstimateDrafts', 'ai_estimate_drafts') as boolean) ?? true,
     holidayJurisdiction: (get('holidayJurisdiction', 'holiday_jurisdiction') as string | null) ?? null,
+    deployProbe: (get('deployProbe', 'deploy_probe') as string | null) ?? null,
     holidayOverrides: (() => {
       const v = get('holidayOverrides', 'holiday_overrides') as { add?: unknown; remove?: unknown } | null;
       const list = (x: unknown) => (Array.isArray(x) ? x.filter((d): d is string => typeof d === 'string') : []);

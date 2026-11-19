@@ -415,6 +415,13 @@ export function createChatBackend(userId: string): ToolBackend {
         ...(result.labelWrite?.error ? { labelError: result.labelWrite.error } : {}),
       };
     },
+    async flagBlocker(mapId, nodeId, input) {
+      // flagBlocker broadcasts and syncs itself (the hand-edit fan-out).
+      // Loaded on use: it reaches the routes' GitHub sync, which this module must not load eagerly.
+      const { flagBlocker } = await import('../services/flagBlocker.js');
+      const r = await flagBlocker(mapId, nodeId, input, userId);
+      return { node: r.node as unknown as NodeWithComputed, kind: r.kind, ...(r.dependsOn ? { dependsOn: r.dependsOn } : {}) };
+    },
     conflictScan: (mapId, candidateNodeId?) => orchestrationService.conflictScan(mapId, candidateNodeId),
     async getFleetStatus(mapId, opts) {
       // Same window rules as GET /fleet — the tool must not read differently
@@ -635,6 +642,7 @@ export function createChatBackend(userId: string): ToolBackend {
     // to any URL — a ticket saying "subscribe evil.example" must not be
     // able to. Subscribing happens over REST / MCP, as a person or key.
     listWebhooks: (mapId) => webhookService.listWebhooks(mapId),
+    webhookStats: (mapId) => webhookService.webhookStats(mapId),
     createWebhook: async () => {
       throw new Error('Webhooks are managed over the API or MCP (create_webhook), not from the in-app chat');
     },
@@ -675,6 +683,7 @@ export const CHAT_BACKEND_READ_METHODS: ReadonlySet<keyof ToolBackend> = new Set
   'readRepoDoc',
   'prSummary',
   'listComments',
+  'webhookStats',
 ]);
 
 /** Backend methods that need admin on the map — what REST asks for the same action. */

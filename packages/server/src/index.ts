@@ -8,7 +8,6 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import { runMigrations } from './db/migrate.js';
 import { backfillApprovals } from './services/approvalBackfill.js';
-import { runDoneRepairOnce } from './services/doneRepair.js';
 import { seedIfEmpty } from './db/seed.js';
 import { snapshotAllMaps } from './lib/releaseSnapshots.js';
 import { runAllCatchups, getLastHealthyTickAt } from './sync/githubCatchup.js';
@@ -59,6 +58,7 @@ import { fleetJournalRoutes, fleetJournalByFleetRoutes } from './routes/fleetJou
 import { repoDocsRoutes } from './routes/repoDocs.js';
 import { prRoutes } from './routes/prs.js';
 import { runStaleClaimSweep } from './sync/staleClaimSweeper.js';
+import { runBlockerTriage } from './services/flagBlocker.js';
 import { runAutoCheck } from './services/asksInbox.js';
 import { runApprovalNotifications } from './services/approvalNotifications.js';
 import { runApprovalReviews } from './services/approvalReview.js';
@@ -71,6 +71,7 @@ import { webhookRoutes } from './routes/webhooks.js';
 import { wikiRoutes } from './routes/wiki.js';
 import { deployDriftRoutes } from './routes/deployDrift.js';
 import { driftGit, runDeployDriftCheck, setLatestDeployDrift } from './services/deployDrift.js';
+import { runProbeChecks } from './services/deployProbe.js';
 import { handleBroadcast, startWebhooks } from './services/webhooks.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -181,8 +182,6 @@ async function main(): Promise<void> {
     // Seed first: the seed inserts raw rows, and the one-shot backfill must stamp them.
     await seedIfEmpty();
     await backfillApprovals();
-    // One-time: done leaves to 100 %, worker notes off done nodes.
-    await runDoneRepairOnce();
   } catch (err) {
     console.error('[db] Failed to initialize database:', err);
     process.exit(1);
@@ -470,6 +469,23 @@ async function main(): Promise<void> {
   };
   setInterval(autoCheckTick, AUTO_CHECK_INTERVAL_MS);
 
+  // ── Unkinded blockers ─────────────────────────────────────────
+  // Every 10 min: a blocker set without a kind (update_node blockedReason,
+  // old clients) that has sat an hour becomes a dependency when it names an
+  // open ticket of its map, else a question to the map owner on the
+  // Questions card (services/flagBlocker). Fleet workers' notes are left alone.
+  const BLOCKER_TRIAGE_INTERVAL_MS = 10 * 60 * 1000;
+  const blockerTriageTick = async (): Promise<void> => {
+    try {
+      const r = await runBlockerTriage();
+      if (r.classified > 0 || r.errors.length > 0) console.log(`[blocker-triage] maps=${r.maps} classified=${r.classified} errors=${r.errors.length}`);
+      for (const err of r.errors.slice(0, 5)) console.warn(`[blocker-triage] ${err}`);
+    } catch (err) {
+      console.error('[blocker-triage] tick caught unexpected error:', err);
+    }
+  };
+  setInterval(blockerTriageTick, BLOCKER_TRIAGE_INTERVAL_MS);
+
   // ── Approval pushes (#493) ───────────────────────────────────
   // Every 5 min: a map whose proposed tickets wait gets one batched
   // Pushover push (at most hourly), plus one reminder per ticket after
@@ -594,6 +610,25 @@ async function main(): Promise<void> {
   };
   setTimeout(deployDriftTick, 2 * 60 * 1000);
   setInterval(deployDriftTick, DEPLOY_DRIFT_INTERVAL_MS);
+
+  // Every other project: each map's deploy probe (services/deployProbe.ts)
+  // against its repo's default branch, same interval, threshold and push.
+  // Prod only, like the own-checkout check: a dev server would push too.
+  let probeRunning = false;
+  const probeTick = async (): Promise<void> => {
+    if (process.env.NODE_ENV !== 'production' || probeRunning) return;
+    probeRunning = true;
+    try {
+      const r = await runProbeChecks();
+      if (r.failed.length > 0 || r.pushed > 0) console.log(`[deploy-probe] ${r.checked} checked, ${r.pushed} pushed${r.failed.length ? `; failed: ${r.failed.join('; ')}` : ''}`);
+    } catch (err) {
+      console.warn('[deploy-probe] tick failed:', err instanceof Error ? err.message : err);
+    } finally {
+      probeRunning = false;
+    }
+  };
+  setTimeout(probeTick, 3 * 60 * 1000);
+  setInterval(probeTick, DEPLOY_DRIFT_INTERVAL_MS);
 
   // ── Daily mail with open questions (#597) ─────────────────────
   // Every 10 min: from DIGEST_MAIL_HOUR (default 08:00 in DIGEST_MAIL_TZ,

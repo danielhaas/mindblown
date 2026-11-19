@@ -18,6 +18,9 @@ const state = vi.hoisted(() => ({
   cap: 4,
   gate: [] as string[],
   versions: [] as Array<{ id: string; name: string; status: string; sortOrder: number }>,
+  /** In a fleet with a repo — the deploy-probe question's precondition. */
+  fleetRepo: false,
+  probe: null as string | null,
 }));
 const NAVY = '11111111-2222-3333-4444-555555555555';
 
@@ -34,12 +37,28 @@ const node = (id: string, extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
-const updateMap = vi.hoisted(() => vi.fn(async (id: string, input: { dispatchGate: string[] }) => ({ id, dispatchGate: input.dispatchGate })));
+const updateMap = vi.hoisted(() =>
+  vi.fn(async (id: string, input: { dispatchGate?: string[]; deployProbe?: string | null }) => {
+    if ('deployProbe' in input) state.probe = input.deployProbe ?? null;
+    return { id, dispatchGate: input.dispatchGate };
+  }),
+);
 vi.mock('../../db/maps.js', () => ({
   getMap: vi.fn(async (id: string) =>
     id === 'm1' || id === NAVY
       ? {
-          map: { id, name: 'Navy App', createdBy: 'u-owner', archivedAt: state.archived ? 'x' : null, maxActiveClaims: state.cap, dispatchGate: state.gate, statusWorkflow: [{ id: 'todo', name: 'Todo', category: 'todo' }, { id: 'wip', name: 'In progress', category: 'in_progress' }, { id: 'done', name: 'Done', category: 'done' }] },
+          map: {
+            id,
+            name: id === NAVY ? 'Navy App' : 'Navy',
+            createdBy: 'u-owner',
+            createdAt: hoursAgo(24 * 30),
+            archivedAt: state.archived ? 'x' : null,
+            maxActiveClaims: state.cap,
+            dispatchGate: state.gate,
+            statusWorkflow: [{ id: 'todo', name: 'Todo', category: 'todo' }, { id: 'wip', name: 'In progress', category: 'in_progress' }, { id: 'done', name: 'Done', category: 'done' }],
+            ...(state.fleetRepo ? { fleetId: 'f1', githubRepoOwner: 'danielhaas', githubRepoName: 'navy' } : {}),
+            deployProbe: state.probe,
+          },
           nodes: state.nodes,
         }
       : null,
@@ -69,8 +88,9 @@ vi.mock('../../db/asks.js', () => ({
   listAsks: vi.fn(async () => state.stored),
   recordAnswer: (...a: unknown[]) => recordAnswer(...(a as [never, never, never])),
 }));
-vi.mock('../asks.js', () => ({ AskNotFoundError: class AskNotFoundError extends Error {} }));
+vi.mock('../asks.js', () => ({ AskNotFoundError: class AskNotFoundError extends Error {}, AskValidationError: class AskValidationError extends Error {} }));
 
+import { setLatestDeployDrift } from '../deployDrift.js';
 import { answerDerivedAsk, autoCheckBlockers, openDerivedAsks, derivedAskRows, requeueOrphans, sendBlockersToFleet } from '../derivedAsks.js';
 
 const key = { fleetId: 'f1', mapId: 'm1', askId: 'stalled-old' };
@@ -92,6 +112,10 @@ beforeEach(() => {
   state.stored = [];
   state.archived = false;
   state.cap = 4;
+  state.gate = [];
+  state.versions = [];
+  state.fleetRepo = false;
+  state.probe = null;
 });
 
 describe('stalled questions', () => {
@@ -507,5 +531,61 @@ describe('ready work outside the dispatch gate', () => {
     const [row] = await gateRows();
     await answerDerivedAsk({ fleetId: 'f1', mapId: NAVY, askId: row.ask.id }, { action: 'answered', decision: 'Widen the gate' }, 'u1');
     expect(updateMap).toHaveBeenCalledWith(NAVY, { dispatchGate: ['type:bug|version:v1|version:v2|version:v3|version:v4'] }, 'u1');
+  });
+});
+
+describe('how is the map deployed? (deploy probe)', () => {
+  const probeKey = { fleetId: 'f1', mapId: 'm1', askId: 'deploy-probe-m1' };
+  const probeRows = async () => (await derivedAskRows(['m1'])).filter((r) => r.ask.id.startsWith('deploy-probe-'));
+
+  it('asked of a map in a fleet with a repo and no probe — not once it has one, nor without fleet or repo', async () => {
+    expect(await probeRows()).toEqual([]);
+    state.fleetRepo = true;
+    const rows = await probeRows();
+    expect(rows.map((r) => [r.ask.id, r.mapId, r.ask.title])).toEqual([['deploy-probe-m1', 'm1', 'How is Navy deployed?']]);
+    state.probe = 'none';
+    expect(await probeRows()).toEqual([]);
+    state.probe = 'https://navy.example/api/version';
+    expect(await probeRows()).toEqual([]);
+    state.probe = null;
+    state.archived = true;
+    expect(await probeRows()).toEqual([]);
+  });
+
+  it("not for the repo this server runs from — its own checkout's drift covers it (#645)", async () => {
+    state.fleetRepo = true;
+    setLatestDeployDrift({ sha: 'a'.repeat(40), repo: 'DanielHaas/Navy', undeployed: [], checkedAt: 'x' });
+    try {
+      expect(await probeRows()).toEqual([]);
+    } finally {
+      setLatestDeployDrift(null);
+    }
+  });
+
+  it('a URL answer becomes the probe and the question is gone for good', async () => {
+    state.fleetRepo = true;
+    const out = await answerDerivedAsk(probeKey, { action: 'answered', decision: 'https://navy.example/api/version' }, 'u1');
+    expect(out.ok).toBe(true);
+    expect(state.probe).toBe('https://navy.example/api/version');
+    expect(recordAnswer).toHaveBeenLastCalledWith(probeKey, expect.objectContaining({ id: 'deploy-probe-m1' }), expect.objectContaining({ status: 'answered' }));
+    expect(await probeRows()).toEqual([]);
+    await expect(answerDerivedAsk(probeKey, { action: 'answered', decision: 'none' }, 'u1')).rejects.toThrow();
+  });
+
+  it('"none" stores none; other text is refused and nothing is written', async () => {
+    state.fleetRepo = true;
+    await expect(answerDerivedAsk(probeKey, { action: 'answered', decision: 'by hand from gamora' }, 'u1')).rejects.toThrow('probe URL');
+    expect(state.probe).toBeNull();
+    expect(recordAnswer).not.toHaveBeenCalled();
+    await answerDerivedAsk(probeKey, { action: 'answered', decision: 'none' }, 'u1');
+    expect(state.probe).toBe('none');
+  });
+
+  it('Later snoozes it like any derived row', async () => {
+    state.fleetRepo = true;
+    await answerDerivedAsk(probeKey, { action: 'later' }, 'u1');
+    expect(state.probe).toBeNull();
+    state.stored = [{ ask: { id: 'deploy-probe-m1', unblocks: {} }, mapId: 'm1', status: 'later', answeredAt: hoursAgo(1) }];
+    expect((await openDerivedAsks(scope, ['m1'])).filter((r) => r.ask.id.startsWith('deploy-probe-'))).toEqual([]);
   });
 });

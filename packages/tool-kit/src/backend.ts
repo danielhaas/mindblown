@@ -9,7 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, MoveNodeToMapResult, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { CommentKind, NodeComment, AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookSubscription } from '@mindblown/core';
+import type { CommentKind, NodeComment, AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookEventStat, WebhookSubscription } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
 export interface FleetStatusResult {
@@ -254,6 +254,25 @@ export interface ReleaseNodeResult {
    * Callers logging "claim cleared" should suppress when this is true.
    */
   alreadyReleased?: boolean;
+}
+
+/** flag_blocker's input (`POST /api/maps/:id/nodes/:nodeId/flag-blocker`). */
+export interface FlagBlockerInput {
+  /** Omitted = unkinded free text: classified after an hour. */
+  kind?: 'question' | 'person-step' | 'external' | 'waits-on';
+  reason: string;
+  answerer?: string;
+  options?: string[];
+  recheckDays?: number;
+  waitsOn?: string;
+}
+
+/** What flag_blocker wrote. */
+export interface FlagBlockerResult {
+  node: NodeWithComputed;
+  kind: FlagBlockerInput['kind'] | null;
+  /** waits-on: the ticket the node now depends on. */
+  dependsOn?: { id: string; text: string };
 }
 
 /** Result of releasing a parked ("blocked") ticket back into the queue. */
@@ -520,6 +539,7 @@ export interface ToolBackend {
       aiEstimateDrafts?: boolean;
       holidayJurisdiction?: string | null;
       holidayOverrides?: { add: string[]; remove: string[] };
+      deployProbe?: string | null;
       phases?: PhaseDef[];
       archived?: boolean;
       /** Guided onboarding: finish (true) or reopen (false) the setup checklist. */
@@ -632,6 +652,12 @@ export interface ToolBackend {
    * (`POST /api/maps/:id/nodes/:nodeId/unblock`).
    */
   unblockNode(mapId: string, nodeId: string): Promise<UnblockNodeResult>;
+  /**
+   * Flag a blocker with a kind — question (an ask on the Questions card),
+   * person-step (needs-human), external (re-checked on a date) or waits-on
+   * (a dependency, no blocker).
+   */
+  flagBlocker(mapId: string, nodeId: string, input: FlagBlockerInput): Promise<FlagBlockerResult>;
   conflictScan(mapId: string, candidateNodeId?: string): Promise<ConflictScanResult>;
   /**
    * Last-known satellite rollups + recent orchestrator ticks (read-only); `since` widens the ticks to a history window.
@@ -720,6 +746,8 @@ export interface ToolBackend {
   // ── Outgoing webhooks ───────────────────────────────────────────
   /** The map's subscriptions and its workspace's — `GET /api/maps/:id/webhooks`. Never the secret. */
   listWebhooks(mapId: string): Promise<WebhookSubscription[]>;
+  /** Traffic per event on the map: sent this hour, sent / held back as a repeat in 24 h — `GET …/webhooks/stats`. */
+  webhookStats(mapId: string): Promise<WebhookEventStat[]>;
   /** Subscribe a URL — `POST /api/maps/:id/webhooks`. The answer carries the signing secret, this once. */
   createWebhook(mapId: string, input: CreateWebhookInput): Promise<WebhookSubscription & { secret: string }>;
   /** `PATCH /api/maps/:id/webhooks/:webhookId`. */

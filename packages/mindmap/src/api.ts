@@ -1,5 +1,6 @@
 import type {
   CommentKind,
+  FlagBlockerKind,
   Node,
   MindMap,
   Cycle,
@@ -28,6 +29,7 @@ import type {
   ApproveInput,
   RejectInput,
   MisfiledRepo,
+  WebhookEventStat,
 } from '@mindblown/core';
 import { cachedResponse, clearApiCache, markOffline, markOnline, saveResponse } from './offline.js';
 
@@ -1153,6 +1155,29 @@ export function unblockNode(mapId: string, nodeId: string): Promise<{ node: Node
   });
 }
 
+/** What a blocker is (flag_blocker's kind) and what it carries. */
+export interface FlagBlockerBody {
+  kind?: FlagBlockerKind;
+  reason: string;
+  answerer?: string;
+  options?: string[];
+  recheckDays?: number;
+  waitsOn?: string;
+}
+
+/**
+ * Flag a blocker with a kind: question → an ask on the Questions card,
+ * person-step → needs-human with the text as the next step, external →
+ * re-checked on a date, waits-on → a dependency, no blocker.
+ */
+export function flagBlocker(
+  mapId: string,
+  nodeId: string,
+  body: FlagBlockerBody,
+): Promise<{ node: Node; kind: FlagBlockerKind | null; dependsOn?: { id: string; text: string } }> {
+  return request(`/api/maps/${mapId}/nodes/${nodeId}/flag-blocker`, { method: 'POST', body: JSON.stringify(body) });
+}
+
 // ── Fleets (#477) ────────────────────────────────────────────────
 
 /** Fleets the caller owns or whose maps the caller can view. */
@@ -1235,6 +1260,11 @@ export function setFleetAutoCheck(fleetId: string, autoCheckBlockers: boolean): 
 }
 
 /** One fleet as this reader sees it — its cap, active claims and connected maps (#480). */
+/** The map's outgoing-webhook traffic per event (24 h): sent, and repeats the dedupe held back. */
+export async function fetchWebhookStats(mapId: string): Promise<WebhookEventStat[]> {
+  return (await request<{ stats: WebhookEventStat[] }>(`/api/maps/${mapId}/webhooks/stats`)).stats;
+}
+
 export function fetchFleetEntity(fleetId: string): Promise<FleetWithMaps> {
   return request<FleetWithMaps>(`/api/fleets/${fleetId}`);
 }
@@ -1577,8 +1607,10 @@ export interface DeployDrift {
   commits: Array<{ sha: string; at: string; subject: string }>;
 }
 
-export async function fetchDeployDrift(mapId: string): Promise<DeployDrift | null> {
-  return (await request<{ drift: DeployDrift | null }>(`/api/maps/${mapId}/deploy-drift`)).drift;
+/** The map's drift, from its deploy probe (or the server's own checkout); `probeError` when the probe failed. */
+export async function fetchDeployDrift(mapId: string): Promise<{ drift: DeployDrift | null; probeError: string | null }> {
+  const r = await request<{ drift: DeployDrift | null; probeError?: string | null }>(`/api/maps/${mapId}/deploy-drift`);
+  return { drift: r.drift, probeError: r.probeError ?? null };
 }
 
 export function fetchSchedule(mapId: string): Promise<ScheduleResponse> {

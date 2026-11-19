@@ -84,6 +84,18 @@ export interface NodeWithComputed {
   requestedAt?: string | null;
   /** Who we wait on. */
   waitingOn?: string | null;
+  /** The manual blocker text; null = not blocked. Older servers omit it. */
+  blockedReason?: string | null;
+  /** When the blocker text was set (ISO 8601). */
+  blockedAt?: string | null;
+  /** The blocker's kind (flag_blocker); null = unkinded free text, classified after an hour. */
+  blockerInfo?: {
+    kind: 'question' | 'external';
+    answerer?: string | null;
+    options?: string[];
+    recheckAt?: string | null;
+    auto?: boolean;
+  } | null;
   computedEffort: number;
   /** Effort in parked branches below this node, left out of computedEffort (#655). */
   parkedEffort?: number;
@@ -166,6 +178,8 @@ export interface MapDetail {
     /** #110 — public-holiday calendar; null/absent = every day counts. */
     holidayJurisdiction?: string | null;
     holidayOverrides?: { add: string[]; remove: string[] };
+    /** Deploy probe URL, 'none', or null = not set (merged, not live). */
+    deployProbe?: string | null;
     /** #477 — the fleet the map is connected to; null/absent = none. */
     fleetId?: string | null;
     fleetName?: string | null;

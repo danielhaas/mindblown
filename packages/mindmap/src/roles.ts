@@ -11,7 +11,8 @@
  * Fulcrum CRM map and reported which of the 9 tabs / 9 panels they actually
  * used. Gantt, Hill Chart and Workload were dropped by all three — nothing on
  * the map carries dates, hill positions or assignees, so those tabs were
- * "empty theatre". Config lives in code on purpose; promote to a DB table
+ * "empty theatre". Gantt came back to the PM and stakeholder lenses on
+ * 2026-11-19 (Dan): missing it, the PM took List for the Gantt. Config lives in code on purpose; promote to a DB table
  * only when someone asks to customise it.
  *
  * Later (Dan, 2026-08-26): a map will record who fills each role — a human
@@ -80,7 +81,9 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
     // Round 2 (Thomas): Blocked is "219 developer paragraphs", Plan Health
     // unexplained — both dropped. Property stays so a click on a digest line
     // shows the node (review: otherwise the drill-down is a no-op).
-    tabs: ['digest', 'releases'],
+    // Gantt (Dan, 2026-11-19): "when does it ship" is a timeline question.
+    // Overview stays tabs[0] = the landing page.
+    tabs: ['digest', 'gantt', 'releases'],
     panels: ['property'],
   },
   pm: {
@@ -89,9 +92,11 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
     // Fleet carries Questions = the PM's decision inbox ("what do I decide
     // today?" — literally).
     // Files: the shared shelf — specs, exports, screenshots — for whoever
-    // works the plan. Not for the stakeholder lens, which stays two tabs.
+    // works the plan. Not for the stakeholder lens, which stays small.
     // Docs (#550): the repo's specs and READMEs — read by whoever works the plan.
-    tabs: ['cockpit', 'fleet', 'releases', 'list', 'kanban', 'mindmap', 'files', 'docs'],
+    // Gantt (Dan, 2026-11-19): without it the PM took List — a table with
+    // dates — for the Gantt. On screen it sits next to Releases (VIEW_TABS).
+    tabs: ['cockpit', 'fleet', 'gantt', 'releases', 'list', 'kanban', 'mindmap', 'files', 'docs'],
     panels: ['blocked', 'triage', 'sprint', 'planHealth', 'property', 'mapChat', 'aiChat'],
   },
   developer: {

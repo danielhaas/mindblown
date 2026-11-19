@@ -431,18 +431,56 @@ export const moveNodeToMapTool = defineTool({
 export const flagBlockerTool = defineTool({
   name: 'flag_blocker',
   description:
-    'Mark a node as blocked, recording the reason. This is the canonical "this is stuck" primitive — sets `blockedReason` so the node shows up in blocked_digest, risk_scan, and the blocked rollup propagates to ancestors; the status is left alone. Use this when something external is holding work back (waiting on a vendor, legal review, a decision, an upstream team). NOT for: a step only a person can do (a phone check, a store upload, a key) — tag the node needs-human instead and put the step in the description; waiting on another ticket — add_dependency (it clears itself). A blocker on a parent holds every ticket below it out of the queue. A question for a person should also reach them as an ask (fleet workers do this for their tickets); plan_lint flags blockers nobody is asked about (blocker-without-question). On a ticket a fleet worker is running right now (get_wip_status shows "Agent working" / "Fixing"), this is also the Stop: the worker stops its agent within about a minute, releases the claim and keeps your blocker; the partial work is discarded, and clearing the blocker requeues the ticket with its description as it is then — so to change a running ticket, flag_blocker, edit the description, then clear_blocker. Undo: clear_blocker releases the ticket back to the queue (status → todo unless done/claimed — NOT the mirror image of this call); update_node with blockedReason: null clears only the reason and keeps the status.',
+    'Mark a node as blocked and route the blocker to whoever can lift it — every blocker reaches a person or resolves itself. Pick a `kind`: ' +
+    '"question" — a decision someone has to make: the reason becomes an ask on the Questions card (answerer default the map owner; pass `options` to offer answers); answering it (answer_ask) writes the decision into the description, clears the blocker and requeues the ticket. ' +
+    '"person-step" — something only a person can do (a phone check, a store upload, a key): no blocker; the node is tagged needs-human and the reason becomes "Next step (a person)" on Your steps. ' +
+    '"external" — waiting on a party outside (vendor, client, another team): the blocker stays with a re-check date (`recheckDays`, default 7); on that date the owner is asked "Still waiting?" again. ' +
+    '"waits-on" — waiting on another ticket: adds a dependency on it (`waitsOn`: its node id or the #number of its issue / PR; default the one the reason names) and sets NO blocker — it clears itself when that ticket is done. ' +
+    'Without a kind the reason is free text and is classified after an hour: a dependency when it names an open ticket/PR of the same map, else a question to the map owner (plan_lint blocker-without-question lists it until then). ' +
+    'A blocker sets `blockedReason` (status left alone): the node shows in blocked_digest and risk_scan, and a blocker on a parent holds every ticket below it out of the queue. ' +
+    'On a ticket a fleet worker is running right now (get_wip_status shows "Agent working" / "Fixing"), a blocker is also the Stop: the worker stops its agent within about a minute, releases the claim and keeps your blocker; the partial work is discarded, and clearing the blocker requeues the ticket with its description as it is then — so to change a running ticket, flag_blocker, edit the description, then clear_blocker. ' +
+    'Undo: clear_blocker releases the ticket back to the queue (status → todo unless done/claimed — NOT the mirror image of this call); update_node with blockedReason: null clears only the reason and keeps the status.',
   schema: {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node ID to flag as blocked'),
     reason: z
       .string()
-      .min(1)
-      .describe('Short human-readable reason for the block (e.g. "waiting on legal review", "vendor SLA pending"). This is what surfaces in digests.'),
+      .describe('What blocks it, for a person to read (e.g. "Which payment provider — Stripe or Adyen?", "waiting on legal review"). For a question: the question. For a person-step: the step. Required except for waits-on.'),
+    kind: z
+      .enum(['question', 'person-step', 'external', 'waits-on'])
+      .optional()
+      .describe('Where the blocker goes: question → an ask on the Questions card; person-step → needs-human, the reason as the next step; external → re-checked on a date; waits-on → a dependency, no blocker. Omit only when you cannot tell — it is classified after an hour.'),
+    answerer: z.string().optional().describe('question: who answers (a first name, e.g. "Dan"). Default: the map owner.'),
+    options: z.array(z.string()).optional().describe('question: the answers to offer (short, up to five), e.g. ["Stripe", "Adyen"].'),
+    recheckDays: z.number().min(0).optional().describe('external: days until the owner is asked again whether the wait is over. Default 7.'),
+    waitsOn: z.string().optional().describe('waits-on: the ticket it waits on — its node id, or "#12" / "owner/repo#12" of its linked issue or PR. Default: the open ticket the reason names.'),
   },
-  handler: async (backend, { mapId, nodeId, reason }) => {
-    const node = await backend.updateNode(mapId, nodeId, { blockedReason: reason });
-    const done = `Flagged ${nodeId} as blocked: "${reason}".`;
+  handler: async (backend, { mapId, nodeId, reason, kind, answerer, options, recheckDays, waitsOn }) => {
+    if (kind !== 'waits-on' && !reason.trim()) throw new Error('reason must not be empty');
+    const r = await backend.flagBlocker(mapId, nodeId, {
+      reason,
+      ...(kind ? { kind } : {}),
+      ...(answerer ? { answerer } : {}),
+      ...(options?.length ? { options } : {}),
+      ...(recheckDays !== undefined ? { recheckDays } : {}),
+      ...(waitsOn ? { waitsOn } : {}),
+    });
+    const node = r.node;
+    let done: string;
+    switch (r.kind) {
+      case 'question':
+        done = `Flagged ${nodeId} as blocked on a question: "${reason}" — asked on the Questions card (answerer: ${node.blockerInfo?.answerer ?? 'the map owner'}${node.blockerInfo?.options?.length ? `; options: ${node.blockerInfo.options.join(' | ')}` : ''}).`;
+        break;
+      case 'person-step':
+        return `Tagged ${nodeId} needs-human — "Next step (a person): ${reason}" is on Your steps. No blocker set; the fleet leaves it until a person does the step.`;
+      case 'external':
+        done = `Flagged ${nodeId} as waiting on a party outside: "${reason}" — the owner is asked again on ${(node.blockerInfo?.recheckAt ?? '').slice(0, 10) || 'the re-check date'}.`;
+        break;
+      case 'waits-on':
+        return `${nodeId} now depends on "${r.dependsOn?.text}" (${r.dependsOn?.id}) — no blocker; it is ready again once that ticket is done.`;
+      default:
+        done = `Flagged ${nodeId} as blocked: "${reason}". No kind given: unless you pick one (call again with kind), it is classified in an hour — a dependency if it names an open ticket of this map, else a question to the map owner.`;
+    }
     const children = node.childrenIds?.length ?? 0;
     if (children === 0) return done;
     // A blocker on a container holds its whole subtree out of the queue —

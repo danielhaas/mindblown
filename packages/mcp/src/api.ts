@@ -14,8 +14,8 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CommentKind, NodeComment, RequirementGate } from '@mindblown/core';
-import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult, MoveNodeToMapResult } from '@mindblown/tool-kit';
-import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookSubscription } from '@mindblown/core';
+import type { FlagBlockerInput, FlagBlockerResult, FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult, MoveNodeToMapResult } from '@mindblown/tool-kit';
+import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookEventStat, WebhookSubscription } from '@mindblown/core';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -229,6 +229,7 @@ export interface MapDetail {
     /** #110 — public-holiday calendar; null/absent = every day counts. */
     holidayJurisdiction?: string | null;
     holidayOverrides?: { add: string[]; remove: string[] };
+    deployProbe?: string | null;
   };
   nodes: NodeWithComputed[];
   /** In-progress leaves nobody is working on (core findStalled); absent on older servers. */
@@ -549,6 +550,7 @@ export function updateMap(
     aiEstimateDrafts?: boolean;
     holidayJurisdiction?: string | null;
     holidayOverrides?: { add: string[]; remove: string[] };
+    deployProbe?: string | null;
     phases?: PhaseDef[];
     archived?: boolean;
     setupCompleted?: boolean;
@@ -1937,6 +1939,14 @@ export async function unblockNode(mapId: string, nodeId: string): Promise<Unbloc
   };
 }
 
+/** flag_blocker with a kind (`POST /api/maps/:id/nodes/:nodeId/flag-blocker`). */
+export function flagBlocker(mapId: string, nodeId: string, input: FlagBlockerInput): Promise<FlagBlockerResult> {
+  return request<FlagBlockerResult>(`/api/maps/${mapId}/nodes/${nodeId}/flag-blocker`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
 // ── Attachments ───────────────────────────────────────────────────
 
 export function addAttachment(
@@ -2075,6 +2085,10 @@ export function auditClosedIssues(
 
 export async function listWebhooks(mapId: string): Promise<WebhookSubscription[]> {
   return (await request<{ webhooks: WebhookSubscription[] }>(`/api/maps/${mapId}/webhooks`)).webhooks;
+}
+
+export async function webhookStats(mapId: string): Promise<WebhookEventStat[]> {
+  return (await request<{ stats: WebhookEventStat[] }>(`/api/maps/${mapId}/webhooks/stats`)).stats;
 }
 
 export async function createWebhook(mapId: string, input: CreateWebhookInput): Promise<WebhookSubscription & { secret: string }> {

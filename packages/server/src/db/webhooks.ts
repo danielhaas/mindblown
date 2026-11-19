@@ -3,10 +3,10 @@
  * The secret never leaves this module in a list/get; `getDeliveryTargets`
  * is the one read that hands it out, to the delivery code.
  */
-import { and, asc, eq, inArray, isNull, or } from 'drizzle-orm';
-import type { WebhookEvent, WebhookSubscription } from '@mindblown/core';
+import { and, asc, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import type { WebhookEvent, WebhookEventStat, WebhookSubscription } from '@mindblown/core';
 import { db } from './connection.js';
-import { maps, webhookSubscriptions, workspaces } from './schema.js';
+import { maps, webhookEventStats, webhookSent, webhookSubscriptions, workspaces } from './schema.js';
 
 type Row = typeof webhookSubscriptions.$inferSelect;
 
@@ -147,4 +147,77 @@ export async function recordDelivery(id: string, status: number | null, error: s
     .update(webhookSubscriptions)
     .set({ lastDeliveryAt: at, lastStatus: status, lastError: error })
     .where(eq(webhookSubscriptions.id, id));
+}
+
+// ── Dedupe ledger + traffic stats ───────────────────────────────
+
+export const DEDUPE_WINDOW_HOURS = 24;
+
+/**
+ * Which of these keys may go out now: those not sent for (event, map)
+ * within the window. Claims them in the same statement (sent_at = now), so
+ * two pushes racing for one key send it once.
+ */
+export async function claimSends(event: WebhookEvent, mapId: string, keys: string[], now = new Date()): Promise<Set<string>> {
+  const unique = [...new Set(keys)];
+  if (unique.length === 0) return new Set();
+  const rows = await db
+    .insert(webhookSent)
+    .values(unique.map((dedupeKey) => ({ event, mapId, dedupeKey, sentAt: now })))
+    .onConflictDoUpdate({
+      target: [webhookSent.event, webhookSent.mapId, webhookSent.dedupeKey],
+      set: { sentAt: sql`excluded.sent_at` },
+      setWhere: sql`${webhookSent.sentAt} <= excluded.sent_at - make_interval(hours => ${DEDUPE_WINDOW_HOURS})`,
+    })
+    .returning({ key: webhookSent.dedupeKey });
+  return new Set(rows.map((r) => r.key));
+}
+
+/** The state behind these keys was reset (answered, granted, unblocked): the next one is news. */
+export async function forgetSends(event: WebhookEvent, mapId: string, keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  await db
+    .delete(webhookSent)
+    .where(and(eq(webhookSent.event, event), eq(webhookSent.mapId, mapId), inArray(webhookSent.dedupeKey, keys)));
+}
+
+/** Add to this hour's sent / suppressed count of (map, event). */
+export async function countEvent(mapId: string, event: WebhookEvent, sent: number, suppressed: number, now = new Date()): Promise<void> {
+  if (sent === 0 && suppressed === 0) return;
+  const hour = new Date(Math.floor(now.getTime() / 3_600_000) * 3_600_000);
+  await db
+    .insert(webhookEventStats)
+    .values({ mapId, event, hour, sent, suppressed })
+    .onConflictDoUpdate({
+      target: [webhookEventStats.mapId, webhookEventStats.event, webhookEventStats.hour],
+      set: {
+        sent: sql`${webhookEventStats.sent} + excluded.sent`,
+        suppressed: sql`${webhookEventStats.suppressed} + excluded.suppressed`,
+      },
+    });
+}
+
+/** The map's traffic per event: sent in the current hour, sent and suppressed over the last 24 h. */
+export async function eventStats(mapId: string, now = new Date()): Promise<WebhookEventStat[]> {
+  const hourStart = Math.floor(now.getTime() / 3_600_000) * 3_600_000;
+  const since = new Date(hourStart - 23 * 3_600_000);
+  const rows = await db
+    .select()
+    .from(webhookEventStats)
+    .where(and(eq(webhookEventStats.mapId, mapId), gte(webhookEventStats.hour, since)));
+  const byEvent = new Map<string, WebhookEventStat>();
+  for (const r of rows) {
+    const s = byEvent.get(r.event) ?? { event: r.event as WebhookEvent, sentLastHour: 0, sent24h: 0, suppressed24h: 0 };
+    s.sent24h += r.sent;
+    s.suppressed24h += r.suppressed;
+    if (new Date(r.hour).getTime() === hourStart) s.sentLastHour += r.sent;
+    byEvent.set(r.event, s);
+  }
+  return [...byEvent.values()].sort((a, b) => b.sent24h + b.suppressed24h - (a.sent24h + a.suppressed24h) || a.event.localeCompare(b.event));
+}
+
+/** Ledger rows past the window and stats older than a week carry nothing — drop them. */
+export async function pruneLedger(now = new Date()): Promise<void> {
+  await db.delete(webhookSent).where(lt(webhookSent.sentAt, new Date(now.getTime() - DEDUPE_WINDOW_HOURS * 3_600_000)));
+  await db.delete(webhookEventStats).where(lt(webhookEventStats.hour, new Date(now.getTime() - 7 * 86_400_000)));
 }

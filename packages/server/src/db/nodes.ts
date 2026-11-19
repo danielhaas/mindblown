@@ -5,7 +5,7 @@ import { db } from './connection.js';
 import { nodes, maps, versions, changeEvents, mediaOwners, reporterChecks } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { defaultVersionForNewLeaf, hasCycle, resolveStatusDef, isForgeLink, isPrematureCloseLink, BLOCKED_TAG, WORKER_WAIT_NOTE } from '@mindblown/core';
-import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, NodeApproval, NodeReporter, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
+import type { Node as CoreNode, BlockerInfo, Dependency, DependencyType, ExternalLink, LinkedPrState, NodeApproval, NodeReporter, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
 import { approvalForNewNode } from '../services/trustPolicy.js';
 
@@ -585,6 +585,12 @@ export interface UpdateNodeInput {
   percentComplete?: number | null;
   status?: string | null;
   blockedReason?: string | null;
+  /**
+   * The blocker's kind (flag_blocker). Omitted while blockedReason is
+   * written: a new reason text clears it (unkinded, classified after an
+   * hour), the same text keeps it. A cleared reason clears it always.
+   */
+  blockerInfo?: BlockerInfo | null;
   assigneeIds?: string[];
   priority?: Priority | null;
   dueDate?: string | null;
@@ -763,7 +769,20 @@ export async function updateNode(
   if (input.actualEffort !== undefined) updates.actualEffort = input.actualEffort;
   if (input.percentComplete !== undefined) updates.percentComplete = input.percentComplete;
   if (input.status !== undefined) updates.status = input.status;
-  if (input.blockedReason !== undefined) updates.blockedReason = input.blockedReason;
+  if (input.blockedReason !== undefined) {
+    const reason = input.blockedReason?.trim() ? input.blockedReason : null;
+    updates.blockedReason = input.blockedReason;
+    // blocked_at follows the reason TEXT: a rewrite of the same text (a
+    // worker's re-push) keeps the clock and the kind; a new text restarts
+    // both. No reason → neither.
+    const changed = sql`${nodes.blockedReason} IS DISTINCT FROM ${reason}`;
+    updates.blockedAt = reason === null ? null : sql`CASE WHEN ${changed} THEN now() ELSE coalesce(${nodes.blockedAt}, now()) END`;
+    if (reason === null) updates.blockerInfo = null;
+    else if (input.blockerInfo === undefined) updates.blockerInfo = sql`CASE WHEN ${changed} THEN NULL ELSE ${nodes.blockerInfo} END`;
+  }
+  if (input.blockerInfo !== undefined && updates.blockerInfo === undefined) {
+    updates.blockerInfo = input.blockerInfo;
+  }
   if (input.assigneeIds !== undefined) updates.assigneeIds = input.assigneeIds;
   if (input.priority !== undefined) updates.priority = input.priority;
   if (input.dueDate !== undefined) updates.dueDate = input.dueDate;

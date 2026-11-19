@@ -16,6 +16,8 @@ import { dispatchSkipTag, fleetFixAction, WORKER_WAIT_NOTE } from './dispatch.js
 import { proseMirrorToPlainText } from './richtext.js';
 import { isForgeLink, type ExternalLink } from './types.js';
 import { STALLED_ASK_OPTIONS, stalledAnswerAction, stalledAskNodeId } from './stalled.js';
+import { DEPLOY_PROBE_NONE, deployProbeAskMapId, deployProbeFromAnswer } from './deployProbe.js';
+import { externalAnswerAction, externalAskNodeId, questionAskNodeId } from './blockerKinds.js';
 
 export const STEP_ASK_PREFIX = 'step-';
 export const STEP_ASK_OPTIONS = ['Done', 'Fleet can do it'] as const;
@@ -91,14 +93,21 @@ export function briefAskNodeId(askId: string): string | null {
   return askId.startsWith(BRIEF_ASK_PREFIX) && askId.length > BRIEF_ASK_PREFIX.length ? askId.slice(BRIEF_ASK_PREFIX.length) : null;
 }
 
-/** The node behind any derived row (stalled, step, blocker, brief), or null for a collector's ask. */
+/** The node behind any derived row (stalled, step, blocker, brief, blocker question, external re-check), or null for a collector's ask. */
 export function derivedAskNodeId(askId: string): string | null {
-  return stalledAskNodeId(askId) ?? stepAskNodeId(askId) ?? blockerAskNodeId(askId) ?? briefAskNodeId(askId);
+  return (
+    stalledAskNodeId(askId) ??
+    stepAskNodeId(askId) ??
+    blockerAskNodeId(askId) ??
+    briefAskNodeId(askId) ??
+    questionAskNodeId(askId) ??
+    externalAskNodeId(askId)
+  );
 }
 
 /** Rows MindBlown derives itself (stalled work, a person's steps, blockers, briefs, gated-out work) — not the collector's. */
 export function isDerivedAsk(a: Pick<Ask, 'id'>): boolean {
-  return derivedAskNodeId(a.id) !== null || gateAskMapId(a.id) !== null;
+  return derivedAskNodeId(a.id) !== null || gateAskMapId(a.id) !== null || deployProbeAskMapId(a.id) !== null;
 }
 
 /** Rows for the "Your steps" card: steps, blockers and missing briefs. */
@@ -440,11 +449,30 @@ export function derivedAnswerPreview(
         return ['Nothing written — not asked again until the ready tickets outside the gate change'];
     }
   }
+  if (questionAskNodeId(a.id)) {
+    return [`Node: "Decision (…): ${d || '…'}" at the top of the description, blocker cleared, back to the queue unless done or claimed`];
+  }
+  if (externalAskNodeId(a.id)) {
+    switch (externalAnswerAction(d)) {
+      case 'still-waiting':
+        return ['Node: still blocked — asked again in 7 days'];
+      case 'clear-blocker':
+        return ['Node: blocker cleared, back to the queue unless done or claimed'];
+      default:
+        return [`Node: "Decision (…): ${d || '…'}" at the top of the description, blocker cleared, back to the queue unless done or claimed`];
+    }
+  }
   if (briefAskNodeId(a.id)) {
     // A linked issue would be a brief, so there is none to close here.
     return briefAnswerAction(d) === 'mark-done'
       ? ['Node: done, 100 %']
       : [`Node: "${d || '…'}" becomes the description — the fleet takes it on its next pull`];
+  }
+  if (deployProbeAskMapId(a.id)) {
+    const probe = deployProbeFromAnswer(d);
+    if (probe === DEPLOY_PROBE_NONE) return ['Map: deploy probe "none" — not deployed, never asked again'];
+    if (probe) return [`Map: deploy probe ${probe} — the Fleet tab shows what is merged and not live`];
+    return ['Answer with the probe URL (returns the deployed commit) or "none"'];
   }
   return null;
 }

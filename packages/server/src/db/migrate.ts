@@ -1221,6 +1221,12 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS holiday_overrides JSONB NOT NULL DEFAULT '{"add":[],"remove":[]}'::jsonb
   `);
 
+  // ── Deploy probe (merged, not live) ─────────────────────────────
+  // URL returning the deployed commit, 'none', or NULL = not set yet.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS deploy_probe TEXT
+  `);
+
   // ── Fleets (#477) ───────────────────────────────────────────────
   // A fleet is the capacity several maps share; a map connects to 0..1.
   await db.execute(sql`
@@ -1638,6 +1644,27 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
   await db.execute(sql`
     CREATE INDEX IF NOT EXISTS webhook_subscriptions_scope_idx ON webhook_subscriptions (workspace_id, map_id)
   `);
+  // The dedupe ledger (same event + map + key at most once per 24 h unless
+  // reset) and the hourly sent/suppressed counts per map and event.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS webhook_sent (
+      event TEXT NOT NULL,
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      dedupe_key TEXT NOT NULL,
+      sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (event, map_id, dedupe_key)
+    )
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS webhook_event_stats (
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      event TEXT NOT NULL,
+      hour TIMESTAMPTZ NOT NULL,
+      sent INTEGER NOT NULL DEFAULT 0,
+      suppressed INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (map_id, event, hour)
+    )
+  `);
 
   // ── Wiki publish (#637) ─────────────────────────────────────────
   // The wiki document each map's timeline goes to, so a second publish
@@ -1663,6 +1690,18 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
   `);
   await db.execute(sql`
     ALTER TABLE comments ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ
+  `);
+
+  // ── Blocker kinds (every blocker reaches a person) ─────────────
+  // blocked_at: when the reason was set (an unkinded blocker is classified
+  // an hour later); blocker_info: its kind — question / external, null =
+  // unkinded. Blockers from before stay without a clock: the hourly run
+  // leaves them to the one-time scripts/classify-blockers.ts (dry run first).
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS blocked_at TIMESTAMPTZ
+  `);
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS blocker_info JSONB
   `);
 
   console.log('[db] Migrations complete.');

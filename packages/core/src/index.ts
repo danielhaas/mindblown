@@ -43,6 +43,8 @@ export type {
   NodeMap,
 } from './types.js';
 
+export { FLAG_BLOCKER_KINDS } from './types.js';
+export type { FlagBlockerKind, BlockerInfo } from './types.js';
 export { FORGE_LINK_PROVIDERS, isForgeLink, forgeLabel, userReporter, isLeadTimeNode } from './types.js';
 export type { ApprovalState, ForgeKindName, ForgeProblem, NodeApproval, NodeReporter } from './types.js';
 
@@ -464,6 +466,32 @@ export {
 } from './humanSteps.js';
 export type { StepAnswer, StepParts, BlockerAnswer, BriefAnswer, GateAnswer } from './humanSteps.js';
 
+// Every blocker reaches a person or resolves itself: flag_blocker's kinds
+export {
+  UNKINDED_GRACE_MINUTES,
+  EXTERNAL_RECHECK_DAYS,
+  QUESTION_ASK_PREFIX,
+  EXTERNAL_ASK_PREFIX,
+  EXTERNAL_ASK_OPTIONS,
+  questionAskId,
+  questionAskNodeId,
+  externalAskId,
+  externalAskNodeId,
+  externalRecheckAt,
+  externalRecheckDue,
+  answererName,
+  isWorkerNote,
+  isUnkindedBlocker,
+  unkindedDue,
+  blockerRefs,
+  waitedOnNode,
+  classifyUnkinded,
+  buildQuestionAsk,
+  buildExternalAsk,
+  externalAnswerAction,
+} from './blockerKinds.js';
+export type { BlockerRef, UnkindedPlan, ExternalAnswer } from './blockerKinds.js';
+
 // Which uploaded files stay public capability URLs (#292, decision D)
 export { PUBLIC_MEDIA_EXTENSIONS, isPublicMediaFileName } from './media.js';
 
@@ -490,7 +518,7 @@ export type { BoardSummary, BoardSummaryItem, BoardSummaryBlocked } from './boar
 
 // Outgoing webhooks: per map/workspace event subscriptions
 export { WEBHOOK_EVENTS, WEBHOOK_PING_EVENT, isWebhookEvent, statusCategory, webhookNodeRef, webhookEventsForNodeUpdate } from './webhooks.js';
-export type { WebhookEvent, WebhookSubscription, WebhookPayload, WebhookNodeRef, FleetWaitingOnHumanData } from './webhooks.js';
+export type { WebhookEvent, WebhookEventStat, WebhookSubscription, WebhookPayload, WebhookNodeRef, FleetWaitingOnHumanData } from './webhooks.js';
 
 // Waiting on humans: is a fleet idle, and what do people hold up
 export {
@@ -528,3 +556,18 @@ export {
   EXTERNAL_TAG,
 } from './timelineExport.js';
 export type { TimelineDetail, TimelineSpan, TimelineInput, TimelineMilestone, TimelineWaiting, MilestoneStatus } from './timelineExport.js';
+
+// Merged, not live — a per-map deploy probe (follow-up to #645)
+export {
+  DEPLOY_PROBE_NONE,
+  DEPLOY_PROBE_ASK_PREFIX,
+  DEPLOY_PROBE_ASK_OPTIONS,
+  isProbeUrl,
+  normalizeDeployProbe,
+  parseProbeBody,
+  notLiveLabel,
+  deployProbeAskId,
+  deployProbeAskMapId,
+  buildDeployProbeAsk,
+  deployProbeFromAnswer,
+} from './deployProbe.js';
