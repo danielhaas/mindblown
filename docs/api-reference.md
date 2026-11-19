@@ -1191,6 +1191,26 @@ Public endpoint (no auth required). Returns server status.
 }
 ```
 
+
+## Version
+
+```
+GET /api/version
+```
+
+Public endpoint (no auth required). The commit this server runs: `git rev-parse HEAD` of its checkout, read once at startup (a `git pull` that hasn't been restarted into is not reported). `builtAt` is when the process loaded that commit. This is the URL to give a map's deploy probe.
+
+**Response (200):**
+
+```json
+{
+  "commit": "72491df0c1d6a4c0c9d8e1f2a3b4c5d6e7f80912",
+  "builtAt": "2026-11-19T08:00:00.000Z"
+}
+```
+
+**Response (503):** no git checkout to read the commit from (a container image) — `{ "commit": null, "builtAt": "…", "error": "…" }`.
+
 ---
 
 ## Error Format

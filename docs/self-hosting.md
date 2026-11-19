@@ -410,6 +410,8 @@ docker compose up -d
 
 Database migrations run automatically on server start -- no manual migration step needed.
 
+`GET /api/version` returns the commit the running server was started on (`{"commit": "<sha>", "builtAt": "<ISO>"}`, no auth). Set it as the deploy probe of the map bound to your MindBlown repo (`update_map deployProbe: "https://<your-mindblown>/api/version"`) and its Fleet tab shows which merges are not live yet. For mind.project.li: `https://mind.project.li/api/version`.
+
 ---
 
 ## Troubleshooting
