@@ -58,6 +58,17 @@ const mapData = {
 
 vi.mock('../../db/maps.js', () => ({
   getMap: vi.fn(async (id: string) => (id === 'map-1' ? mapData : null)),
+  listMapsForUser: vi.fn(async () => [{ id: 'map-1' }, { id: 'map-2' }]),
+}));
+
+// Daily self-check runs: the store and the runner are mocked; the runner
+// has its own PGlite test (lint/__tests__/daily.pglite.test.ts).
+const listRuns = vi.fn(async (_mapIds: string[], _since: string) => [{ mapId: 'map-1', day: '2026-11-20' }]);
+vi.mock('../../db/lintRuns.js', () => ({ listRuns: (...a: unknown[]) => listRuns(...(a as [string[], string])) }));
+const runDailyLintForMap = vi.fn(async (mapId: string, _o: unknown) => (mapId === 'map-1' ? { mapId, fixed: [], asked: [], digest: {} } : null));
+vi.mock('../../lint/daily.js', () => ({
+  runDailyLintForMap: (...a: unknown[]) => runDailyLintForMap(...(a as [string, unknown])),
+  dailyLintConfig: () => ({ hour: 6, timeZone: 'Europe/Zurich' }),
 }));
 
 // stalled-unclaimed: the change-log read behind lib/stalled.ts.
@@ -737,5 +748,45 @@ describe('GET /api/maps/:id/lint — sync pack wiring', () => {
     } finally {
       mocked.mockImplementation(async () => []);
     }
+  });
+});
+
+describe('daily self-check runs', () => {
+  it('GET /api/maps/:id/lint/runs lists the map\'s runs (view), days validated', async () => {
+    permissionLevel = 'view';
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint/runs?days=3' });
+    const bad = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint/runs?days=0' });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().runs).toEqual([{ mapId: 'map-1', day: '2026-11-20' }]);
+    expect(listRuns.mock.calls.at(-1)![0]).toEqual(['map-1']);
+    expect(bad.statusCode).toBe(400);
+  });
+
+  it('POST /api/maps/:id/lint/runs runs it now — edit only; an archived map is a 409', async () => {
+    permissionLevel = 'view';
+    let app = await buildApp();
+    expect((await app.inject({ method: 'POST', url: '/api/maps/map-1/lint/runs' })).statusCode).toBe(403);
+    await app.close();
+    permissionLevel = 'edit';
+    app = await buildApp();
+    const ok = await app.inject({ method: 'POST', url: '/api/maps/map-1/lint/runs' });
+    const gone = await app.inject({ method: 'POST', url: '/api/maps/map-2/lint/runs' });
+    await app.close();
+    expect(ok.statusCode).toBe(200);
+    expect(runDailyLintForMap).toHaveBeenCalledWith('map-1', expect.objectContaining({ day: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) }));
+    expect(gone.statusCode).toBe(409);
+  });
+
+  it('GET /api/lint/runs covers the maps the caller can view; anonymous is a 401', async () => {
+    let app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/api/lint/runs' });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(listRuns.mock.calls.at(-1)![0]).toEqual(['map-1', 'map-2']);
+    app = await buildApp(null);
+    expect((await app.inject({ method: 'GET', url: '/api/lint/runs' })).statusCode).toBe(401);
+    await app.close();
   });
 });

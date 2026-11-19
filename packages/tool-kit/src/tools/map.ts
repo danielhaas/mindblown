@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { DISPATCH_POLICY_KEYS, MIX_BUGS_PREFIX, MIX_BUGS_REGEX, projectSetup } from '@mindblown/core';
-import type { SetupStepId, TrustLevelPolicy, TrustPolicy } from '@mindblown/core';
+import { DISPATCH_POLICY_KEYS, LINT_AUTO_RULES, MIX_BUGS_PREFIX, MIX_BUGS_REGEX, projectSetup } from '@mindblown/core';
+import type { LintRuleId, SetupStepId, TrustLevelPolicy, TrustPolicy } from '@mindblown/core';
 import { defineTool } from '../spec.js';
 import { filterMapData, formatMapTree } from '../formatters.js';
 
@@ -207,6 +207,10 @@ export const updateMapTool = defineTool({
       .boolean()
       .optional()
       .describe("Draft estimates for committed work (#318, default true): unestimated leaves in a todo/in-progress status or in the active version get an AI estimate from the local model, marked as a draft (estimateSource 'ai') until someone sets or accepts it. false switches it off for this map. Never runs when aiPolicy is none."),
+    lintAutoFix: z
+      .record(z.enum(LINT_AUTO_RULES as [LintRuleId, ...LintRuleId[]]), z.boolean())
+      .optional()
+      .describe("The daily self-check's auto-fixes, per rule (full replacement; a missing rule is on). Once a day plan_lint runs on every active map and applies the safe fixes through plan_fix: status-progress-mismatch (a done leaf below 100 % → mark-done), stale-blocked-reason (a fleet worker's own note on a done node → clear-blocker), stalled-unclaimed (merged PR → mark-done, a worker's orphan idle 24 h → requeue). { \"stalled-unclaimed\": false } turns that one off — its findings become asks on the Questions card instead. lint_runs shows what each run did."),
     autoImportNewIssues: z
       .boolean()
       .optional()
@@ -275,7 +279,7 @@ export const updateMapTool = defineTool({
       .optional()
       .describe('Who may run the fleet on this map (#491), REPLACE mode — send the whole policy; null goes back to the defaults. A ticket\'s reporter decides its level: trusted (on the lists, or reporter unknown) runs fully automatic and is the only work ever deployed automatically; known and external follow their dispatch ("auto" | "approval") and merge ("auto" | "pr-only") knobs. Safe default for both: approval + pr-only. Needs admin on the map.'),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, fleetId, fleetShare, fleetCanEditCi, autoImportNewIssues, aiPolicy, aiEstimateDrafts, holidayJurisdiction, holidayOverrides, workers, deployProbe, phases, archived, setupCompleted, trustPolicy }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, fleetId, fleetShare, fleetCanEditCi, autoImportNewIssues, aiPolicy, aiEstimateDrafts, lintAutoFix, holidayJurisdiction, holidayOverrides, workers, deployProbe, phases, archived, setupCompleted, trustPolicy }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -294,6 +298,7 @@ export const updateMapTool = defineTool({
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
       aiEstimateDrafts?: boolean;
+      lintAutoFix?: Partial<Record<LintRuleId, boolean>>;
       holidayJurisdiction?: string | null;
       holidayOverrides?: { add: string[]; remove: string[] };
       workers?: string[];
@@ -320,6 +325,7 @@ export const updateMapTool = defineTool({
     if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
     if (aiPolicy !== undefined) fields.aiPolicy = aiPolicy;
     if (aiEstimateDrafts !== undefined) fields.aiEstimateDrafts = aiEstimateDrafts;
+    if (lintAutoFix !== undefined) fields.lintAutoFix = lintAutoFix;
     if (holidayJurisdiction !== undefined) fields.holidayJurisdiction = holidayJurisdiction;
     if (holidayOverrides !== undefined) fields.holidayOverrides = holidayOverrides;
     if (workers !== undefined) fields.workers = workers;

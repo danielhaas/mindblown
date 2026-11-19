@@ -25,7 +25,8 @@ import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
 import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent, effectiveVersionId, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline, groupBlockers, summarisePace, makeDayMapper } from '@mindblown/core';
 import type { RequirementStage } from '@mindblown/core';
-import { isForgeLink, forgeLabel, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindblown/core';
+import { isForgeLink, forgeLabel, LINT_RULE_IDS, LINT_ACTION_IDS, lintDigestLine } from '@mindblown/core';
+import type { LintRun } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
 import { stalledSectionLines, wipClaimMarker, wipPhaseTexts } from './stalled.js';
@@ -1628,6 +1629,40 @@ server.tool(
         for (const n of r.moved.notes) lines.push(`- ${n}`);
       }
       lines.push('Re-run plan_lint to confirm the finding cleared.');
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'lint_runs',
+  "The daily self-check: once a day plan_lint (scope all) runs on every active map. Safe fixes are applied through plan_fix's write path (a done leaf below 100 % → mark-done; a fleet worker's own blocker note on a done node → clear-blocker; a stalled ticket with a merged PR → mark-done, a worker's orphan idle 24 h → requeue — each switchable per map with update_map lintAutoFix); findings that need a person become asks on the Questions card (list_asks: lint-<rule>-<node>, options are the finding's fixes or \"Leave it\"); hygiene counts go into one line per map in the daily mail. This lists what each run did per map: fixed / asked / counted. Pass run:true with a mapId to run it on that map now (needs edit; replaces today's run).",
+  {
+    mapId: z.string().optional().describe('One map; omit for every map you can view'),
+    days: z.number().int().min(1).max(90).default(1).describe('Runs from this many days back (default 1 = today)'),
+    run: z.boolean().optional().describe('Run the check on mapId now instead of listing'),
+  },
+  async ({ mapId, days, run }) => {
+    try {
+      let runs: LintRun[];
+      if (run) {
+        if (!mapId) return toolResult('run:true needs a mapId.');
+        runs = [await api.runLintNow(mapId)];
+      } else {
+        runs = (await api.listLintRuns({ mapId, days })).runs;
+      }
+      if (runs.length === 0) return toolResult('No daily-check runs in that window.');
+      const lines: string[] = [];
+      for (const r of runs) {
+        const fixed = r.fixed.filter((f) => f.ok);
+        const digest = lintDigestLine(r.digest);
+        lines.push(`## ${r.mapName ?? r.mapId} — ${r.day} (ran ${r.ranAt.slice(11, 16)} UTC): fixed ${fixed.length}, asked ${r.asked.length}${digest ? `, hygiene: ${digest}` : ''}`);
+        if (r.error) lines.push(`  ⚠ run failed: ${r.error}`);
+        for (const f of r.fixed) lines.push(`  - ${f.ok ? 'fixed' : 'FAILED'} ${f.action} (${f.ruleId}) ${f.nodeId} ${f.nodeText}${f.error ? ` — ${f.error}` : ''}`);
+        for (const a of r.asked) lines.push(`  - asked (${a.ruleId}) ${a.nodeId} ${a.nodeText} — ${a.detail}`);
+      }
       return toolResult(lines.join('\n'));
     } catch (err) {
       return toolError(err);

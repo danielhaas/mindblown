@@ -1,3 +1,4 @@
+import type { LintAutoFix } from './lint.js';
 // ── Branded ID types ────────────────────────────────────────────
 /** Unique identifier. UUIDv7 for sortability + uniqueness. */
 export type NodeId = string;
@@ -968,6 +969,13 @@ export interface MindMap {
    * Server source: `maps.ai_estimate_drafts`.
    */
   aiEstimateDrafts?: boolean;
+  /**
+   * The daily self-check's auto-fixes (server lint/daily.ts): rule id →
+   * false switches that rule's safe fix off, so its findings become asks.
+   * A missing key is on. Only rules whose handling is `auto`
+   * (core LINT_DAILY) are read. Server source: `maps.lint_auto_fix`.
+   */
+  lintAutoFix?: LintAutoFix;
   /**
    * Public holidays (#110): a `date-holidays` code — country (`LI`, `AT`) or
    * country-region (`CH-ZH`, `DE-BY`). Null = none. Setting it (or any

@@ -83,6 +83,9 @@ vi.mock('../../lib/githubContext.js', () => ({ getGitHubContextForMap: vi.fn(asy
 const commentOnGitHubIssue = vi.hoisted(() => vi.fn(async () => ({ id: 1, html_url: 'x' })));
 vi.mock('@mindblown/integrations', () => ({ commentOnGitHubIssue, ForgeApiError: class extends Error {} }));
 const recordAnswer = vi.fn(async (k: { askId: string; mapId: string }, ask: unknown, p: { status: string }) => ({ ask, mapId: k.mapId, status: p.status }));
+// The daily check's runs: none here (lint asks have their own pglite test).
+vi.mock('../../db/lintRuns.js', () => ({ latestRuns: async () => new Map() }));
+
 vi.mock('../../db/asks.js', () => ({
   ANSWER_RETENTION_DAYS: 14,
   listAsks: vi.fn(async () => state.stored),

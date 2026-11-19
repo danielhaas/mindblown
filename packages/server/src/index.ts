@@ -66,6 +66,8 @@ import { runApprovalReviews } from './services/approvalReview.js';
 import { runReporterChecks } from './services/reporterCheck.js';
 import { pinnedGit, signalSelfDeploy } from './services/selfDeploy.js';
 import { digestConfig, runDigestMails } from './services/digestMail.js';
+import { dailyLintConfig, runDailyLint } from './lint/daily.js';
+import { localDay, localHour } from './lib/localDay.js';
 import { pushoverConfigured } from './lib/pushover.js';
 import { onBroadcast, registerWebSocket } from './ws.js';
 import { webhookRoutes } from './routes/webhooks.js';
@@ -648,6 +650,31 @@ async function main(): Promise<void> {
     }
   };
   setInterval(digestMailTick, DIGEST_MAIL_INTERVAL_MS);
+
+  // ── Daily self-check (lint/daily.ts) ──────────────────────────
+  // Every 10 min: from LINT_DAILY_HOUR (default 06:00 in DIGEST_MAIL_TZ)
+  // plan_lint runs once a day on every active map not yet checked that day
+  // — safe fixes applied, person-needed findings onto the Questions card,
+  // hygiene counts for the 08:00 mail. On demand: POST /api/maps/:id/lint/runs.
+  const lintCfg = dailyLintConfig();
+  let dailyLintRunning = false;
+  const dailyLintTick = async (): Promise<void> => {
+    const now = new Date();
+    if (dailyLintRunning || localHour(now, lintCfg.timeZone) < lintCfg.hour) return;
+    dailyLintRunning = true;
+    try {
+      const r = await runDailyLint({ now, day: localDay(now, lintCfg.timeZone) });
+      for (const run of r.runs) {
+        const fixed = run.fixed.filter((f) => f.ok).length;
+        console.log(`[daily-lint] ${run.mapName ?? run.mapId}: fixed=${fixed} asked=${run.asked.length} digest=${Object.values(run.digest).reduce((a, b) => a + (b ?? 0), 0)}${run.error ? ` error=${run.error}` : ''}`);
+      }
+    } catch (err) {
+      console.error('[daily-lint] tick caught unexpected error:', err);
+    } finally {
+      dailyLintRunning = false;
+    }
+  };
+  setInterval(dailyLintTick, DIGEST_MAIL_INTERVAL_MS);
 
   // ── Trash garbage collection (#107) ────────────────────────────
   // Soft-deleted nodes get hard-deleted after the retention window. Also

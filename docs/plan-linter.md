@@ -1,6 +1,6 @@
 # Plan Linter — v1 Specification
 
-*Status: surfaces 1 (`plan_lint` MCP tool) and 2 (plan-health panel + dismissals) implemented, plus the requirements pack (rules 9–11) and sprint (`cycleId`) scoping; the engine lives server-side (`packages/server/src/lint/engine.ts`) and both surfaces consume `GET /api/maps/:id/lint`. Moment-of-action nudges (surface 3) open. Companion to the "Guided Project Management" section of [product-vision.md](product-vision.md).*
+*Status: surfaces 1 (`plan_lint` MCP tool) and 2 (plan-health panel + dismissals) implemented, the daily self-check (`lint/daily.ts`) runs every active map once a day, plus the requirements pack (rules 9–11) and sprint (`cycleId`) scoping; the engine lives server-side (`packages/server/src/lint/engine.ts`) and both surfaces consume `GET /api/maps/:id/lint`. Moment-of-action nudges (surface 3) open. Companion to the "Guided Project Management" section of [product-vision.md](product-vision.md).*
 
 ---
 
@@ -10,7 +10,7 @@ A set of **deterministic, explainable checks on plan quality**, run against a ma
 
 The linter is the productized form of "the tool guides you into good PM": it targets the four failure modes of untrained project management — no decomposition, missing/uncalibrated estimates, vague done-criteria, publish-and-forget plans — using signals the engine already computes.
 
-**Coach, not autopilot.** The linter never mutates the plan on its own. It surfaces findings; the user (or their AI agent) fixes them. Since 2026-09-28 a finding may *offer* one-click fixes (see "Fixes" below) — applied only on an explicit click or `plan_fix` call, through the same write path as a hand edit.
+**Coach, not autopilot.** The linter itself never mutates the plan. It surfaces findings; the user (or their AI agent) fixes them. Since 2026-09-28 a finding may *offer* one-click fixes (see "Fixes" below) — applied only on an explicit click or `plan_fix` call, through the same write path as a hand edit. The one exception is the **daily self-check** (below, since 2026-11-19): it applies a short list of safe fixes itself, per map switchable, and puts everything else in front of a person.
 
 ## Relationship to existing MI tools
 
@@ -103,6 +103,27 @@ The link a fix acts on is the one the finding named: the node's first forge link
 
 Deliberately not a rule: the `#N ` prefix on imported node titles. The import writes it on purpose; that the outbound title sync copies it back onto the forge issue is a sync bug to fix at the source, not a finding to dismiss on every ticket.
 
+### Daily self-check (added 2026-11-19)
+
+A manual sweep on 19.11.2026 found stranded work, stale blockers, done-at-0 % tickets and silent blockers across four maps. plan_lint knew almost all of it, but nothing ran it and nothing acted on it. Now a job does (`packages/server/src/lint/daily.ts`):
+
+- **When.** Every 10 minutes the server checks the clock; from `LINT_DAILY_HOUR` (default 06:00, in `DIGEST_MAIL_TZ`, default Europe/Zurich — before the 08:00 mail) it runs plan_lint with **scope all** on every active (not archived) map not yet checked that local day. On demand: `POST /api/maps/:id/lint/runs` or the MCP tool `lint_runs` with `run: true` (edit on the map; replaces today's run). Dismissed findings and muted rules are left alone, as in the panel.
+- **What it does with a finding** is declared per rule in `packages/core/src/lint.ts`, `LINT_DAILY`:
+
+| Handling | Rules | What happens |
+|---|---|---|
+| `auto` | `status-progress-mismatch`, `stale-blocked-reason`, `stalled-unclaimed` | The safe case gets its fix through `applyLintFix` — the plan_fix path, so change history, claim trail, live update and outbound sync as for a hand edit (attributed to no user). Safe cases: a **done leaf below 100 %** → `mark-done`; a blocker that is a **fleet worker's own note** (`Fleet worker <id>: …`) on a done node → `clear-blocker`; a stalled ticket with a **merged PR** on record (`mergedPrNumber` on a link, or the linked-PR mirror `merged`) → `mark-done`, else idle **24 h** and a worker's orphan (`isOrphanRequeueable`) → `requeue`, else under 24 h → wait. Any other case — a person's blocker text, 100 % without a done status, a never-claimed or "Decision:" stall — becomes an ask. A failed fix is listed as failed and asked. |
+| `ask` | `blocker-without-question`, `issue-state-mismatch`, `broken-repo-connection`, `misfiled-repo`, `done-parent-open-child` | One row per finding on the map's Questions card (`lint-<rule>-<node>`; a map-level finding sits on the root node), to the map owner. Options: the finding's fixes by label, plus **Leave it**. An option runs that fix (`plan_fix` write path); Leave it is recorded and nothing changes; free text on a rule that offers `needs-human` becomes that person's next step. |
+| `digest` | `unestimated-leaf`, `oversized-leaf`, `ai-draft-estimate`, `no-done-criteria`, `stale-plan`, `done-without-pr` | Counted; one line per map in the daily mail to the map's admins: "Navy App: 24 without estimate, 3 oversized, 7 AI drafts to confirm", linking to the map with its plan-health panel open (`?map=<id>&lint=1`). A mail goes out for hygiene lines alone. |
+| `off` | the rest | Not part of the daily check; the panel and plan_lint still show them. |
+
+- **Asks once.** The asks are derived on read from the map's newest run (`services/derivedAsks.ts`), not stored while open — a fleet push replaces the stored open set. The id is per rule and node and the run keeps a finding's first-seen time, so tomorrow's run shows the **same** row, not a new one. An answered row stays answered while its question reads the same (Leave it does not come back tomorrow); Later / Delegate snooze it like other derived rows. A node that already has another derived row (a blocker, stalled, step, question … row) gets no lint row — that row is its question; so the `stalled-unclaimed` ask is the existing `stalled-<node>` row.
+- **Switch.** Per map, `lintAutoFix` (`update_map lintAutoFix`, `PUT /api/maps/:id`): rule id → `false` turns that rule's auto-fix off and its findings become asks. A missing key is on.
+- **Run summary.** Each run is stored per map and local day (`lint_runs`): the fixes applied (each listed, failed ones with why), the asks, the counts. `GET /api/maps/:id/lint/runs?days=N`, `GET /api/lint/runs?days=N` (every map the caller can view), MCP `lint_runs`.
+- **Not covered here:** ready work outside the dispatch gate is not a lint rule, so the daily check does not see it; it gets its own Questions-card ask in a separate change ("ready work outside the dispatch gate is never silent").
+
+**Wiring in a new rule:** add the id to `LINT_RULE_IDS`, the rule to `computePlanLint` (engine.ts), its fixes to `LINT_FIX_ACTIONS` — and its entry in `LINT_DAILY` (the type is a `Record` over every rule id, so forgetting it does not compile). `ask` and `digest` (with a `label`) need nothing else: the daily check picks it up from the next run. `auto` also needs the safe case in `autoAction` (lint/daily.ts); without it the finding is asked.
+
 Thresholds above are **opinionated defaults, not configuration**. v1 exposes only `stalledDays`-style overrides where `risk_scan` already does; no settings sprawl.
 
 ## Output shape
@@ -129,7 +150,7 @@ Per the Feature Definition of Done: surface 1 must land with whatever server end
 - No AI in the detection path (AI only assists fixes, via existing `ai_estimate` / `ai_breakdown`).
 - No cross-map linting (each map lints alone; portfolio view later).
 - No custom user-defined rules.
-- No auto-fix. The linter never edits nodes.
+- No auto-fix in plan_lint and the panel — they never edit nodes. The daily self-check (above) applies only the `auto` rules' safe cases, switchable per map.
 
 ## Open questions
 

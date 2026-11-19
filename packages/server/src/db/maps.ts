@@ -7,8 +7,8 @@ import { dbMapToCore, dbNodeToCore } from './helpers.js';
 import { notDeleted } from './nodes.js';
 import { recordMapFieldChanges } from './events.js';
 import { FLEET_RETIRED, FleetUserForbiddenError, isFleetUser } from './fleets.js';
-import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ProfilePolicy, AiPolicy, TrustPolicy } from '@mindblown/core';
-import { capOnFleetConnect, clampFleetShare, clampFocusFactor, isAiPolicy } from '@mindblown/core';
+import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ProfilePolicy, AiPolicy, TrustPolicy, LintAutoFix } from '@mindblown/core';
+import { capOnFleetConnect, clampFleetShare, clampFocusFactor, isAiPolicy, sanitizeLintAutoFix } from '@mindblown/core';
 
 // ── Create ─────────────────────────────────────────────────────────
 
@@ -190,6 +190,8 @@ export interface UpdateMapInput {
   aiPolicy?: AiPolicy;
   /** Draft estimates for committed work (#318). */
   aiEstimateDrafts?: boolean;
+  /** Daily self-check auto-fixes per rule (core LintAutoFix) — full replacement. */
+  lintAutoFix?: LintAutoFix;
   /**
    * The fleet's repo token may change CI workflows. Admin only, checked by
    * the callers (services/mapRepoBinding `authorizeFleetCiChange`). A
@@ -282,6 +284,7 @@ export async function updateMap(
   if (input.triageLabelWriteback !== undefined) updates.triageLabelWriteback = input.triageLabelWriteback;
   if (input.aiPolicy !== undefined && isAiPolicy(input.aiPolicy)) updates.aiPolicy = input.aiPolicy;
   if (typeof input.aiEstimateDrafts === 'boolean') updates.aiEstimateDrafts = input.aiEstimateDrafts;
+  if (input.lintAutoFix !== undefined) updates.lintAutoFix = sanitizeLintAutoFix(input.lintAutoFix);
   // CI access was granted for one repo; another repo may hold secrets.
   if (typeof input.fleetCanEditCi === 'boolean') updates.fleetCanEditCi = input.fleetCanEditCi;
   else if (repoBindingChanges(before, input)) updates.fleetCanEditCi = false;

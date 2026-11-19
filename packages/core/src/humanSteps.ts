@@ -18,6 +18,7 @@ import { isForgeLink, type ExternalLink } from './types.js';
 import { STALLED_ASK_OPTIONS, stalledAnswerAction, stalledAskNodeId } from './stalled.js';
 import { DEPLOY_PROBE_NONE, deployProbeAskMapId, deployProbeFromAnswer } from './deployProbe.js';
 import { externalAnswerAction, externalAskNodeId, questionAskNodeId } from './blockerKinds.js';
+import { lintAskNodeId } from './lint.js';
 
 export const STEP_ASK_PREFIX = 'step-';
 export const STEP_ASK_OPTIONS = ['Done', 'Fleet can do it'] as const;
@@ -93,7 +94,7 @@ export function briefAskNodeId(askId: string): string | null {
   return askId.startsWith(BRIEF_ASK_PREFIX) && askId.length > BRIEF_ASK_PREFIX.length ? askId.slice(BRIEF_ASK_PREFIX.length) : null;
 }
 
-/** The node behind any derived row (stalled, step, blocker, brief, blocker question, external re-check), or null for a collector's ask. */
+/** The node behind any derived row (stalled, step, blocker, brief, blocker question, external re-check, daily-check finding), or null for a collector's ask. */
 export function derivedAskNodeId(askId: string): string | null {
   return (
     stalledAskNodeId(askId) ??
@@ -101,7 +102,8 @@ export function derivedAskNodeId(askId: string): string | null {
     blockerAskNodeId(askId) ??
     briefAskNodeId(askId) ??
     questionAskNodeId(askId) ??
-    externalAskNodeId(askId)
+    externalAskNodeId(askId) ??
+    lintAskNodeId(askId)
   );
 }
 

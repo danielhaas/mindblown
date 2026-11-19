@@ -1669,6 +1669,15 @@ export function App() {
     setWorkspaceSettingsOpen(true);
   }, []);
 
+  // ?lint=1 (the daily mail's hygiene line) opens the plan-health panel of the map in ?map=.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('lint') !== '1') return;
+    url.searchParams.delete('lint');
+    window.history.replaceState({}, '', url.pathname + url.search);
+    setPlanHealthPanelOpen(true);
+  }, []);
+
   // Handle GitHub OAuth callback redirect (?gh=connected or ?gh=error)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);

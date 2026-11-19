@@ -1,5 +1,5 @@
 import type { Node as CoreNode, MindMap, Fleet, CustomFieldValue } from '@mindblown/core';
-import { isAiPolicy } from '@mindblown/core';
+import { isAiPolicy, sanitizeLintAutoFix } from '@mindblown/core';
 
 /** Convert a database fleet row to the core Fleet type. */
 export function dbFleetToCore(row: Record<string, unknown>): Fleet {
@@ -163,6 +163,7 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     triageEnabled: (get('triageEnabled', 'triage_enabled') as boolean) ?? false,
     triageLabelWriteback: (get('triageLabelWriteback', 'triage_label_writeback') as boolean) ?? false,
     aiEstimateDrafts: (get('aiEstimateDrafts', 'ai_estimate_drafts') as boolean) ?? true,
+    lintAutoFix: sanitizeLintAutoFix(get('lintAutoFix', 'lint_auto_fix')),
     holidayJurisdiction: (get('holidayJurisdiction', 'holiday_jurisdiction') as string | null) ?? null,
     deployProbe: (get('deployProbe', 'deploy_probe') as string | null) ?? null,
     holidayOverrides: (() => {
