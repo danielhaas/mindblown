@@ -82,6 +82,26 @@ export async function getStatusWorkflow(mapId: string): Promise<StatusDef[] | nu
 
 // ── Get (with all nodes) ───────────────────────────────────────────
 
+/**
+ * The map bound to `owner/repo` through a GitHub App installation, oldest
+ * first if several are (case-insensitive, like GitHub). null = none.
+ */
+export async function findAppBoundMapIdForRepo(owner: string, repo: string): Promise<string | null> {
+  const [row] = await db
+    .select({ id: maps.id })
+    .from(maps)
+    .where(
+      and(
+        sql`lower(${maps.githubRepoOwner}) = ${owner.toLowerCase()}`,
+        sql`lower(${maps.githubRepoName}) = ${repo.toLowerCase()}`,
+        sql`${maps.githubInstallationId} is not null`,
+      ),
+    )
+    .orderBy(maps.createdAt)
+    .limit(1);
+  return row?.id ?? null;
+}
+
 export async function getMap(mapId: string): Promise<{ map: MindMap; nodes: CoreNode[] } | null> {
   const [mapRow] = await db.select().from(maps).where(eq(maps.id, mapId));
   if (!mapRow) return null;
