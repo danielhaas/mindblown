@@ -148,6 +148,14 @@ describe('prs_waiting', () => {
     expect(renderPrsWaiting({ items: [], now: 'x' })).toBe('No PRs are waiting on a person.');
   });
 
+  it('a PR on an archived map (read by naming the map) is marked [ARCHIVED]', () => {
+    const out = renderPrsWaiting({
+      now: 'x',
+      items: [{ mapId: 'm1', mapName: 'Fulcrum CRM Roadmap', mapArchived: true, nodeId: 'n1', ticket: 'T', repo: 'o/r', number: 3, url: null, title: null, ci: 'success', waits: 'Needs a human merge', since: null }],
+    });
+    expect(out).toContain('- [Fulcrum CRM Roadmap] [ARCHIVED] o/r#3 · T');
+  });
+
   it('at most one of mapId / fleetId', async () => {
     const backend = { prsWaiting: vi.fn(async () => ({ items: [], now: 'x' })) } as unknown as ToolBackend;
     await prsWaitingTool.handler(backend, { fleetId: 'f1' } as never);

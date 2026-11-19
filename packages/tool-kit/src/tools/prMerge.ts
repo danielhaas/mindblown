@@ -58,7 +58,7 @@ export function renderPrsWaiting(res: PrsWaitingList): string {
     const ref = p.repo ? `${p.repo}#${p.number}` : `PR #${p.number}`;
     lines.push(
       '',
-      `- [${p.mapName}] ${ref} · ${p.title ?? p.ticket}`,
+      `- [${p.mapName}]${p.mapArchived ? ' [ARCHIVED]' : ''} ${ref} · ${p.title ?? p.ticket}`,
       `  ${p.waits} · CI ${CI_TEXT[p.ci] ?? p.ci}${p.since ? ` · since ${p.since.slice(0, 16).replace('T', ' ')}` : ''} · node ${p.nodeId}${p.url ? ` · ${p.url}` : ''}`,
     );
   }
@@ -72,8 +72,10 @@ export const prsWaitingTool = defineTool({
     'Open PRs waiting on a person: the fleet says "Needs a human merge", "No CI",',
     '"CI red" or "Merge conflict", or an open PR outside the fleet that is not',
     'waiting on CI. One row each: map, repo#number, title, why it waits, CI',
-    'result, since when, node id. Read-only. Without mapId/fleetId: every map',
-    'you can view. Next step: pr_summary on the one the person asks about.',
+    'result, since when, node id. Read-only. Without mapId: every map you can',
+    'view (or the fleet\'s), archived maps left out — they are on hold; name an',
+    'archived map by mapId to see its PRs (marked [ARCHIVED]). Next step:',
+    'pr_summary on the one the person asks about.',
   ].join('\n'),
   schema: {
     mapId: z.string().optional().describe('One map'),

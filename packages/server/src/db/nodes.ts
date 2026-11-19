@@ -825,16 +825,18 @@ export async function setApproval(nodeId: string, approval: NodeApproval, fromSt
 }
 
 /**
- * Proposed nodes on these maps (#494), oldest first. Archived maps are
- * on hold — nothing there waits on anyone. Done ones are left to the
- * caller, which knows each map's workflow.
+ * Proposed nodes on these maps (#494), oldest first. Which maps count is
+ * the caller's: lists over several maps pass live ones only
+ * (lib/waitingMaps), a read naming an archived map still sees its
+ * proposals. Done ones are left to the caller, which knows each map's
+ * workflow.
  */
 export async function listProposedNodes(mapIds: string[]): Promise<CoreNode[]> {
   if (mapIds.length === 0) return [];
   const rows = await db
     .select()
     .from(nodes)
-    .where(and(inArray(nodes.mapId, mapIds), notDeleted, onActiveMap, sql`${nodes.approval}->>'state' = 'proposed'`))
+    .where(and(inArray(nodes.mapId, mapIds), notDeleted, sql`${nodes.approval}->>'state' = 'proposed'`))
     .orderBy(nodes.createdAt);
   return rows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
 }

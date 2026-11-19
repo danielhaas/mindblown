@@ -377,7 +377,7 @@ export async function prsWaiting(userId: string, scope: { mapId?: string; fleetI
       seen.add(n.id);
       if (!waits) continue;
       items.push({
-        mapId: map.id, mapName: map.name, nodeId: n.id, ticket: n.text, repo: pr.repo, number: pr.number,
+        mapId: map.id, mapName: map.name, ...(map.archived ? { mapArchived: true } : {}), nodeId: n.id, ticket: n.text, repo: pr.repo, number: pr.number,
         url: pr.url, title: null, ci, waits, since: phase?.since ?? pr.lastSyncedAt,
       });
     }
@@ -390,7 +390,7 @@ export async function prsWaiting(userId: string, scope: { mapId?: string; fleetI
       const node = await nodeDb.getNode(nodeId);
       if (!node || node.mapId !== map.id || node.deletedAt) continue;
       const row: PrWaiting = {
-        mapId: map.id, mapName: map.name, nodeId, ticket: node.text,
+        mapId: map.id, mapName: map.name, ...(map.archived ? { mapArchived: true } : {}), nodeId, ticket: node.text,
         repo: ctx ? `${ctx.owner}/${ctx.repo}` : '', number: phase.prNumber!, url: null, title: null,
         ci: phaseCi(phase), waits: phase.label, since: phase.since,
       };

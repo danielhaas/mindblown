@@ -32,6 +32,7 @@ import * as mapDb from '../db/maps.js';
 import * as nodeDb from '../db/nodes.js';
 import { inbox } from './asksInbox.js';
 import { getFleetForUser, listFleetsForUser, type FleetAccessError } from './fleets.js';
+import { waitingMaps } from '../lib/waitingMaps.js';
 
 export interface WaitingScope {
   fleetId: string;
@@ -140,7 +141,7 @@ export async function waitingOnHumansForUser(userId: string, fleetId?: string): 
   }
   const out: FleetWaitingOnHumans[] = [];
   for (const f of fleets) {
-    const mapIds = f.maps.filter((m) => !m.archivedAt).map((m) => m.id);
+    const mapIds = waitingMaps(f.maps).map((m) => m.id);
     const { summary } = await readFleetWaiting({ fleetId: f.id, fleetName: f.name, mapIds, fleetLevel: f.isOwner || f.hiddenMapCount === 0 });
     out.push(summary);
   }
