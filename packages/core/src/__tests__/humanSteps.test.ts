@@ -4,6 +4,8 @@ import {
   namedTickets,
   staleCheckable,
   blockerAnswerAction,
+  blockerAnswerText,
+  stepAnswerText,
   blockerAskNodeId,
   blockerFleetAction,
   briefAnswerAction,
@@ -25,6 +27,7 @@ import {
   stepSummaryOf,
 } from '../humanSteps.js';
 import { dispatchHold, dispatchSkipTag, holdTagPerson } from '../dispatch.js';
+import { splitOptionAnswer } from '../asks.js';
 
 describe('a step for reading', () => {
   it('without a next-step line the row shows the description\'s first paragraph, headings skipped', () => {
@@ -115,6 +118,27 @@ describe('a person\'s steps', () => {
     expect(stepAnswerAction('Done', 'mine')).toBe('mark-done');
     expect(isStepOption('Fleet can do it')).toBe(true);
     expect(isStepOption('yes')).toBe(false);
+  });
+
+  it('an answer that starts with an option is that option; the rest is its note', () => {
+    expect(blockerAnswerAction('Fleet can fix it — resolve the conflict of PR #191 with main')).toBe('fleet-fix');
+    expect(blockerAnswerText('Fleet can fix it — resolve the conflict of PR #191 with main')).toBe('resolve the conflict of PR #191 with main');
+    expect(blockerAnswerAction('fleet can fix it - rebase')).toBe('fleet-fix');
+    expect(blockerAnswerAction('Unblocked, the key arrived')).toBe('clear-blocker');
+    expect(blockerAnswerAction('Done.')).toBe('mark-done');
+    expect(blockerAnswerText('Done.')).toBe('');
+    expect(blockerAnswerAction('Something else')).toBe('needs-human');
+    expect(blockerAnswerText('Something else')).toBe('Something else');
+    expect(blockerAnswerAction('Donezo')).toBe('needs-human');
+    expect(stepAnswerAction('Fleet can do it: x', 'mine')).toBe('to-fleet');
+    expect(stepAnswerText('Fleet can do it: x')).toBe('x');
+    expect(stepAnswerAction('Done.', 'mine')).toBe('mark-done');
+    expect(isStepOption('Done.')).toBe(true);
+    expect(isStepOption('Fleet can do it: x')).toBe(false);
+    expect(stepAnswerAction('Something else', 'mine')).toBe('needs-human');
+    expect(stepAnswerText('Something else')).toBe('Something else');
+    expect(stepAnswerAction('fleet-fix the branch', 'mine')).toBe('needs-human');
+    expect(splitOptionAnswer('1+4 now, GPU later — re-pick', ['1+4 now', '1+4 later'])).toEqual({ option: '1+4 now', rest: 'GPU later — re-pick' });
   });
 
   it('derived rows preview their own writes; collector rows are not derived', () => {

@@ -141,6 +141,11 @@ export const answerAskTool = defineTool({
     'step and as a comment on the linked issue, then `next`: fleet (default —',
     'skip tags and blocked off, labels too, status todo), done, or mine (the',
     'step stays a person\'s, the text its new next step).',
+    'An answer that starts with one of the ask\'s options (case-insensitive,',
+    'followed by the end, " — ", " - ", ":", "," or ".") IS that option; the',
+    'rest is its note — "Fleet can fix it — rebase on main" on a blocker runs',
+    'Fleet can fix it with "rebase on main" as the decision (issue comment,',
+    'description). Only text that starts with no option is free text.',
   ].join('\n'),
   schema: {
     mapId: z.string().optional().describe('The ask\'s map — one of mapId / fleetId'),
