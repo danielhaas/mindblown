@@ -60,6 +60,7 @@ import {
   derivedAskNodeId,
   DISPATCH_SKIP_TAGS,
   dispatchSkipTag,
+  isOrphanRequeueable,
   isStalledAskDue,
   planAskWrites,
   stalledAskAfterHours,
@@ -331,6 +332,61 @@ export async function autoCheckBlockers(scope: asksDb.AskScope, mapIds: string[]
     if (named.length > 0 && named.every((t) => t.done) && named.some((t) => t.doneAt !== null && t.doneAt > since)) send.push(r);
   }
   return answerFleetCanFix(scope, send, userId, AUTO_CHECK_BY);
+}
+
+/** What the orphan requeue did. */
+export interface OrphanRequeueOutcome {
+  requeued: Array<{ askId: string; mapId: string }>;
+  failed: Array<{ askId: string; mapId: string; error: string }>;
+}
+
+/**
+ * Orphaned "in progress" back to the queue (with the auto-check, same
+ * switch, same owner): a stalled leaf a worker held — no claim, no
+ * blocker, no skip tag, no change for STALLED_AFTER_HOURS (lib/stalled) —
+ * that no collector's open question names and no Later / Delegate snoozed
+ * goes to todo, progress kept, as if its stalled row was answered "Back to
+ * the queue". The pull skips in progress, so before this nothing took it
+ * up until a person answered the stalled row a day later. What waits on a
+ * person (never claimed, a "Decision:" ticket — core isOrphanRequeueable)
+ * stays and becomes the stalled ask. The answer is recorded on the stalled
+ * row, so the digest and the answered fold show the requeue.
+ */
+export async function requeueOrphans(scope: asksDb.AskScope, mapIds: string[], userId: string | null, now: Date = new Date()): Promise<OrphanRequeueOutcome> {
+  const out: OrphanRequeueOutcome = { requeued: [], failed: [] };
+  const rows: AskRow[] = [];
+  for (const mapId of mapIds) {
+    const data = await mapDb.getMap(mapId);
+    if (!data || data.map.archivedAt) continue;
+    const byId = new Map(data.nodes.map((n) => [n.id, n]));
+    const stalled = await stalledForMap(data.map, data.nodes, now).catch(() => []);
+    for (const s of stalled) {
+      const node = byId.get(s.nodeId);
+      if (node && isOrphanRequeueable(s, node.text)) rows.push(openRow(buildStalledAsk(node, s, mapId, now), mapId, now, s.lastChangeAt));
+    }
+  }
+  if (rows.length === 0) return out;
+  const { snoozed, asked } = storedFilters(await asksDb.listAsks(scope, { status: 'all' }), now);
+  const decision = 'Back to the queue';
+  for (const r of rows) {
+    if (snoozed.has(rowKey(r)) || asked(r)) continue;
+    const mapId = r.mapId!;
+    const nodeId = r.ask.unblocks.node_id!;
+    const w: AskWrite = { kind: 'mb-put', target: nodeId.slice(0, 8), detail: `requeue — status → todo (orphaned in progress)`, done: false };
+    try {
+      await applyLintFix(mapId, nodeId, 'requeue', userId);
+      w.done = true;
+      out.requeued.push({ askId: r.ask.id, mapId });
+    } catch (err) {
+      w.error = err instanceof Error ? err.message : String(err);
+      out.failed.push({ askId: r.ask.id, mapId, error: w.error });
+    }
+    const answer: AskAnswerInput = { action: 'answered', decision, by: AUTO_CHECK_BY };
+    await asksDb
+      .recordAnswer({ fleetId: scope.fleetId, mapId, askId: r.ask.id }, r.ask, { status: 'answered', answer, answeredBy: AUTO_CHECK_BY, answeredAt: now, writes: [w], workerPending: false })
+      .catch(() => {});
+  }
+  return out;
 }
 
 interface TicketState {

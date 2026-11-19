@@ -11,7 +11,7 @@ const NOW = Date.now();
 const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
 
 const state = vi.hoisted(() => ({
-  stalled: [] as Array<{ nodeId: string; percentComplete: number; lastChangeAt: string; lastRelease: null }>,
+  stalled: [] as Array<{ nodeId: string; percentComplete: number; lastChangeAt: string; lastRelease: { session: string; releasedAt: string; reason: string | null } | null }>,
   stored: [] as unknown[],
   nodes: [] as unknown[],
   archived: false,
@@ -60,7 +60,7 @@ vi.mock('../../db/asks.js', () => ({
 }));
 vi.mock('../asks.js', () => ({ AskNotFoundError: class AskNotFoundError extends Error {} }));
 
-import { answerDerivedAsk, autoCheckBlockers, openDerivedAsks, derivedAskRows, sendBlockersToFleet } from '../derivedAsks.js';
+import { answerDerivedAsk, autoCheckBlockers, openDerivedAsks, derivedAskRows, requeueOrphans, sendBlockersToFleet } from '../derivedAsks.js';
 
 const key = { fleetId: 'f1', mapId: 'm1', askId: 'stalled-old' };
 const scope = { fleetId: 'f1', mapId: 'm1' };
@@ -127,6 +127,52 @@ describe('stalled questions', () => {
     state.stalled = [];
     await expect(answerDerivedAsk(key, { action: 'answered', decision: 'Done' }, 'u1')).rejects.toThrow();
     await expect(answerDerivedAsk({ ...key, askId: '#6823' }, { action: 'answered', decision: 'Done' }, 'u1')).rejects.toThrow();
+  });
+});
+
+describe('orphaned in progress goes back to the queue', () => {
+  const fleetScope = { fleetId: 'f1', visibleMapIds: ['m1'], fleetLevel: false };
+  const released = { session: 'host/w-3/claude', releasedAt: hoursAgo(5), reason: 'stale_sweep' };
+
+  beforeEach(() => {
+    state.stalled = [
+      { nodeId: 'orphan', percentComplete: 25, lastChangeAt: hoursAgo(3), lastRelease: released },
+      { nodeId: 'decision', percentComplete: 75, lastChangeAt: hoursAgo(3), lastRelease: released },
+      { nodeId: 'mine', percentComplete: 40, lastChangeAt: hoursAgo(30), lastRelease: null },
+    ];
+    state.nodes = [node('orphan', { percentComplete: 25 }), node('decision', { text: 'Decision: STP participation' }), node('mine', { percentComplete: 40 })];
+  });
+
+  it('a worker\'s orphan is requeued and the answer recorded; never claimed and a decision wait on a person', async () => {
+    const out = await requeueOrphans(fleetScope, ['m1', 'gone'], 'owner', new Date(NOW));
+    expect(out).toEqual({ requeued: [{ askId: 'stalled-orphan', mapId: 'm1' }], failed: [] });
+    expect(applyLintFix).toHaveBeenCalledTimes(1);
+    expect(applyLintFix).toHaveBeenCalledWith('m1', 'orphan', 'requeue', 'owner');
+    expect(recordAnswer).toHaveBeenCalledWith(
+      { fleetId: 'f1', mapId: 'm1', askId: 'stalled-orphan' },
+      expect.objectContaining({ id: 'stalled-orphan' }),
+      expect.objectContaining({ status: 'answered', answeredBy: 'Auto-check', answer: expect.objectContaining({ decision: 'Back to the queue' }) }),
+    );
+  });
+
+  it('an open question on the ticket or a recent Later holds it back', async () => {
+    state.stored = [{ ask: { id: 'q-7', unblocks: { node_id: 'orphan' } }, mapId: 'm1', status: 'open' }];
+    expect((await requeueOrphans(fleetScope, ['m1'], 'owner', new Date(NOW))).requeued).toEqual([]);
+    state.stored = [{ ask: { id: 'stalled-orphan', unblocks: {} }, mapId: 'm1', status: 'later', answeredAt: hoursAgo(1) }];
+    expect((await requeueOrphans(fleetScope, ['m1'], 'owner', new Date(NOW))).requeued).toEqual([]);
+    expect(applyLintFix).not.toHaveBeenCalled();
+  });
+
+  it('a failed write is reported and recorded as not done', async () => {
+    applyLintFix.mockRejectedValueOnce(new Error('node gone'));
+    const out = await requeueOrphans(fleetScope, ['m1'], 'owner', new Date(NOW));
+    expect(out).toEqual({ requeued: [], failed: [{ askId: 'stalled-orphan', mapId: 'm1', error: 'node gone' }] });
+    expect(recordAnswer).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ writes: [expect.objectContaining({ done: false, error: 'node gone' })] }));
+  });
+
+  it('nothing on an archived map', async () => {
+    state.archived = true;
+    expect(await requeueOrphans(fleetScope, ['m1'], 'owner', new Date(NOW))).toEqual({ requeued: [], failed: [] });
   });
 });
 
