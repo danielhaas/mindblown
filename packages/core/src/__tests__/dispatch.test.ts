@@ -14,6 +14,7 @@ import {
   gateVersionIds,
   parseMixBugs,
   matchesDispatchGate,
+  missedGateEntries,
   pullableNodes,
   dispatchQueueSnapshot,
   hasBrief,
@@ -168,6 +169,13 @@ describe('matchesDispatchGate', () => {
   it('empty gate is open; an unknown entry matches nothing (fail-closed)', () => {
     expect(matchesDispatchGate(loose, [], map)).toBe(true);
     expect(matchesDispatchGate(loose, ['priority:P0'], map)).toBe(false);
+  });
+
+  it('missedGateEntries names the entries a node fails, in gate order (ready_nodes reason)', () => {
+    expect(missedGateEntries(bug, ['type:bug', 'version:v1'], map)).toEqual(['version:v1']);
+    expect(missedGateEntries(loose, ['type:bug|version:v1', 'priority:P0'], map)).toEqual(['type:bug|version:v1', 'priority:P0']);
+    expect(missedGateEntries(leaf, ['version:v1'], map)).toEqual([]);
+    expect(missedGateEntries(loose, [], map)).toEqual([]);
   });
 });
 

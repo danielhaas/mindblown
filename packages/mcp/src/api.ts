@@ -1735,6 +1735,8 @@ export interface ReadyNodesResultApi {
   returned: number;
   sprintScope?: { mode: 'active' | 'all' | 'cycle'; cycles: Array<{ id: string; name: string }>; note?: string };
   awaitingApproval: Array<{ id: string; text: string; approval: 'proposed' | 'rejected'; heldBy: { id: string; text: string } | null }>;
+  needsBrief?: Array<{ id: string; text: string; reason: string }>;
+  outsideGate?: Array<{ id: string; text: string; reason: string; missedGate: string[] }>;
 }
 
 export interface ClaimNodeResultApi {

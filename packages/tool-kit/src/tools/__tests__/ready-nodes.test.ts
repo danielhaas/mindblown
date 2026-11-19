@@ -60,4 +60,27 @@ describe('ready_nodes output (#323)', () => {
     expect(out).toContain('x "From a stranger" [proposed]');
     expect(out).toContain('y "Follow-up" [rejected — via parent e "Epic"]');
   });
+
+  it('lists the leaves outside the gate and those without a brief apart, with the reason', async () => {
+    const out = await readyNodesTool.handler(
+      backendWith({
+        mapId: 'm', total: 1, returned: 1, ready: [n({})], sprintScope: { mode: 'all', cycles: [] },
+        awaitingApproval: [],
+        outsideGate: [{ id: 'g', text: 'Avatar frames', reason: 'gate wants version "V1" — this leaf has version "V2"', missedGate: ['version:v1'] }],
+        needsBrief: [{ id: 'b', text: 'Avatar crop', reason: 'no description, no linked issue, title under 10 words' }],
+      }),
+      { mapId: 'm' } as never,
+    );
+    expect(out).toContain('(1 of 1)');
+    expect(out).toContain('Outside the dispatch gate (1)');
+    expect(out).toContain('g "Avatar frames" — gate wants version "V1" — this leaf has version "V2"');
+    expect(out).toContain('Needs a brief (1)');
+    expect(out).toContain('b "Avatar crop" — no description, no linked issue, title under 10 words');
+  });
+
+  it('the description names the brief and gate rules', () => {
+    expect(readyNodesTool.description).toMatch(/dispatch gate/);
+    expect(readyNodesTool.description).toMatch(/brief/);
+    expect(readyNodesTool.description).toMatch(/10 words/);
+  });
 });

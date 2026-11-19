@@ -14,7 +14,7 @@
 
 import { eq, and, asc, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { nodes, maps, cycles, fleets, users } from '../db/schema.js';
+import { nodes, maps, cycles, fleets, users, versions } from '../db/schema.js';
 import { dbNodeToCore } from '../db/helpers.js';
 import { notDeleted } from '../db/nodes.js';
 import { holdsCapSlotSql } from '../db/capSlot.js';
@@ -26,7 +26,6 @@ import { currentReviews } from './approvalReview.js';
 import {
   buildClaimedEvent,
   buildReleasedEvent,
-  isReady,
   scopeOverlap,
   buildIsDonePredicate,
   buildInProgressIds,
@@ -36,6 +35,12 @@ import {
   isBugNode,
   hasBrief,
   matchesDispatchGate,
+  missedGateEntries,
+  gateVersionIds,
+  GATE_OR,
+  GATE_VERSION_PREFIX,
+  GATE_BUGS_ONLY,
+  TITLE_BRIEF_MIN_WORDS,
   pullableNodes,
   gatedOutReady,
   dispatchHold,
@@ -131,9 +136,7 @@ export async function readyNodes(
 
   const workflow = ((mapRow.statusWorkflow as StatusDef[]) ?? []);
   const isDone = buildIsDonePredicate(workflow);
-  const todoIds = buildTodoIds(workflow);
-  const isTodo = (status: string | null): boolean =>
-    status === null || todoIds.has(status);
+  const gate = (mapRow.dispatchGate as string[] | null) ?? [];
 
   const allRows = await db
     .select()
@@ -142,23 +145,52 @@ export async function readyNodes(
   const allNodes: CoreNode[] = allRows.map((r) =>
     dbNodeToCore(r as unknown as Record<string, unknown>),
   );
-  const nodeMap: NodeMap = new Map(allNodes.map((n) => [n.id, n]));
 
-  // Leaves only (#323): a node with live children is a container — its work
-  // is its children, so listing it as pickable handed out whole epics.
-  const hasLiveChild = new Set(allNodes.map((n) => n.parentId).filter((p): p is string => p !== null));
-  // Tickets held for a person (#266 skip tag, a manual blocker, or no
-  // approval yet (#492) — on the ticket or an open ancestor) are not dev
-  // work for anyone pulling from a queue — same rule as get_next_ticket.
-  const open = allNodes.filter(
-    (n) => isTodo(n.status) && n.claimedBySession === null && !hasLiveChild.has(n.id) && n.parentId !== null && isReady(n, nodeMap, isDone),
-  );
+  // The pull queue's own predicate (core/dispatch.ts, as selectPullCandidates
+  // and dispatchQueueSnapshot): non-root todo LEAVES (#323), unclaimed,
+  // predecessors done.
+  const { pullable: open, nodeMap } = pullableNodes(allNodes, workflow);
+  // Tickets held for a person (#266 skip tag, a manual blocker, parked, an
+  // epic leaf, or no approval yet (#492) — on the ticket or an open
+  // ancestor) are not dev work for anyone pulling from a queue.
   const holds = new Map(open.map((n) => [n.id, dispatchHold(n, { nodeMap, isDone })]));
-  const ready = open.filter((n) => holds.get(n.id) === null);
+  const notHeld = open.filter((n) => holds.get(n.id) === null);
   const awaitingApproval = open.flatMap((n) => {
     const hold = holds.get(n.id);
     return hold?.approval ? [{ id: n.id, text: n.text, approval: hold.approval, heldBy: hold.heldBy }] : [];
   });
+
+  // The two fences the pull adds (19.11.2026, Avatar map: 7 "ready" leaves,
+  // fleet idle all morning): the map's dispatch gate, then the brief. A
+  // leaf they refuse is listed apart with the reason, never as ready.
+  const missed = new Map(notHeld.map((n) => [n.id, missedGateEntries(n, gate, nodeMap)]));
+  const versionIds = gateVersionIds(gate);
+  const versionNames = new Map<string, string>();
+  if (versionIds.length > 0) {
+    const rows = await db
+      .select({ id: versions.id, name: versions.name })
+      .from(versions)
+      .where(eq(versions.mapId, mapId));
+    for (const v of rows) versionNames.set(v.id, v.name);
+  }
+  const versionLabel = (id: string | null): string => (id === null ? 'no version' : `version "${versionNames.get(id) ?? id}"`);
+  const entryLabel = (entry: string): string =>
+    entry
+      .split(GATE_OR)
+      .map((t) => (t.startsWith(GATE_VERSION_PREFIX) ? versionLabel(t.slice(GATE_VERSION_PREFIX.length)) : t === GATE_BUGS_ONLY ? 'a bug' : `"${t}"`))
+      .join(' or ');
+  const outsideGate = devQueueOrder(notHeld.filter((n) => missed.get(n.id)!.length > 0)).map((n) => {
+    const brief = hasBrief(n) ? '' : '; it has no brief either';
+    const reason = `gate wants ${missed.get(n.id)!.map(entryLabel).join(' and ')} — this leaf has ${versionLabel(effectiveVersionId(n.id, nodeMap))}${isBugNode(n) ? ' (a bug)' : ''}${brief}`;
+    return { id: n.id, text: n.text, reason, missedGate: missed.get(n.id)! };
+  });
+  const inGate = notHeld.filter((n) => missed.get(n.id)!.length === 0);
+  const needsBrief = devQueueOrder(inGate.filter((n) => !hasBrief(n))).map((n) => ({
+    id: n.id,
+    text: n.text,
+    reason: `no description, no linked issue, title under ${TITLE_BRIEF_MIN_WORDS} words`,
+  }));
+  const ready = inGate.filter(hasBrief);
 
   const filtered = scopeFilter
     ? ready.filter((n) => scopeOverlap(n.scopes, scopeFilter).length > 0)
@@ -236,6 +268,8 @@ export async function readyNodes(
     returned: page.length,
     sprintScope,
     awaitingApproval,
+    needsBrief,
+    outsideGate,
   };
 }
 
