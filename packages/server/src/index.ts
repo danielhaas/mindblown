@@ -25,6 +25,7 @@ import { authRoutes } from './auth.js';
 import { systemRoutes } from './routes/system.js';
 import { registerAuthMiddleware } from './middleware/auth.js';
 import { registerArchiveGuard } from './middleware/archiveGuard.js';
+import { registerInvalidInputErrorHandler, registerUuidParamGuard } from './middleware/uuidParams.js';
 import { mapRoutes } from './routes/maps.js';
 import { lintRoutes } from './routes/lint.js';
 import { boardRoutes } from './routes/board.js';
@@ -120,6 +121,10 @@ async function main(): Promise<void> {
     );
     return reply.status(downTooLong ? 503 : 200).send({ status: downTooLong ? 'down' : 'ok', chat: brief(h.chat), embeddings: brief(h.embeddings) });
   });
+
+  // ── Ids in the URL are UUIDs: a name there is a 404, not a 500 ──
+  registerInvalidInputErrorHandler(app);
+  await registerUuidParamGuard(app);
 
   // ── Auth routes (register/login are public) ────────────────────
   await app.register(authRoutes);
