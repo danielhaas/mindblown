@@ -1506,3 +1506,30 @@ describe('expectedDoneAt / etaMinutes — the worker\'s ETA', () => {
     expect(etaFromMinutes(90, new Date('2026-10-20T12:00:00Z'))).toBe('2026-10-20T13:30:00.000Z');
   });
 });
+
+describe('leadTime / requestedAt / waitingOn — waits on outside parties (#654)', () => {
+  it('create_node and update_node accept the three fields and forward them', async () => {
+    const fields = { leadTime: 5, requestedAt: '2026-11-12', waitingOn: 'LOKE engineering' };
+    for (const tool of [createNodeTool, updateNodeTool]) {
+      const schema = z.object(tool.schema);
+      const base = { mapId: 'm', nodeId: 'n', parentId: 'p', text: 't' };
+      expect(schema.parse({ ...base, ...fields })).toMatchObject(fields);
+      expect(() => schema.parse({ ...base, leadTime: -1 })).toThrow();
+      expect(() => schema.parse({ ...base, requestedAt: 'last week' })).toThrow();
+    }
+    const recorder = makeRecordingBackend();
+    await createNodeTool.handler(recorder.backend, { mapId: 'm1', parentId: 'p1', text: 'x', ...fields } as never);
+    expect(recorder.lastCreate?.fields).toMatchObject(fields);
+    await updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', ...fields } as never);
+    expect(recorder.lastUpdate?.fields).toEqual(fields);
+  });
+
+  it('update_node clears them with null', async () => {
+    const parsed = z
+      .object(updateNodeTool.schema)
+      .parse({ mapId: 'm', nodeId: 'n', leadTime: null, requestedAt: null, waitingOn: null });
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, parsed as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ leadTime: null, requestedAt: null, waitingOn: null });
+  });
+});

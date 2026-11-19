@@ -218,3 +218,17 @@ describe('renderTimelineMarkdown', () => {
     expect(formatTimelineDay('2026-12-31')).toBe('Thu 31 Dec 2026');
   });
 });
+
+describe('waits with a lead time (#654)', () => {
+  it('a lead-time leaf is waiting: who, when asked, and when it is expected', () => {
+    const withWait = nodes().map((n) =>
+      n.id === 'vm' ? { ...n, tags: [], leadTime: 5, waitingOn: 'LOKE IT', requestedAt: '2026-11-16', effortEstimate: null } : n,
+    );
+    const s = new Map(spans);
+    s.set('vm', { start: '2026-11-16', end: '2026-11-20' });
+    const m1 = timelineMilestones(input({ nodes: withWait, spans: s })).find((m) => m.node.id === 'm1')!;
+    expect(m1.waiting.map((w) => w.node.id)).toEqual(['vm']);
+    expect(m1.waiting[0].note).toMatch(/^waiting on LOKE IT, asked Mon 16 Nov 2026, expected Fri 20 Nov 2026/);
+    expect(renderTimelineMarkdown(input({ nodes: withWait, spans: s }))).toContain('waiting on LOKE IT, asked Mon 16 Nov 2026');
+  });
+});

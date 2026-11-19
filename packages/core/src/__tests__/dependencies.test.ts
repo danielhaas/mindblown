@@ -821,7 +821,8 @@ describe('capacityCriticalPath (#112)', () => {
     );
     expect(cp.path).toEqual(['A', 'B']);
     expect(cp.totalDuration).toBe(5);
-    expect(cp.float.C).toBe(1); // C runs on worker 0 after A (days 3–4); the end is day 5
+    // C fills worker 1's idle days before B (days 0–1, #654); the end is day 5
+    expect(cp.float.C).toBe(4);
   });
 
   it('capacity-driven: two independent tasks and one worker are both on the path', () => {

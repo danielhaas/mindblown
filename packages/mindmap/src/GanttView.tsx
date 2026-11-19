@@ -7,6 +7,7 @@ import {
   addBusinessDays,
   businessDaysBetween,
   makeDayMapper,
+  isLeadTimeNode,
 } from '@mindblown/core';
 import { GanttHolidays } from './GanttHolidays.js';
 import { useMindmapStore } from './store.js';
@@ -2007,7 +2008,13 @@ export function GanttView() {
                     ? `\n⚓ ${[row.node.startDate ? `not before ${row.node.startDate.slice(0, 10)}` : null, row.node.dueDate ? `due ${row.node.dueDate.slice(0, 10)}` : null].filter(Boolean).join(', ')}`
                     : '';
                   const lateLine = late ? `\n⚠ ${late.lateDays} day${late.lateDays === 1 ? '' : 's'} past due ${late.dueDate}` : '';
-                  const tooltip = `${row.node.text}\n${fmt(startDate)} → ${fmt(dueDate)}  (${durDays}d)\n${Math.round(progress)}% · ${statusLabel}${pinLine}${lateLine}`;
+                  // A wait on someone outside the team (#654): not work —
+                  // a dashed, unfilled bar.
+                  const waiting = isLeadTimeNode(row.node);
+                  const waitLine = waiting
+                    ? `\n⏳ Waiting${row.node.waitingOn ? ` on ${row.node.waitingOn}` : ''} — not work · ${row.node.requestedAt ? `requested ${row.node.requestedAt.slice(0, 10)}` : 'not requested yet'}`
+                    : '';
+                  const tooltip = `${row.node.text}\n${fmt(startDate)} → ${fmt(dueDate)}  (${durDays}d)${waitLine}\n${waiting ? statusLabel : `${Math.round(progress)}% · ${statusLabel}`}${pinLine}${lateLine}`;
                   // The part of the bar past the due date, drawn red (#113).
                   // The deadline is the end of the due day.
                   const dueAt = late ? parseDate(late.dueDate) : null;
@@ -2034,12 +2041,14 @@ export function GanttView() {
                         width={w}
                         height={barH}
                         rx={4}
-                        fill={barBg}
+                        fill={waiting ? '#ffffff' : barBg}
                         stroke={isCritical ? '#dc2626' : isSelected ? '#4f46e5' : barColor}
                         strokeWidth={isCritical ? 2.5 : isSelected ? 2 : 1}
+                        strokeDasharray={waiting ? '4 3' : undefined}
+                        data-testid={waiting ? 'gantt-wait-bar' : undefined}
                       />
-                      {/* Progress fill */}
-                      {fillW > 0 && (
+                      {/* Progress fill — a wait has none */}
+                      {!waiting && fillW > 0 && (
                         <rect
                           x={x}
                           y={y}
@@ -2064,7 +2073,12 @@ export function GanttView() {
                         </text>
                       )}
                       {/* Text label on bar */}
-                      {w > 50 && (
+                      {w > 50 && waiting && (
+                        <text x={x + 6} y={centerY + 4} fontSize={10} fontWeight={600} fill="#475569">
+                          ⏳ waiting
+                        </text>
+                      )}
+                      {w > 50 && !waiting && (
                         <text
                           x={x + 6}
                           y={centerY + 4}

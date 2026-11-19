@@ -144,6 +144,12 @@ export interface NodeWithComputed {
   startedAt: string | null;
   /** The worker's own ETA (core Node field). */
   expectedDoneAt: string | null;
+  /** Lead time (#654): a wait on someone outside the team; absent on older servers. */
+  leadTime?: number | null;
+  /** When we asked (YYYY-MM-DD). */
+  requestedAt?: string | null;
+  /** Who we wait on. */
+  waitingOn?: string | null;
   revision: number;
   // Requirements register — non-null requirementId marks a requirement.
   requirementId: string | null;
@@ -235,7 +241,11 @@ export interface ScheduleResult {
     duration: number;
     /** Projected end past the node's due date, in scheduler units (#113). */
     dueOverrun?: number;
+    /** A lead-time leaf: waiting on someone outside the team, not work (#654). */
+    waiting?: boolean;
   }>;
+  /** Waits not asked for yet and the last day to ask without delaying the plan (#654). */
+  askBy?: Array<{ nodeId: string; text: string; waitingOn: string | null; latestAskDate: string }>;
   /** Nodes whose projected end lands after their due date, worst first (#113). */
   dueViolations?: Array<{ nodeId: string; text: string; dueDate: string; projectedEnd: string; lateDays: number }>;
   criticalPath: {

@@ -107,8 +107,10 @@ function projectMap(nodes: CoreNode[], map: MindMap): MapProjection {
     for (const n of nodes) {
       const pin: ScheduleConstraint = {};
       if (n.startDate) pin.minStart = toDayOffset(n.startDate);
+      // A wait's clock starts when we asked (#654).
+      if (n.requestedAt) pin.requestedAt = toDayOffset(n.requestedAt);
       if (n.dueDate) pin.maxEnd = toDayOffset(n.dueDate);
-      if (pin.minStart !== undefined || pin.maxEnd !== undefined) {
+      if (pin.minStart !== undefined || pin.maxEnd !== undefined || pin.requestedAt !== undefined) {
         constraints.set(n.id, pin);
       }
     }
@@ -685,6 +687,9 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           completedAt: null,
           startedAt: null,
           expectedDoneAt: null,
+          leadTime: null,
+          requestedAt: null,
+          waitingOn: null,
           requirementId: null,
           requirementPriority: null,
           requirementText: null,
@@ -842,8 +847,10 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     for (const n of data.nodes) {
       const pin: ScheduleConstraint = {};
       if (n.startDate) pin.minStart = toDayOffset(n.startDate);
+      // A wait's clock starts when we asked (#654).
+      if (n.requestedAt) pin.requestedAt = toDayOffset(n.requestedAt);
       if (n.dueDate) pin.maxEnd = toDayOffset(n.dueDate);
-      if (pin.minStart !== undefined || pin.maxEnd !== undefined) {
+      if (pin.minStart !== undefined || pin.maxEnd !== undefined || pin.requestedAt !== undefined) {
         constraints.set(n.id, pin);
       }
     }

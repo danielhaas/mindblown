@@ -1290,7 +1290,7 @@ server.tool(
 
 server.tool(
   'risk_scan',
-  'Surface project risks across a map/subtree/version/phase: stalled in-progress work, leaves without estimates, in-flight overruns (actual > estimate), fragile critical-path nodes (on CP with problems), and unassigned P0/P1 leaves. Use this before planning sessions to catch problems early. Pass `category` to drill into one bucket; pass `limit` (default 20, max 1000) to see more than the top of each list.',
+  'Surface project risks across a map/subtree/version/phase: stalled in-progress work, leaves without estimates, in-flight overruns (actual > estimate), fragile critical-path nodes (on CP with problems), unassigned P0/P1 leaves, and waits on outside parties to ask for now (a leadTime leaf with no requestedAt whose last day to ask without delaying the plan is within askWithinDays). Use this before planning sessions to catch problems early. Pass `category` to drill into one bucket; pass `limit` (default 20, max 1000) to see more than the top of each list.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
@@ -1298,9 +1298,15 @@ server.tool(
     phaseId: z.string().optional().describe('Scope to leaves in this phase (nearest phaseId on the leaf→root path decides, like the UI phase filter)'),
     stalledDays: z.number().int().min(1).default(7).describe('Days since last update before in-progress work is flagged as stalled (default 7)'),
     category: z
-      .enum(['stalled', 'no_estimate', 'overruns', 'unassigned_high_prio', 'fragile_cp'])
+      .enum(['stalled', 'no_estimate', 'overruns', 'unassigned_high_prio', 'fragile_cp', 'ask_now'])
       .optional()
-      .describe('Show only one risk category instead of all five — useful for paging through a long list.'),
+      .describe('Show only one risk category instead of all six — useful for paging through a long list.'),
+    askWithinDays: z
+      .number()
+      .int()
+      .min(0)
+      .default(7)
+      .describe('ask_now: flag a wait not yet requested when its last day to ask is at most this many days away (default 7). Overdue asks always show.'),
     limit: z
       .number()
       .int()
@@ -1309,7 +1315,7 @@ server.tool(
       .default(20)
       .describe('Max items shown per category before the "… and N more" truncation footer (default 20, max 1000).'),
   },
-  async ({ mapId, nodeId, versionId, phaseId, stalledDays, category, limit }) => {
+  async ({ mapId, nodeId, versionId, phaseId, stalledDays, category, askWithinDays, limit }) => {
     try {
       const data = await api.getMap(mapId);
       const scope = scopedLeaves(data, { nodeId, versionId, phaseId });
@@ -1343,7 +1349,8 @@ server.tool(
         if (isInProgress(leaf) && new Date(leaf.updatedAt).getTime() < staleCutoff) {
           stalled.push(leaf);
         }
-        if (leaf.effortEstimate == null) {
+        // A wait on someone outside the team has a lead time, not an estimate (#654).
+        if (leaf.effortEstimate == null && !((leaf.leadTime ?? 0) > 0)) {
           noEstimate.push(leaf);
         }
         if (
@@ -1364,9 +1371,20 @@ server.tool(
 
       // ── Fragile critical path: CP leaves that also appear in any risk bucket ──
       let cpIds = new Set<string>();
+      // Waits to ask for now (#654): not requested, last day to ask is close.
+      const askNow: Array<{ node: typeof leaves[number]; latestAskDate: string; days: number; waitingOn: string | null }> = [];
       try {
         const sched = await api.getSchedule(mapId);
         cpIds = new Set(sched.criticalPath?.path ?? []);
+        const today = Date.parse(new Date().toISOString().slice(0, 10));
+        const inScope = new Map(leaves.map((l) => [l.id, l]));
+        for (const a of sched.askBy ?? []) {
+          const node = inScope.get(a.nodeId);
+          if (!node) continue;
+          const days = Math.round((Date.parse(a.latestAskDate) - today) / 86_400_000);
+          if (days <= askWithinDays) askNow.push({ node, latestAskDate: a.latestAskDate, days, waitingOn: a.waitingOn });
+        }
+        askNow.sort((a, b) => a.days - b.days);
       } catch {
         /* best-effort — no CP if scheduler fails */
       }
@@ -1394,7 +1412,7 @@ server.tool(
       };
 
       const totalRisks =
-        stalled.length + noEstimate.length + overruns.length + unassignedHighPrio.length + fragileCP.length;
+        stalled.length + noEstimate.length + overruns.length + unassignedHighPrio.length + fragileCP.length + askNow.length;
 
       const lines: string[] = [];
       lines.push(`Risk scan — ${scopeLabel}`);
@@ -1474,6 +1492,21 @@ server.tool(
             lines.push(`  - ${fmtNode(n)} — health ${n.healthSignal}`);
           }
           if (fragileCP.length > limit) lines.push(`  … and ${fragileCP.length - limit} more (raise \`limit\` or pass \`category: "fragile_cp"\` to see them)`);
+        }
+        lines.push('');
+      }
+
+      if (shows('ask_now')) {
+        lines.push(`## Ask now (waits not requested, last day to ask within ${askWithinDays} days): ${askNow.length}`);
+        if (askNow.length === 0) {
+          lines.push('  ✓ None');
+        } else {
+          for (const a of askNow.slice(0, limit)) {
+            const who = a.waitingOn ? ` from ${a.waitingOn}` : '';
+            const when = a.days < 0 ? `${-a.days}d overdue — the plan already slips` : a.days === 0 ? 'today' : `in ${a.days}d`;
+            lines.push(`  - ${fmtNode(a.node)} — ask${who} by ${a.latestAskDate} (${when}), lead time ${a.node.leadTime}. Set requestedAt once asked.`);
+          }
+          if (askNow.length > limit) lines.push(`  … and ${askNow.length - limit} more (raise \`limit\` or pass \`category: "ask_now"\` to see them)`);
         }
       }
 
@@ -2691,8 +2724,12 @@ server.tool(
     fromNodeId: z.string().describe('The dependent node (downstream)'),
     toNodeId: z.string().describe('The dependency target (upstream)'),
     type: z.enum(['FS', 'SS', 'FF', 'SF']).describe('Dependency type: FS=Finish-to-Start, SS=Start-to-Start, FF=Finish-to-Finish, SF=Start-to-Finish'),
+    lag: z
+      .number()
+      .optional()
+      .describe("Lag in the map's effort unit (default 0): positive delays the dependent, negative lets it overlap. For a wait on someone outside the team that several tasks hang on, prefer leadTime on that node (update_node) over a lag on every edge."),
   },
-  async ({ mapId, fromNodeId, toNodeId, type }) => {
+  async ({ mapId, fromNodeId, toNodeId, type, lag }) => {
     try {
       // Self-reference check
       if (fromNodeId === toNodeId) {
@@ -2744,9 +2781,9 @@ server.tool(
         );
       }
 
-      const newDeps = [...existingDeps, { targetNodeId: toNodeId, type, lag: 0 }];
+      const newDeps = [...existingDeps, { targetNodeId: toNodeId, type, lag: lag ?? 0 }];
       await api.updateNode(mapId, fromNodeId, { dependencies: newDeps });
-      return toolResult(`Added dependency: ${fromNodeId} depends on ${toNodeId} (${type}).`);
+      return toolResult(`Added dependency: ${fromNodeId} depends on ${toNodeId} (${type}${lag ? `, lag ${lag}` : ''}).`);
     } catch (err) {
       return toolError(err);
     }

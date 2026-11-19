@@ -313,6 +313,19 @@ export interface Node {
   percentComplete: number | null; // leaf-only input; 0–100; null = unset
   status: string | null; // references a status from Map.statusWorkflow
   blockedReason: string | null; // null = not manually blocked; string = blocker description
+  /**
+   * Lead time (#654): how long this node waits on someone outside the team
+   * (a sign-off, credentials, a VM another team creates), in the map's
+   * effort unit. Not worker effort: a lead-time leaf takes no worker slot
+   * and counts toward neither effort nor progress roll-ups, but the
+   * scheduler holds everything after it until the wait is over.
+   * null / absent / 0 = not a wait.
+   */
+  leadTime?: number | null;
+  /** When we asked (ISO 8601 date, #654). Starts the lead-time clock. */
+  requestedAt?: string | null;
+  /** Who we are waiting on, free text (#654). */
+  waitingOn?: string | null;
   assigneeIds: UserId[]; // zero or more assignees
   priority: Priority | null;
   dueDate: string | null; // ISO 8601 date
@@ -1044,6 +1057,14 @@ export interface FieldMapping {
   valueMapping?: Record<string, string>;
 }
 
+/**
+ * Is this a lead-time leaf (#654): a wait on someone outside the team.
+ * Only leaves wait; a parent's lead time is ignored like its estimate.
+ */
+export function isLeadTimeNode(node: Pick<Node, 'childrenIds' | 'leadTime'>): boolean {
+  return node.childrenIds.length === 0 && (node.leadTime ?? 0) > 0;
+}
+
 // ── Scheduling result types ─────────────────────────────────────
 
 export interface ScheduledNode {
@@ -1054,6 +1075,9 @@ export interface ScheduledNode {
   /** Set when the node has a due date and its projected end lands after it
    *  (#113): how far past, in scheduler units. Absent = on time / no due date. */
   dueOverrun?: number;
+  /** True for a lead-time leaf (#654): the bar is a wait on someone
+   *  outside the team, not worker effort. */
+  waiting?: boolean;
 }
 
 export interface CriticalPathResult {

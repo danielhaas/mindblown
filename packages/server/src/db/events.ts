@@ -64,6 +64,10 @@ export const TRACKED_FIELDS = new Set<keyof CoreNode>([
   'cycleId',
   'assigneeIds',
   'phaseId',
+  // A wait on someone outside the team (#654) moves the plan like an estimate.
+  'leadTime',
+  'requestedAt',
+  'waitingOn',
   // The acceptance surface. The how-to-verify text is the text a customer's
   // signature refers to at a sign-off, and the two URLs are where he was
   // told to look — so an edit after the fact has to leave a trace. The

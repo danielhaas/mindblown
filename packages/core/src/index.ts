@@ -43,7 +43,7 @@ export type {
   NodeMap,
 } from './types.js';
 
-export { FORGE_LINK_PROVIDERS, isForgeLink, forgeLabel, userReporter } from './types.js';
+export { FORGE_LINK_PROVIDERS, isForgeLink, forgeLabel, userReporter, isLeadTimeNode } from './types.js';
 export type { ApprovalState, ForgeKindName, ForgeProblem, NodeApproval, NodeReporter } from './types.js';
 
 // Computation engine
@@ -74,6 +74,7 @@ export {
   topologicalSort,
   schedule,
   criticalPath, capacityCriticalPath,
+  latestAskDates,
   // Orchestration substrate (#111)
   resolvedSiblingOrder,
   isReady,

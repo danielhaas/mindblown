@@ -76,6 +76,12 @@ export interface NodeWithComputed {
   startedAt?: string | null;
   /** The worker's own ETA (core Node field); optional — older servers omit it. */
   expectedDoneAt?: string | null;
+  /** Lead time (#654): a wait on someone outside the team, map effort unit. */
+  leadTime?: number | null;
+  /** When we asked (YYYY-MM-DD). */
+  requestedAt?: string | null;
+  /** Who we wait on. */
+  waitingOn?: string | null;
   computedEffort: number;
   computedProgress: number;
   healthSignal: string;

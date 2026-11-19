@@ -50,3 +50,27 @@ describe('formatScheduleReport (#191)', () => {
     expect(li).toContain('day 0 - 3 (2026-12-23 → 2026-12-28, 3 duration)');
   });
 });
+
+describe('formatScheduleReport — waits on outside parties (#654)', () => {
+  it('marks a lead-time node as waiting, not work, on the critical path and in the list', () => {
+    const map = {
+      map: { name: 'Plan', effortUnit: 'days' },
+      nodes: [
+        { ...node('n-w', '[External] VM'), waitingOn: 'LOKE engineering', requestedAt: null },
+        node('n-b', 'Deploy'),
+      ],
+    } as unknown as MapDetail;
+    const schedule = {
+      criticalPath: { path: ['n-w', 'n-b'], totalDuration: 6, float: { 'n-w': 0, 'n-b': 0 } },
+      workerCount: 1,
+      schedule: [
+        { nodeId: 'n-w', computedStart: 0, computedEnd: 5, duration: 5, waiting: true },
+        { nodeId: 'n-b', computedStart: 5, computedEnd: 6, duration: 1 },
+      ],
+    } as unknown as ScheduleResult;
+    const out = formatScheduleReport(map, schedule);
+    expect(out).toContain('-> [External] VM [n-w] (waiting on LOKE engineering)');
+    expect(out).toContain('-> Deploy [n-b] (50% complete)');
+    expect(out).toContain('- [External] VM [n-w]: day 0 - 5 (5 duration) waiting on LOKE engineering, not requested yet **CRITICAL**');
+  });
+});

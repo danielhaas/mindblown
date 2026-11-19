@@ -7,6 +7,12 @@ export function etaFromMinutes(minutes: number, now: Date = new Date()): string 
   return new Date(now.getTime() + minutes * 60_000).toISOString();
 }
 
+const LEAD_TIME_DESC =
+  "Lead time: how long this leaf waits on someone outside the team (another team's sign-off, credentials, a VM someone else creates), in the map's effort unit. Not worker effort: the scheduler gives it no worker slot (other work runs during the wait), leaves it out of effort and progress roll-ups, and starts everything that depends on it only when the wait is over. Use it instead of an effort estimate on outside items.";
+const REQUESTED_AT_DESC =
+  'When we asked (YYYY-MM-DD). Starts the lead-time clock: asked early, the wait ends earlier and dependent work moves up. Unset = the scheduler assumes we ask as soon as possible, and risk_scan says "ask now" when the last day to ask comes close.';
+const WAITING_ON_DESC = 'Who we are waiting on (free text, e.g. "LOKE engineering"), shown with the wait.';
+
 export const createNodeTool = defineTool({
   name: 'create_node',
   description: 'Create a new node (task/idea) in a map under a parent node',
@@ -31,6 +37,17 @@ export const createNodeTool = defineTool({
       .datetime({ offset: true })
       .optional()
       .describe('Your ETA for this node (ISO 8601 with offset): when you expect to be done. Cannot be combined with etaMinutes.'),
+    leadTime: z
+      .number()
+      .min(0)
+      .optional()
+      .describe(LEAD_TIME_DESC),
+    requestedAt: z
+      .string()
+      .date()
+      .optional()
+      .describe(REQUESTED_AT_DESC),
+    waitingOn: z.string().optional().describe(WAITING_ON_DESC),
     etaMinutes: z
       .number()
       .int()
@@ -160,6 +177,19 @@ export const updateNodeTool = defineTool({
       .nullable()
       .optional()
       .describe('Your ETA for this node (ISO 8601 with offset): when you expect to be done. Shown on the Kanban card, "overdue" once past. null clears it. Cannot be combined with etaMinutes.'),
+    leadTime: z
+      .number()
+      .min(0)
+      .nullable()
+      .optional()
+      .describe(`${LEAD_TIME_DESC} null clears it.`),
+    requestedAt: z
+      .string()
+      .date()
+      .nullable()
+      .optional()
+      .describe(`${REQUESTED_AT_DESC} null clears it.`),
+    waitingOn: z.string().nullable().optional().describe(`${WAITING_ON_DESC} null clears it.`),
     etaMinutes: z
       .number()
       .int()
