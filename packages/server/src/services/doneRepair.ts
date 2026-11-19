@@ -1,21 +1,20 @@
 /**
- * One-time repair for done nodes written before "done is 100 %" (db/nodes.ts
+ * Repair for done nodes written before "done is 100 %" (db/nodes.ts
  * doneLeafProgress) and "done ends the worker's own wait note":
  *
  *   - a done leaf below 100 % → 100 %
  *   - a done node carrying a fleet worker's own note ("Fleet worker <session>: …")
  *     → note cleared, `blocked` tag removed. A person's blocker stays.
  *
- * `repairDoneNodes({ dryRun: true })` only counts (scripts/repair-done-nodes.ts,
- * the default there). On startup `runDoneRepairOnce` applies it once, recorded
- * in data_migrations, and logs the counts per map.
+ * Opt-in, per map, never on startup: scripts/repair-done-nodes.ts previews it
+ * (dry run, the default) and applies it only to the maps named with --map.
+ * Another owner's "done below 100 %" may be deliberate, and archived maps get
+ * no robot writes.
  */
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { BLOCKED_TAG, WORKER_WAIT_NOTE, buildIsDonePredicate, type StatusDef } from '@mindblown/core';
 import { db } from '../db/connection.js';
 import { maps, nodes } from '../db/schema.js';
-
-const MIGRATION_ID = 'repair_done_nodes_v1';
 
 export interface DoneRepairRow {
   id: string;
@@ -50,14 +49,36 @@ export function planDoneRepair(rows: DoneRepairRow[], isDone: (status: string | 
 export interface DoneRepairCount {
   mapId: string;
   mapName: string;
+  archived: boolean;
   progress: number;
   notes: number;
 }
 
-/** Repair every map (dryRun: count only). Returns the maps with something to repair. */
-export async function repairDoneNodes(opts: { dryRun: boolean }): Promise<DoneRepairCount[]> {
+/**
+ * Preview (dryRun) or apply the repair. Applying needs explicit `mapIds` —
+ * there is no "all maps" apply — and refuses archived maps before writing
+ * anything. A dry run without `mapIds` lists every map with something to
+ * repair. Returns the maps with something to repair.
+ */
+export async function repairDoneNodes(opts: { dryRun: boolean; mapIds?: string[] }): Promise<DoneRepairCount[]> {
+  const mapIds = [...new Set(opts.mapIds ?? [])];
+  if (!opts.dryRun && mapIds.length === 0) {
+    throw new Error('Done repair: --apply needs at least one --map <id>; there is no all-maps apply.');
+  }
+  const fields = { id: maps.id, name: maps.name, statusWorkflow: maps.statusWorkflow, archivedAt: maps.archivedAt };
+  const mapRows =
+    mapIds.length > 0 ? await db.select(fields).from(maps).where(inArray(maps.id, mapIds)) : await db.select(fields).from(maps);
+  if (mapIds.length > 0) {
+    const missing = mapIds.filter((id) => !mapRows.some((m) => m.id === id));
+    if (missing.length > 0) throw new Error(`Done repair: no such map ${missing.join(', ')}.`);
+    const archived = mapRows.filter((m) => m.archivedAt != null);
+    if (!opts.dryRun && archived.length > 0) {
+      throw new Error(
+        `Done repair: refusing archived map${archived.length > 1 ? 's' : ''} ${archived.map((m) => `"${m.name}" (${m.id})`).join(', ')}; nothing written.`,
+      );
+    }
+  }
   const counts: DoneRepairCount[] = [];
-  const mapRows = await db.select({ id: maps.id, name: maps.name, statusWorkflow: maps.statusWorkflow }).from(maps);
   for (const map of mapRows) {
     const rows = await db
       .select({
@@ -72,7 +93,13 @@ export async function repairDoneNodes(opts: { dryRun: boolean }): Promise<DoneRe
       .where(and(eq(nodes.mapId, map.id), isNull(nodes.deletedAt)));
     const plan = planDoneRepair(rows as DoneRepairRow[], buildIsDonePredicate((map.statusWorkflow as StatusDef[]) ?? []));
     if (plan.progress.length === 0 && plan.notes.length === 0) continue;
-    counts.push({ mapId: map.id, mapName: map.name as string, progress: plan.progress.length, notes: plan.notes.length });
+    counts.push({
+      mapId: map.id,
+      mapName: map.name as string,
+      archived: map.archivedAt != null,
+      progress: plan.progress.length,
+      notes: plan.notes.length,
+    });
     if (opts.dryRun) continue;
     if (plan.progress.length > 0) {
       await db.update(nodes).set({ percentComplete: 100 }).where(inArray(nodes.id, plan.progress));
@@ -81,18 +108,13 @@ export async function repairDoneNodes(opts: { dryRun: boolean }): Promise<DoneRe
       await db.update(nodes).set({ blockedReason: null, tags: n.tags }).where(eq(nodes.id, n.id));
     }
   }
-  const verb = opts.dryRun ? 'would set' : 'set';
   for (const c of counts) {
-    console.log(`[db] Done repair, map "${c.mapName}" (${c.mapId}): ${verb} ${c.progress} done leaves to 100 %, ${opts.dryRun ? 'would clear' : 'cleared'} ${c.notes} worker notes.`);
+    const verb = opts.dryRun ? 'would set' : 'set';
+    const archived = c.archived ? ' [archived: --apply refuses it]' : '';
+    console.log(
+      `[db] Done repair, map "${c.mapName}" (${c.mapId})${archived}: ${verb} ${c.progress} done leaves to 100 %, ${opts.dryRun ? 'would clear' : 'cleared'} ${c.notes} worker notes.`,
+    );
   }
   if (counts.length === 0) console.log('[db] Done repair: nothing to repair.');
   return counts;
-}
-
-/** Apply the repair once (startup), recorded in data_migrations. */
-export async function runDoneRepairOnce(): Promise<void> {
-  const done = await db.execute(sql`SELECT 1 FROM data_migrations WHERE id = ${MIGRATION_ID}`);
-  if (done.rows.length > 0) return;
-  await repairDoneNodes({ dryRun: false });
-  await db.execute(sql`INSERT INTO data_migrations (id) VALUES (${MIGRATION_ID}) ON CONFLICT DO NOTHING`);
 }
