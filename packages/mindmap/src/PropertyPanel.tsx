@@ -13,6 +13,7 @@ import { useTicketPhases } from './useTicketPhases.js';
 import { StopTicketButton } from './StopTicketButton.js';
 import { AgentOutputSection } from './AgentOutputSection.js';
 import { NeedsYouSection } from './NeedsYouSection.js';
+import { BlockedParentSection } from './BlockedParentSection.js';
 
 // ── Styles ───────────────────────────────────────────────────────
 
@@ -595,6 +596,9 @@ function PropertyPanelInner({
             >
               Waiting on: {predecessorTitles.map((t) => `"${t}"`).join(', ')}
             </div>
+          )}
+          {hasChildren && computedValues?.isBlocked && (
+            <BlockedParentSection parent={node} nodeMap={nodeMap} onSelect={selectNode} />
           )}
         </Field>
 
