@@ -2,12 +2,13 @@
  * Stalled leaves of a map (core findStalled) with their change-log
  * activity — one source for the map payload (Blocked panel, PM Cockpit,
  * blocked_digest), plan_lint and its fix re-check. An archived map is on
- * hold by design, so nothing on it counts as stalled.
+ * hold by design, so nothing on it counts as stalled; nor does a parked
+ * branch (#655) — parking is the answer "not now", so it asks nothing.
  *
  * Throws when the change log cannot be read: plan_lint reports the rule
  * as skipped, the map load falls back to an empty list.
  */
-import { computeIsBlocked, findStalled, isStalledCandidate, type StalledLeaf, type StatusDef } from '@mindblown/core';
+import { computeIsBlocked, findStalled, isInParkedBranch, isStalledCandidate, type StalledLeaf, type StatusDef } from '@mindblown/core';
 import type { Node } from '@mindblown/core';
 import { loadStalledActivity } from '../db/events.js';
 
@@ -19,10 +20,14 @@ export async function stalledForMap(
   if (map.archivedAt) return [];
   const workflow = map.statusWorkflow ?? [];
   // A leaf waiting on an unfinished predecessor is blocked, not stalled —
-  // it already sits under "Waiting on a predecessor task".
+  // it already sits under "Waiting on a predecessor task". A parked node,
+  // or one under a parked ancestor, is "later" — not stalled.
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
   const candidates = nodes.filter(
-    (n) => isStalledCandidate(n, workflow) && !computeIsBlocked(n, nodeMap).isBlocked,
+    (n) =>
+      isStalledCandidate(n, workflow) &&
+      !isInParkedBranch(n, nodeMap) &&
+      !computeIsBlocked(n, nodeMap).isBlocked,
   );
   if (candidates.length === 0) return [];
   const activity = await loadStalledActivity(map.id, candidates.map((n) => n.id));

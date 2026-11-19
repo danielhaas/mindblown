@@ -71,6 +71,20 @@ describe('stalledForMap', () => {
     expect(loadStalledActivity).not.toHaveBeenCalled();
   });
 
+  it('a parked leaf, or one under a parked branch, is never stalled; un-parked it is again (#655)', async () => {
+    const idle30h = '2026-10-17T06:00:00Z';
+    loadStalledActivity.mockResolvedValue({ lastChangeAt: new Map([['leaf', idle30h]]), lastRelease: new Map() });
+    const leaf = node('leaf', { parentId: 'branch', updatedAt: idle30h });
+    const branch = node('branch', { childrenIds: ['leaf'], status: 'todo', percentComplete: 0 });
+
+    expect(await stalledForMap(map, [branch, { ...leaf, parked: true }], now)).toEqual([]);
+    expect(await stalledForMap(map, [{ ...branch, parked: true }, leaf], now)).toEqual([]);
+    expect(loadStalledActivity).not.toHaveBeenCalled();
+
+    const out = await stalledForMap(map, [branch, leaf], now);
+    expect(out.map((s) => s.nodeId)).toEqual(['leaf']);
+  });
+
   it('a failed change-log read throws (plan_lint reports skipped); the map load gets an empty list', async () => {
     failRead = true;
     await expect(stalledForMap(map, [node('dead')], now)).rejects.toThrow('db down');
