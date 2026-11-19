@@ -409,6 +409,27 @@ export interface TicketRepo {
   apiBaseUrl: string;
 }
 
+/**
+ * A map's repo plus what the fleet may do with it — the body of
+ * POST /api/fleets/:id/repo-credentials (#507).
+ */
+export interface TicketRepoCredentials extends TicketRepo {
+  token: string;
+  /**
+   * HTTPS user for git with the token as password. Both forges accept it:
+   * GitHub takes `x-access-token` for PATs and App tokens, Gitea ignores
+   * the user when the password is a token.
+   */
+  gitUsername: 'x-access-token';
+  /**
+   * The map's `fleetCanEditCi`, on every forge. Only a GitHub App token
+   * enforces it by itself (no Workflows permission when false); a PAT,
+   * Gitea token or a push over SSH can change CI regardless, so the worker
+   * refuses workflow changes itself when this is false.
+   */
+  canEditCi: boolean;
+}
+
 export interface ConflictScanResult {
   /** null in map-wide mode (no candidate given). */
   candidateId: string | null;

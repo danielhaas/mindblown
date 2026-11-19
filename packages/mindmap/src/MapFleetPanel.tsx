@@ -162,7 +162,8 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
   // CI code can read the repo's secrets; ask before letting fleet code change it.
   const toggleCi = async (on: boolean) => {
     if (busy) return;
-    if (on && !window.confirm(`Let the fleet change CI workflows in ${map.githubRepoOwner}/${map.githubRepoName}? Workflows can read the repository's secrets, so only allow this for a repo without secrets or a fleet you trust with them.`)) return;
+    const repo = map.githubRepoOwner && map.githubRepoName ? `${map.githubRepoOwner}/${map.githubRepoName}` : "this map's repo";
+    if (on && !window.confirm(`Let the fleet change CI workflows in ${repo}?Workflows can read the repository's secrets, so only allow this for a repo without secrets or a fleet you trust with them.`)) return;
     setBusy(true);
     setError(null);
     const ok = await updateMapSettings({ fleetCanEditCi: on });
@@ -279,8 +280,8 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
         </div>
           )}
 
-      {/* Workflow write on the fleet's repo token — GitHub App repos only; a PAT goes out as is. */}
-      {variant === 'settings' && !readOnly && isMapAdmin && map.githubInstallationId && (
+      {/* May the fleet change CI — any forge: the worker enforces it (repo credentials' canEditCi), a GitHub App token too. */}
+      {variant === 'settings' && !readOnly && isMapAdmin && (
         <label style={{ ...row, marginTop: 10, fontSize: 12, color: '#334155' }} data-testid="map-fleet-ci">
           <input
             type="checkbox"
@@ -288,7 +289,7 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
             disabled={busy || (!map.fleetCanEditCi && map.createdBy !== user?.id)}
             onChange={(e) => void toggleCi(e.target.checked)}
           />
-          Fleet may change CI workflows (.github/workflows)
+          Fleet may change CI workflows (.github/workflows, .gitea/workflows)
           {!map.fleetCanEditCi && map.createdBy !== user?.id && <span style={{ color: '#94a3b8' }}>· only the map&apos;s creator can turn this on</span>}
         </label>
       )}

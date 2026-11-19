@@ -97,7 +97,7 @@ export async function authorizeFleetCiChange(
     const [map] = await db.select({ createdBy: maps.createdBy }).from(maps).where(eq(maps.id, mapId)).limit(1);
     if (!map) return null; // the update itself answers 404
     if (map.createdBy !== userId) {
-      return { status: 403, code: 'FORBIDDEN', message: "Only the map's creator can let the fleet change CI workflows — the fleet uses their GitHub access" };
+      return { status: 403, code: 'FORBIDDEN', message: "Only the map's creator can let the fleet change CI workflows — the fleet uses their forge access" };
     }
     return null;
   }

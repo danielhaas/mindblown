@@ -17,7 +17,7 @@ const state = vi.hoisted(() => ({
   serviceOf: {} as Record<string, { id: string; name: string } | null>,
   fleets: {} as Record<string, { id: string; ownerId: string }>,
   maps: {} as Record<string, { fleetId: string | null; archivedAt: Date | null; createdBy: string }>,
-  found: null as null | { repo: Record<string, string>; token: string },
+  found: null as null | { repo: Record<string, string>; token: string; canEditCi: boolean },
   recorded: [] as Array<[string, string, string]>,
 }));
 
@@ -48,13 +48,13 @@ beforeEach(() => {
   state.serviceOf = { [SVC]: { id: FLEET, name: 'big-blower' }, person: null };
   state.fleets = { [FLEET]: { id: FLEET, ownerId: DAN }, [OTHER_FLEET]: { id: OTHER_FLEET, ownerId: EVE } };
   state.maps = { [MAP]: { fleetId: FLEET, archivedAt: null, createdBy: DAN } };
-  state.found = { repo: REPO, token: 'gitea-token' };
+  state.found = { repo: REPO, token: 'gitea-token', canEditCi: false };
   state.recorded = [];
 });
 
 describe('issueRepoCredentials (#507)', () => {
   it("hands the fleet's own key the project's repo and token, and records it", async () => {
-    expect(await issueRepoCredentials(SVC, FLEET, MAP)).toEqual({ ...REPO, token: 'gitea-token', gitUsername: 'x-access-token' });
+    expect(await issueRepoCredentials(SVC, FLEET, MAP)).toEqual({ ...REPO, token: 'gitea-token', gitUsername: 'x-access-token', canEditCi: false });
     expect(state.recorded).toEqual([[FLEET, MAP, 'dan/crm2']]);
   });
 

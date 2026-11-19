@@ -202,7 +202,7 @@ export const updateMapTool = defineTool({
     fleetCanEditCi: z
       .boolean()
       .optional()
-      .describe("Let the fleet change CI workflows (.github/workflows/*) in the map's GitHub repo (default false). CI code can read the repo's secrets, so this is off unless the repo is new or you trust the fleet's code with them; the setup wizard and create_forge_repo turn it on for a repo they create. Changing the map's repo turns it off again. Only the map's creator can turn it on (the fleet uses their GitHub access); any map admin can turn it off, and the MindBlown GitHub App needs its Workflows permission (without it the fleet gets its usual token)."),
+      .describe("Let the fleet change CI workflows (.github/workflows/*, .gitea/workflows/*) in the map's repo, on any forge (default false). The fleet's workers enforce it themselves on every forge and transport (HTTPS token or SSH): the repo credentials carry it as canEditCi, and a worker refuses workflow changes when it is false. For a GitHub App repo the token also lacks the Workflows permission unless this is on. CI code can read the repo's secrets, so this is off unless the repo is new or you trust the fleet's code with them; the setup wizard and create_forge_repo turn it on for a repo they create. Changing the map's repo turns it off again. Only the map's creator can turn it on (the fleet uses their forge access); any map admin can turn it off."),
     aiEstimateDrafts: z
       .boolean()
       .optional()

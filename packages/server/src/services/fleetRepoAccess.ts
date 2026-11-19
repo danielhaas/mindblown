@@ -15,23 +15,19 @@
  * gets a fresh token for just its repo; a PAT/OAuth token can't be
  * narrowed and goes out as is, so the fleet's commits and PRs appear as
  * the token's owner — a forge bot account can replace it later.
+ *
+ * `canEditCi` (the map's `fleetCanEditCi`) goes out on every forge: only an
+ * App token enforces it by itself, so a worker on a PAT, a Gitea token or
+ * SSH enforces it on its side.
  */
 import * as fleetDb from '../db/fleets.js';
 import * as handouts from '../db/fleetRepoHandouts.js';
 import { getFleetRepoCredentials } from '../lib/githubContext.js';
-import type { TicketRepo } from '@mindblown/tool-kit';
+import type { TicketRepoCredentials } from '@mindblown/tool-kit';
 
 export type RepoAccessError = { status: number; code: string; message: string };
 
-export interface RepoCredentials extends TicketRepo {
-  token: string;
-  /**
-   * HTTPS user for git with the token as password. Both forges accept it:
-   * GitHub takes `x-access-token` for PATs and App tokens, Gitea ignores
-   * the user when the password is a token.
-   */
-  gitUsername: 'x-access-token';
-}
+export type RepoCredentials = TicketRepoCredentials;
 
 export async function issueRepoCredentials(userId: string, fleetId: string, mapId: unknown): Promise<RepoCredentials | RepoAccessError> {
   if (typeof mapId !== 'string' || mapId === '') {
@@ -62,5 +58,5 @@ export async function issueRepoCredentials(userId: string, fleetId: string, mapI
     return { status: 404, code: 'NO_REPO', message: 'This project has no repo connected (or its forge connection is broken)' };
   }
   await handouts.recordHandout(fleetId, mapId, `${found.repo.owner}/${found.repo.name}`);
-  return { ...found.repo, token: found.token, gitUsername: 'x-access-token' };
+  return { ...found.repo, token: found.token, gitUsername: 'x-access-token', canEditCi: found.canEditCi };
 }
