@@ -9,6 +9,7 @@ import * as api from '../api.js';
 import type { MapSummary } from '../api.js';
 import { parseUrlState, serializeUrlState } from '../urlState.js';
 import { useHomeWidgetSync } from '../homeWidget.js';
+import { useDocumentTitle } from '../useDocumentTitle.js';
 import './mobile.css';
 
 /**
@@ -40,6 +41,7 @@ export function MobileApp() {
   const hydrateStarted = useRef(false);
   /** Blocks the mirror effect while we're applying a URL ourselves. */
   const suspended = useRef(true);
+  useDocumentTitle(selectedMap?.name);
 
   useEffect(() => {
     document.body.classList.add('mobile');
