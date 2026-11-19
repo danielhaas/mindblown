@@ -159,7 +159,7 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged, onO
       <div className="mb-sheet-backdrop" onClick={onClose} />
       <div className="mb-sheet mb-sheet-tall" role="dialog" aria-modal="true">
         <div className="mb-sheet-header">
-          <span style={{ flex: 1, paddingRight: 12, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <span style={{ flex: 1, minWidth: 0, paddingRight: 12, overflowWrap: 'anywhere' }}>
             {node.text}
           </span>
           <button className="mb-link" onClick={onClose}>
