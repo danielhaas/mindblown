@@ -70,7 +70,7 @@ export interface VisibleNode {
   depth: number; // depth relative to focusNode (0 = focusNode itself)
   hasHiddenChildren: boolean;
   hiddenDescendantCount: number;
-  isDimmed: boolean; // true for sibling branches shown for context
+  isDimmed: boolean; // true for the focus node's ancestors, shown as the way back (depth < 0)
 }
 
 /**
@@ -940,26 +940,27 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
     walk(effectiveRootId, 0);
 
-    // If we have a focus node (not the actual root), add dimmed siblings for context
+    // Drilled in (focus below the root): the way back — the focus node's
+    // ancestors, root first, dimmed. Not its siblings: drawn left of the
+    // focus node they read as its parents, and the real parent was missing.
     if (respectFocus && focusNodeId && focusNodeId !== rootNodeId) {
-      const focusNode = nodes[focusNodeId];
-      if (focusNode?.parentId) {
-        const parent = nodes[focusNode.parentId];
-        if (parent) {
-          for (const siblingId of parent.childrenIds) {
-            if (siblingId === focusNodeId) continue;
-            const sibling = nodes[siblingId];
-            if (!sibling) continue;
-            result.push({
-              node: sibling,
-              depth: 0, // same level as focus node
-              hasHiddenChildren: sibling.childrenIds.length > 0,
-              hiddenDescendantCount: countDescendants(siblingId),
-              isDimmed: true,
-            });
-          }
-        }
+      const trail: Node[] = [];
+      const seen = new Set<string>([focusNodeId]);
+      let cur = nodes[focusNodeId]?.parentId ? nodes[nodes[focusNodeId].parentId!] : undefined;
+      while (cur && !seen.has(cur.id)) {
+        seen.add(cur.id);
+        trail.unshift(cur);
+        cur = cur.parentId ? nodes[cur.parentId] : undefined;
       }
+      trail.forEach((node, i) => {
+        result.push({
+          node,
+          depth: i - trail.length, // left of the focus node (depth 0)
+          hasHiddenChildren: false,
+          hiddenDescendantCount: 0,
+          isDimmed: true,
+        });
+      });
     }
 
     return result;

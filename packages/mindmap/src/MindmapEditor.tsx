@@ -572,37 +572,51 @@ export function MindmapEditor() {
     [effectiveRootId, visibleNodesRecord, layoutType, textScale],
   );
 
-  // Also layout dimmed sibling nodes (simple positioning beside the main tree)
+  // The way back when drilled in: the focus node's ancestors (dimmed, root
+  // first) in a row to its left, level with it. Each keeps its real
+  // parentId, so the connectors root → … → parent → focus draw themselves.
   const dimmedLayoutNodes = useMemo(() => {
-    const dimmedNodes = visibleNodes.filter((v) => v.isDimmed);
-    if (dimmedNodes.length === 0 || !effectiveRootId) return [];
+    const trail = visibleNodes.filter((v) => v.isDimmed);
+    const focus = layoutNodes.find((ln) => ln.id === effectiveRootId);
+    if (trail.length === 0 || !focus) return [];
 
-    // Position dimmed nodes to the left of the focus tree
-    const mainBounds = computeBounds(layoutNodes);
     const result: LayoutNode[] = [];
-    let yOffset = mainBounds.minY;
-
-    for (const dn of dimmedNodes) {
-      // Mirror the constants used in layout.ts:measureNodeWidth so dimmed
-      // siblings grow with the same textScale as the main tree.
+    const height = 40 * textScale;
+    // Top-down layouts stack the trail above the focus node; the others
+    // run it to the left. Gaps match layout.ts (HORIZONTAL_GAP / rows).
+    // Start past the whole tree's edge, not just the focus node's: radial
+    // puts children on every side, and the trail must not land on them.
+    const up = handleBelow(layoutType);
+    const bounds = computeBounds(layoutNodes);
+    let right = Math.min(focus.x, bounds.minX) - 60 * textScale;
+    let bottom = Math.min(focus.y, bounds.minY) - 50 * textScale;
+    for (const dn of [...trail].reverse()) {
+      // Mirror the constants used in layout.ts:measureNodeWidth so the
+      // trail grows with the same textScale as the main tree.
       const textWidth = dn.node.text.length * 7.5 * textScale + 32 * textScale;
       const width = Math.min(260 * textScale, Math.max(100 * textScale, Math.max(160 * textScale, textWidth)));
-      const height = 40 * textScale;
       result.push({
         id: dn.node.id,
-        x: mainBounds.minX - width - 80,
-        y: yOffset,
+        x: up ? focus.x + focus.width / 2 - width / 2 : right - width,
+        y: up ? bottom - height : focus.y + focus.height / 2 - height / 2,
         width,
         height,
         parentId: dn.node.parentId,
-        depth: 0,
-        hasChildren: dn.node.childrenIds.length > 0,
-        collapsed: dn.node.collapsed,
+        depth: dn.depth,
+        hasChildren: true,
+        collapsed: false,
       });
-      yOffset += height + 14 * textScale;
+      right -= width + 60 * textScale;
+      bottom -= height + 50 * textScale;
     }
     return result;
-  }, [visibleNodes, layoutNodes, effectiveRootId, textScale]);
+  }, [visibleNodes, layoutNodes, effectiveRootId, textScale, layoutType]);
+
+  // Back up the trail: the map root means "no drill-down".
+  const focusBackTo = useCallback(
+    (id: string) => setFocusNode(id === rootNodeId ? null : id),
+    [rootNodeId, setFocusNode],
+  );
 
   const allLayoutNodes = useMemo(
     () => [...layoutNodes, ...dimmedLayoutNodes],
@@ -1146,7 +1160,9 @@ export function MindmapEditor() {
         case 'ArrowLeft': {
           e.preventDefault();
           const selNode = nodes[selectedNodeId];
-          if (selNode?.parentId) selectNode(selNode.parentId);
+          // Not past the drill-down focus: its parent is on the trail back,
+          // which is never selected (Delete/Tab/F2 would act on it).
+          if (selNode?.parentId && selectedNodeId !== focusNodeId) selectNode(selNode.parentId);
           break;
         }
         case 'ArrowRight': {
@@ -1486,7 +1502,7 @@ export function MindmapEditor() {
           {connectors.map(({ parentLayout, childLayout, isDimmed }) => (
             <g
               key={`${parentLayout.id}-${childLayout.id}`}
-              style={{ opacity: isDimmed ? 0.15 : 1, transition: 'opacity 0.3s ease' }}
+              style={{ opacity: isDimmed ? 0.5 : 1, transition: 'opacity 0.3s ease' }}
             >
               <Connector
                 parent={parentLayout}
@@ -1542,7 +1558,8 @@ export function MindmapEditor() {
               <g
                 key={ln.id}
                 style={{
-                  opacity: isDimmed ? 0.3 : 1,
+                  // The trail back is navigation: muted, but readable.
+                  opacity: isDimmed ? 0.6 : 1,
                   transition: 'opacity 0.3s ease',
                 }}
                 onMouseEnter={() => setHoveredNodeId(ln.id)}
@@ -1589,20 +1606,24 @@ export function MindmapEditor() {
                   onContextMenu={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    // The trail back is navigation only: no menu, no
+                    // selection — Delete on the parent would remove the
+                    // subtree being looked at.
+                    if (isDimmed) return;
                     selectNode(ln.id);
                     setContextMenu({ x: e.clientX, y: e.clientY, nodeId: ln.id });
                   }}
                   onSelect={(shiftKey) => {
                     if (isDimmed) {
-                      // Clicking a dimmed node drills into it
-                      setFocusNode(ln.id);
+                      // A node on the trail back: go back up to it
+                      focusBackTo(ln.id);
                     } else {
                       handleNodeSelect(ln.id, shiftKey);
                     }
                   }}
                   onDoubleClick={() => {
                     if (isDimmed) {
-                      setFocusNode(ln.id);
+                      focusBackTo(ln.id);
                     } else if (nodeData.childrenIds.length > 0) {
                       // Double-click a node with children = drill into it
                       setFocusNode(ln.id);

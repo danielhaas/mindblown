@@ -23,7 +23,7 @@ import type { Node, ComputedNodeValues } from '@mindblown/core';
 export interface ScopedVisibleNode {
   node: Node;
   depth: number; // relative to the effective root (drill-down focus or map root)
-  isDimmed: boolean; // sibling branches shown only for drill-down context
+  isDimmed: boolean; // the drill-down trail back (ancestors), not data
 }
 
 // ── Hill Chart ───────────────────────────────────────────────────
