@@ -51,6 +51,7 @@ import { FleetPage, FleetView } from './FleetView.js';
 import { ApprovalsBadge, ApprovalsPage, isApprovalsPage } from './ApprovalsView.js';
 import type { ViewRole, PanelKey } from './roles.js';
 import { useHomeWidgetSync } from './homeWidget.js';
+import { useMapDocumentTitle } from './useDocumentTitle.js';
 
 // ── Health badge colors ────────────────────────────────────────
 
@@ -1555,6 +1556,7 @@ export function App() {
   const maps = useMindmapStore((s) => s.maps);
   const currentMapId = useMindmapStore((s) => s.currentMapId);
   const currentMap = useMindmapStore((s) => s.currentMap);
+  useMapDocumentTitle();
   const nodes = useMindmapStore((s) => s.nodes);
   const rootNodeId = useMindmapStore((s) => s.rootNodeId);
   const computed = useMindmapStore((s) => s.computed);
