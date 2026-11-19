@@ -329,6 +329,32 @@ export function getWsClient(): WsClient | null {
 
 // ── Store implementation ───────────────────────────────────────
 
+/**
+ * Fold (`collapsed = true`) or open every branch below `scopeId`. The scope
+ * node itself always ends up open, so a collapse-all still shows its first
+ * level. Returns a new nodes record, or null when nothing changes.
+ */
+export function setCollapsedInSubtree(
+  nodes: Record<string, Node>,
+  scopeId: string,
+  collapsed: boolean,
+): Record<string, Node> | null {
+  let next: Record<string, Node> | null = null;
+  const stack = [scopeId];
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    const node = nodes[id];
+    if (!node || node.childrenIds.length === 0) continue;
+    const want = id === scopeId ? false : collapsed;
+    if (!!node.collapsed !== want) {
+      next ??= { ...nodes };
+      next[id] = { ...node, collapsed: want };
+    }
+    for (const cid of node.childrenIds) stack.push(cid);
+  }
+  return next;
+}
+
 export const useMindmapStore = create<MindmapState>((set, get) => ({
   user: null,
   token: api.getToken(),
@@ -1551,26 +1577,23 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     });
   },
 
+  // Both act on the visible subtree — the drill-down focus when there is
+  // one, else the whole map — and land as ONE store update however many
+  // nodes change (a per-node toggle re-lays-out the map once per node).
   expandAll: () => {
-    const state = get();
-    const updatedNodes = { ...state.nodes };
-    for (const [id, node] of Object.entries(updatedNodes)) {
-      if (node.collapsed && node.childrenIds.length > 0) {
-        updatedNodes[id] = { ...node, collapsed: false };
-      }
-    }
-    set({ nodes: updatedNodes });
+    const { nodes, rootNodeId, focusNodeId } = get();
+    const scopeId = focusNodeId ?? rootNodeId;
+    if (!scopeId) return;
+    const changed = setCollapsedInSubtree(nodes, scopeId, false);
+    if (changed) set({ nodes: changed });
   },
 
   collapseAll: () => {
-    const state = get();
-    const updatedNodes = { ...state.nodes };
-    for (const [id, node] of Object.entries(updatedNodes)) {
-      if (!node.collapsed && node.childrenIds.length > 0 && id !== state.rootNodeId) {
-        updatedNodes[id] = { ...node, collapsed: true };
-      }
-    }
-    set({ nodes: updatedNodes });
+    const { nodes, rootNodeId, focusNodeId } = get();
+    const scopeId = focusNodeId ?? rootNodeId;
+    if (!scopeId) return;
+    const changed = setCollapsedInSubtree(nodes, scopeId, true);
+    if (changed) set({ nodes: changed });
   },
 
   recompute: () => {

@@ -372,6 +372,8 @@ export function MindmapEditor() {
   const updateNode = useMindmapStore((s) => s.updateNode);
   const deleteNode = useMindmapStore((s) => s.deleteNode);
   const toggleCollapse = useMindmapStore((s) => s.toggleCollapse);
+  const collapseAll = useMindmapStore((s) => s.collapseAll);
+  const expandAll = useMindmapStore((s) => s.expandAll);
   const moveNode = useMindmapStore((s) => s.moveNode);
   const setLayoutType = useMindmapStore((s) => s.setLayoutType);
   const setFocusNode = useMindmapStore((s) => s.setFocusNode);
@@ -691,6 +693,24 @@ export function MindmapEditor() {
     };
     attempt();
   }, [tryFit]);
+
+  // Collapse all / expand all, then fit the result on screen. The fit has
+  // to run against the NEW layout, so it is requested here and fulfilled
+  // by the effect below on the render that carries the store update.
+  const fitToScreenRef = useRef(fitToScreen);
+  fitToScreenRef.current = fitToScreen;
+  const [fitRequest, setFitRequest] = useState(0);
+  useEffect(() => {
+    if (fitRequest > 0) fitToScreenRef.current();
+  }, [fitRequest]);
+  const handleCollapseAll = useCallback(() => {
+    collapseAll();
+    setFitRequest((n) => n + 1);
+  }, [collapseAll]);
+  const handleExpandAll = useCallback(() => {
+    expandAll();
+    setFitRequest((n) => n + 1);
+  }, [expandAll]);
 
   // Pan target — when set, a useEffect below pans to the node once it
   // appears in layoutMap (which may be on a later render if focus changes
@@ -1110,6 +1130,14 @@ export function MindmapEditor() {
         return;
       }
 
+      // Cmd/Ctrl+Shift+↑ collapse all, Cmd/Ctrl+Shift+↓ expand all
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        e.preventDefault();
+        if (e.key === 'ArrowUp') handleCollapseAll();
+        else handleExpandAll();
+        return;
+      }
+
       // Escape works regardless of selection: pop drill-down, then clear selection
       if (e.key === 'Escape') {
         if (focusNodeId) {
@@ -1206,6 +1234,7 @@ export function MindmapEditor() {
     selectedNodeId, selectedNodeIds, editingNodeId, nodes, rootNodeId,
     addNode, deleteNode, toggleCollapse, selectNode, startEditing,
     selectAllNodes, clearSelection, fitToScreen, focusNodeId, setFocusNode,
+    handleCollapseAll, handleExpandAll,
   ]);
 
   // ── Bulk actions ──────────────────────────────────────────
@@ -1445,6 +1474,26 @@ export function MindmapEditor() {
           }}
         >
           Fit
+        </button>
+
+        <button
+          onClick={handleCollapseAll}
+          title={`Collapse all${focusNodeId ? ' in this subtree' : ''} — only the first level stays open (Cmd/Ctrl+Shift+↑)`}
+          aria-label="Collapse all"
+          data-testid="mindmap-collapse-all"
+          style={toolbarBtnStyle}
+        >
+          Collapse all
+        </button>
+
+        <button
+          onClick={handleExpandAll}
+          title={`Expand all${focusNodeId ? ' in this subtree' : ''} (Cmd/Ctrl+Shift+↓)`}
+          aria-label="Expand all"
+          data-testid="mindmap-expand-all"
+          style={toolbarBtnStyle}
+        >
+          Expand all
         </button>
 
         <button
@@ -2230,6 +2279,20 @@ const ctxMenuItemStyle: React.CSSProperties = {
   cursor: 'pointer',
   fontSize: 13,
   color: '#1e293b',
+};
+
+const toolbarBtnStyle: React.CSSProperties = {
+  background: '#fff',
+  border: '1px solid #e2e8f0',
+  borderRadius: 6,
+  padding: '4px 10px',
+  fontSize: 11,
+  fontWeight: 600,
+  color: '#475569',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+  whiteSpace: 'nowrap',
 };
 
 const zoomCtrlBtnStyle: React.CSSProperties = {
