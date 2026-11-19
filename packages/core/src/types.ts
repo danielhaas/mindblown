@@ -1060,6 +1060,8 @@ export interface User {
   id: UserId;
   email: string;
   name: string;
+  /** The name asks are filed under on the Questions card; null = first name. */
+  answererName?: string | null;
   avatarUrl: string | null;
   createdAt: string;
 }

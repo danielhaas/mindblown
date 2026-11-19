@@ -9,7 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, MoveNodeToMapResult, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { CommentKind, NodeComment, AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookEventStat, WebhookSubscription, LeaveRange } from '@mindblown/core';
+import type { CommentKind, NodeComment, AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookEventStat, WebhookSubscription, LeaveRange, AnswererSetting } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
 export interface FleetStatusResult {
@@ -578,6 +578,10 @@ export interface ToolBackend {
   listLeave(): Promise<LeaveRange[]>;
   addLeave(input: { startDate: string; endDate: string; note?: string | null }): Promise<LeaveRange>;
   removeLeave(leaveId: string): Promise<void>;
+  // ── Answerer name — not map-scoped: the name the caller's asks are filed under ──
+  getAnswererName(): Promise<AnswererSetting>;
+  /** null clears it (back to the first name). */
+  setAnswererName(name: string | null): Promise<AnswererSetting>;
   /** Push the timeline to the workspace's wiki: create the page once, update it after (#637). */
   publishToWiki(mapId: string): Promise<WikiPublishResult>;
 

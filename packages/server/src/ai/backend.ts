@@ -9,8 +9,9 @@ import { buildTimelineMarkdown } from '../export/timeline.js';
 import { publishMapToWiki } from '../services/wikiPublish.js';
 import { normalizeHolidaySettings, normalizeWorkers } from '../lib/holidays.js';
 import type { ToolBackend, MapDetail, MapSummary, NodeWithComputed } from '@mindblown/tool-kit';
-import { computeTree, parseTickWindow, validateLeaveInput } from '@mindblown/core';
+import { computeTree, parseTickWindow, validateLeaveInput, validateAnswererName } from '@mindblown/core';
 import * as leaveDb from '../db/leave.js';
+import * as answererDb from '../db/answerer.js';
 import { isFleetUser } from '../db/fleets.js';
 import type { Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
@@ -276,6 +277,18 @@ export function createChatBackend(userId: string): ToolBackend {
       if (error) throw new Error(error);
       if (await isFleetUser(userId)) throw new Error('Fleet users take no leave');
       return leaveDb.addLeave(userId, input);
+    },
+    async getAnswererName() {
+      const s = await answererDb.getAnswerer(userId);
+      if (!s) throw new Error('User not found');
+      return s;
+    },
+    async setAnswererName(name) {
+      const error = validateAnswererName(name);
+      if (error) throw new Error(error);
+      const s = await answererDb.setAnswerer(userId, name);
+      if (!s) throw new Error('User not found');
+      return s;
     },
     async removeLeave(leaveId) {
       if (!/^[0-9a-f-]{36}$/i.test(leaveId) || !(await leaveDb.removeLeave(userId, leaveId))) {
@@ -743,6 +756,9 @@ export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new
   'listLeave',
   'addLeave',
   'removeLeave',
+  // Answerer name: always the user's own.
+  'getAnswererName',
+  'setAnswererName',
 ]);
 
 /**

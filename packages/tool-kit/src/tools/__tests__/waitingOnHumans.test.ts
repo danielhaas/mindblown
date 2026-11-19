@@ -38,6 +38,15 @@ describe('waiting_on_humans', () => {
     expect(backend.waitingOnHumans).toHaveBeenLastCalledWith(undefined);
   });
 
+  it('person filters to that name, any name on the card, case-insensitive', async () => {
+    const rita = { ...fleet().people[0], person: 'Rita' };
+    const res: WaitingOnHumansResult = { fleets: [fleet({ people: [...fleet().people, rita] })], now: 'x' };
+    const backend = { waitingOnHumans: vi.fn(async () => res) } as unknown as ToolBackend;
+    const out = await waitingOnHumansTool.handler(backend, { person: 'dan' } as never);
+    expect(out).toContain('### Dan:');
+    expect(out).not.toContain('### Rita:');
+  });
+
   it('says idle since when, the counts per person and the ids of the top items', () => {
     const out = renderWaitingOnHumans({ fleets: [fleet()], now: 'x' });
     expect(out).toContain('1 of 1 fleet(s) idle and waiting on a person.');

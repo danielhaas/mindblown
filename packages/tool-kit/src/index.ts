@@ -84,7 +84,8 @@ import { webhookTools } from './tools/webhooks.js';
 import { waitingOnHumansTools } from './tools/waitingOnHumans.js';
 import { commentTools } from './tools/comments.js';
 import { leaveTools } from './tools/leave.js';
-export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools, fleetTools, docsTools, approvalTools, reporterCheckTools, prMergeTools, webhookTools, waitingOnHumansTools, commentTools, leaveTools };
+import { answererTools } from './tools/answerer.js';
+export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools, fleetTools, docsTools, approvalTools, reporterCheckTools, prMergeTools, webhookTools, waitingOnHumansTools, commentTools, leaveTools, answererTools };
 export { renderAskList } from './tools/asks.js';
 export { renderPendingApprovals } from './tools/approvals.js';
 
@@ -107,4 +108,5 @@ export const allTools = [
   ...webhookTools,
   ...commentTools,
   ...leaveTools,
+  ...answererTools,
 ];

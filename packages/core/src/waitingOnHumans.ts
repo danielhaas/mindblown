@@ -147,9 +147,9 @@ export function waitingItemsFromAsks(rows: AskRow[]): WaitingItem[] {
   return out;
 }
 
-/** The person a map's merges and approvals wait on: the owner's first name, else Dan. */
-export function ownerPerson(ownerName: string | null | undefined): string {
-  const first = (ownerName ?? '').trim().split(/\s+/)[0];
+/** The person a map's merges and approvals wait on: the owner's answerer name (core answererName), else first name, else Dan. */
+export function ownerPerson(ownerName: string | null | undefined, own?: string | null): string {
+  const first = own?.trim() || (ownerName ?? '').trim().split(/\s+/)[0];
   return first || DEFAULT_WAITING_PERSON;
 }
 

@@ -1419,6 +1419,8 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
   // are left alone (Dan's call, 19.10.2026) — its keys keep working, and
   // clients move to per-fleet keys at their own pace.
   await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'person'`);
+  // One person, one answerer: the name a user's asks are filed under (core answererName).
+  await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS answerer_name TEXT`);
   await db.execute(sql`ALTER TABLE fleets ADD COLUMN IF NOT EXISTS service_user_id UUID REFERENCES users(id) ON DELETE SET NULL`);
   await db.execute(sql`
     DO $$

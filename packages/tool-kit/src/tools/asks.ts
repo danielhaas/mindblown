@@ -9,7 +9,6 @@ import type { AskRow } from '@mindblown/core';
 import { defineTool } from '../spec.js';
 import type { AskListResult } from '../backend.js';
 
-const ANSWERERS = ['Dan', 'Rita', 'Susi', 'Dana', 'Thomas', 'Kunde'] as const;
 const HINTS = ['decision', 'ops-task', 'waiting-external', 'already-decided', 'parked-plan'] as const;
 const STATUSES = ['open', 'answered', 'later', 'delegated', 'all'] as const;
 
@@ -97,7 +96,7 @@ export const listAsksTool = defineTool({
     'The fleet\'s open human questions (/leidang-asks), as the orchestrator',
     'pushed them from claude-fleet leidang-asks-collect: one record per ticket,',
     'deduplicated across the tick, the satellite rollups, pending-notes and',
-    'the issue tracker; grouped by who has to answer (Dan/Rita/Susi/Dana/Thomas/Kunde),',
+    'the issue tracker; grouped by who has to answer (Dan, Rita, … — a map owner by their answerer_name),',
     'ordered answerer → priority → idle age. `hint` says what kind of thing it',
     'is: decision (someone must choose), ops-task (a session with the right key',
     'can just do it), waiting-external, already-decided / parked-plan (folded',
@@ -111,7 +110,7 @@ export const listAsksTool = defineTool({
     fleetId: z.string().optional().describe('A fleet ID (list_fleets): the asks of all its maps you can view'),
     status: z.enum(STATUSES).optional().describe('Default open. all = including answered/later/delegated rows'),
     hint: z.enum(HINTS).optional().describe('Only one kind of ask'),
-    answerer: z.enum(ANSWERERS).optional().describe('Only questions whose primary answerer is this person'),
+    answerer: z.string().min(1).max(100).optional().describe('Only questions whose primary answerer is this person — any answerer name on the card (e.g. "Dan", "Rita"; case-insensitive)'),
     limit: z.number().int().min(1).max(500).optional(),
   },
   handler: async (backend, { mapId, fleetId, status, hint, answerer, limit }) => {

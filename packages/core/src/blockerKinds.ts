@@ -61,9 +61,34 @@ export function externalRecheckAt(now: Date, days: number = EXTERNAL_RECHECK_DAY
   return new Date(now.getTime() + Math.max(0, days) * 86_400_000).toISOString();
 }
 
-/** "Dan Haas" → "Dan": answerers on the card go by first name. */
-export function answererName(userName: string | null | undefined): string {
-  return (userName ?? '').trim().split(/\s+/)[0] || 'Dan';
+/**
+ * A person's name on the Questions card: their own answerer name if they set
+ * one (users.answerer_name — "Dan" for Daniel Haas, the name the fleet's
+ * collector files his asks under), else the first name ("Dan Haas" → "Dan").
+ * Every ask source that names a user goes through here, so one person is one
+ * group on the card.
+ */
+export function answererName(userName: string | null | undefined, own?: string | null): string {
+  return own?.trim() || (userName ?? '').trim().split(/\s+/)[0] || 'Dan';
+}
+
+/** A user's answerer name: as set (null = none) and the name in effect. */
+export interface AnswererSetting {
+  answererName: string | null;
+  effective: string;
+}
+
+/** The longest answerer name a user may set. */
+export const ANSWERER_NAME_MAX = 40;
+
+/** null = valid; else why. Empty/null clears it (back to the first name). */
+export function validateAnswererName(name: unknown): string | null {
+  if (name === null || name === undefined) return null;
+  if (typeof name !== 'string') return 'answererName must be a string or null';
+  const t = name.trim();
+  if (t.length > ANSWERER_NAME_MAX) return `answererName must be at most ${ANSWERER_NAME_MAX} characters`;
+  if (/\s/.test(t)) return 'answererName is one word, e.g. "Dan"';
+  return null;
 }
 
 /** A fleet worker's own note on its ticket — it keeps its current path (Your steps, the worker's asks). */

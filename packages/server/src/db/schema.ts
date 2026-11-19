@@ -18,6 +18,8 @@ export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: text('email').notNull().unique(),
   name: text('name').notNull(),
+  /** The name asks are filed under on the Questions card ("Dan"); null = first name (core answererName). */
+  answererName: text('answerer_name'),
   passwordHash: text('password_hash'),
   avatarUrl: text('avatar_url'),
   isAdmin: boolean('is_admin').notNull().default(false),
