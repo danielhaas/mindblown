@@ -65,6 +65,10 @@ export const httpBackend: ToolBackend = {
   listReporterChecks: (scope) => api.listReporterChecks(scope),
   markDeployed: (mapId) => api.markDeployed(mapId),
   // ── A person merges a fleet PR ──────────────────────────────────
+  // ── Comments / notes to the agent (claude-fleet#92) ─────────────
+  addComment: (mapId, nodeId, input) => api.addComment(mapId, nodeId, input),
+  listComments: (mapId, nodeId, opts) => api.listComments(mapId, nodeId, opts),
+  ackFleetNote: (mapId, nodeId, commentId, deliveredAt) => api.ackFleetNote(mapId, nodeId, commentId, deliveredAt),
   prSummary: (mapId, nodeId) => api.prSummary(mapId, nodeId),
   mergePr: (mapId, nodeId, input) => api.mergePr(mapId, nodeId, input),
   prsWaiting: (scope) => api.prsWaiting(scope),

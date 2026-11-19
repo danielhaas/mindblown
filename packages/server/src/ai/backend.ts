@@ -13,6 +13,8 @@ import { computeTree, parseTickWindow } from '@mindblown/core';
 import type { Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as nodeDb from '../db/nodes.js';
+import * as commentDb from '../db/comments.js';
+import * as commentService from '../services/comments.js';
 import * as events from '../db/events.js';
 import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from './embeddings.js';
@@ -513,6 +515,31 @@ export function createChatBackend(userId: string): ToolBackend {
       throw new Error('mark_deployed is not available in the in-app chat — use the Deployed button on the Fleet tab.');
     },
 
+    // ── Comments / notes to the agent (claude-fleet#92) ───────────
+    // The guard checked the map; these check the node is on it.
+    async addComment(mapId, nodeId, input) {
+      await requireNodeOnMap(mapId, nodeId);
+      const kind = commentService.parseCommentKind(input.kind);
+      if (commentService.isCommentError(kind)) throw new Error(kind.message);
+      if (!input.text?.trim()) throw new Error('text is required');
+      const row = await commentDb.createComment({ nodeId, userId, text: input.text, kind });
+      broadcast(mapId, { type: 'comment:created', nodeId, comment: row });
+      return commentService.toNodeComment(row);
+    },
+    async listComments(mapId, nodeId, opts) {
+      await requireNodeOnMap(mapId, nodeId);
+      const filter = commentService.parseCommentFilter(opts ?? {});
+      if (commentService.isCommentError(filter)) throw new Error(filter.message);
+      return (await commentDb.listComments(nodeId, filter)).map(commentService.toNodeComment);
+    },
+    async ackFleetNote(mapId, nodeId, commentId, deliveredAt) {
+      await requireNodeOnMap(mapId, nodeId);
+      const row = await commentService.ackFleetNote(nodeId, commentId, deliveredAt);
+      if (commentService.isCommentError(row)) throw new Error(row.message);
+      broadcast(mapId, { type: 'comment:updated', nodeId, comment: row });
+      return commentService.toNodeComment(row);
+    },
+
     // ── A person merges a fleet PR ────────────────────────────────
     // Reads only: the chat model reads the PR's text (untrusted) and runs
     // as whoever is typing — it must not be the one that merges. A merge
@@ -626,6 +653,10 @@ export function createChatBackend(userId: string): ToolBackend {
   return guardChatBackend(backend, userId);
 }
 
+async function requireNodeOnMap(mapId: string, nodeId: string): Promise<void> {
+  if ((await nodeDb.getNodeMapId(nodeId)) !== mapId) throw new Error(`Node ${nodeId} not found on map ${mapId}`);
+}
+
 /** Backend methods that only read the map; every other map-scoped method writes. */
 export const CHAT_BACKEND_READ_METHODS: ReadonlySet<keyof ToolBackend> = new Set<keyof ToolBackend>([
   'getMap',
@@ -642,6 +673,7 @@ export const CHAT_BACKEND_READ_METHODS: ReadonlySet<keyof ToolBackend> = new Set
   'listRepoDocs',
   'readRepoDoc',
   'prSummary',
+  'listComments',
 ]);
 
 /** Backend methods that need admin on the map — what REST asks for the same action. */

@@ -106,6 +106,8 @@ export type { LintRuleId, LintActionId } from './lint.js';
 export { compareVersions, effectiveVersionId, findVersionOrderInversions, nodesInVersion } from './versions.js';
 // Per-map AI policy (#375)
 export { AI_POLICIES, isAiPolicy } from './types.js';
+export { COMMENT_KINDS, isCommentKind } from './types.js';
+export type { CommentKind, NodeComment } from './types.js';
 export type { VersionOrderFields, VersionOrderInversion, VersionMembershipNode } from './versions.js';
 
 // Estimation-calibration evidence gate
