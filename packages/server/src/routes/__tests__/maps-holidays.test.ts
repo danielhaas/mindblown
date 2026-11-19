@@ -37,6 +37,11 @@ vi.mock('../../lib/calendarIcs.js', () => ({
   verifyCalendarToken: vi.fn(),
   CALENDAR_VIEWS: [],
 }));
+// Personal leave (#664): what the schedule route attaches to the map data.
+const leaveState = vi.hoisted(() => ({ leave: [] as unknown[] }));
+vi.mock('../../db/leave.js', () => ({
+  withMapLeave: async (d: object) => ({ ...d, leave: leaveState.leave }),
+}));
 vi.mock('drizzle-orm', () => ({ and: vi.fn(), eq: vi.fn(), lte: vi.fn(), desc: vi.fn() }));
 
 import { mapRoutes } from '../maps.js';
@@ -106,6 +111,7 @@ function mapWith(holidays: { holidayJurisdiction?: string | null; holidayOverrid
 beforeEach(() => {
   updateMapMock.mockReset();
   getMapMock.mockReset();
+  leaveState.leave = [];
 });
 
 describe('PUT /api/maps/:id — holiday calendar (#110)', () => {
@@ -194,5 +200,48 @@ describe('GET /api/maps/:id/schedule — working calendar (#110)', () => {
     const b = body.schedule.find((s: { nodeId: string }) => s.nodeId === 'b');
     expect(b.computedStart).toBeGreaterThanOrEqual(2);
     expect(b.computedStart).toBeLessThan(5);
+  });
+});
+
+const DAN = '11111111-1111-4111-8111-111111111111';
+
+describe('PUT /api/maps/:id — workers (#664)', () => {
+  it('passes the list on, duplicates dropped, order kept', async () => {
+    updateMapMock.mockResolvedValueOnce({ id: MAP_ID });
+    const app = await buildApp();
+    const other = '22222222-2222-4222-8222-222222222222';
+    const res = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_ID}`, payload: { workers: [DAN, other, DAN] } });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(updateMapMock.mock.calls[0][1]).toEqual({ workers: [DAN, other] });
+  });
+
+  it('refuses anything but a list of user ids', async () => {
+    const app = await buildApp();
+    for (const workers of ['dan', ['dan'], [1]]) {
+      const res = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_ID}`, payload: { workers } });
+      expect(res.statusCode).toBe(400);
+    }
+    await app.close();
+    expect(updateMapMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/maps/:id/schedule — personal leave (#664)', () => {
+  it("the worker's leave moves the work and travels with the schedule", async () => {
+    const data = mapWith({ holidayJurisdiction: 'LI' });
+    (data.map as Record<string, unknown>).workers = [DAN];
+    getMapMock.mockResolvedValue(data);
+    const app = await buildApp();
+    const before = (await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/schedule` })).json();
+    leaveState.leave = [{ userId: DAN, name: 'Dan', ranges: [{ startDate: '2026-12-23', endDate: '2026-12-24', note: null }] }];
+    const after = (await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/schedule` })).json();
+    await app.close();
+    getMapMock.mockReset();
+    const end = (b: { schedule: Array<{ nodeId: string; computedEnd: number }> }) => b.schedule.find((s) => s.nodeId === 'a')!.computedEnd;
+    expect(end(after) - end(before)).toBe(2);
+    expect(before.leave).toEqual([]);
+    expect(after.leave).toEqual([expect.objectContaining({ name: 'Dan', track: 0, days: ['2026-12-23', '2026-12-24'] })]);
+    expect(after.nodeLeave).toMatchObject({ a: DAN });
   });
 });

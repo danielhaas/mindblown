@@ -3,8 +3,8 @@
  * core's renderTimelineMarkdown. One builder for GET /maps/:id/export.md, the
  * export_markdown tool and the wiki publish, so they print the same page.
  */
-import { isTimeZone, renderTimelineMarkdown, TIMELINE_DETAILS } from '@mindblown/core';
-import type { MindMap, Node as CoreNode, TimelineDetail, TimelineSpan } from '@mindblown/core';
+import { describeLeave, isTimeZone, renderTimelineMarkdown, TIMELINE_DETAILS } from '@mindblown/core';
+import type { MindMap, Node as CoreNode, PersonLeave, TimelineDetail, TimelineSpan } from '@mindblown/core';
 import { computeMapSchedule } from '../lib/mapSchedule.js';
 
 export interface TimelineOptions {
@@ -19,7 +19,7 @@ export interface TimelineOptions {
 export class TimelineOptionError extends Error {}
 
 /** Validate the options; throws TimelineOptionError with a message a caller can show. */
-export function buildTimelineMarkdown(data: { map: MindMap; nodes: CoreNode[] }, opts: TimelineOptions = {}): string {
+export function buildTimelineMarkdown(data: { map: MindMap; nodes: CoreNode[]; leave?: PersonLeave[] }, opts: TimelineOptions = {}): string {
   const detail = opts.detail ?? 'summary';
   if (!(TIMELINE_DETAILS as readonly string[]).includes(detail)) {
     throw new TimelineOptionError(`Unknown detail "${detail}" — use ${TIMELINE_DETAILS.join(' or ')}`);
@@ -36,6 +36,9 @@ export function buildTimelineMarkdown(data: { map: MindMap; nodes: CoreNode[] },
   }
 
   const projection = computeMapSchedule(data);
+  // The dates include personal leave (#664) — say whose and when.
+  const leaveLine = describeLeave(projection.leave);
+  const preface = leaveLine ? [...(opts.preface ?? []), leaveLine] : opts.preface;
   const spans = new Map<string, TimelineSpan>();
   for (const s of projection.schedule) spans.set(s.nodeId, projection.barSpan(s));
 
@@ -49,6 +52,6 @@ export function buildTimelineMarkdown(data: { map: MindMap; nodes: CoreNode[] },
     timeZone,
     detail: detail as TimelineDetail,
     effortUnit: data.map.effortUnit,
-    preface: opts.preface,
+    preface,
   });
 }

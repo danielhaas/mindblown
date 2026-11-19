@@ -193,6 +193,10 @@ export function formatMapTree(data: MapDetail): string {
   // Holiday calendar (#110) — only when set; otherwise every day counts.
   const calendarLine = describeHolidayCalendar(data.map);
   if (calendarLine) lines.push(calendarLine);
+  // Who does the work (#664) — their personal leave moves the schedule.
+  if (data.map.workers && data.map.workers.length > 0) {
+    lines.push(`Workers (their leave applies, one per track): ${data.map.workers.join(', ')}`);
+  }
   // Fleet (#477) — only when connected.
   if (data.map.fleetId) {
     const share = data.map.fleetShare != null && data.map.fleetShare !== 1 ? `, share ${data.map.fleetShare}` : '';

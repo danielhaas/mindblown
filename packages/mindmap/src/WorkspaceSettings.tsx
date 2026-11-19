@@ -15,6 +15,7 @@ import { useMindmapStore } from './store.js';
 import { RegistrationPolicyPanel } from './RegistrationPolicyPanel.js';
 import { ChangePasswordPanel } from './ChangePasswordPanel.js';
 import { DigestMailPanel } from './DigestMailPanel.js';
+import { LeavePanel } from './LeavePanel.js';
 import { AdminPasswordResetPanel } from './AdminPasswordResetPanel.js';
 import { ClaudeConnectPanel } from './ClaudeConnectPanel.js';
 import { SettingsApiKeys } from './SettingsApiKeys.js';
@@ -431,6 +432,9 @@ export function WorkspaceSettings({
 
           {/* Daily mail with open questions — shown only in workspace-wide view */}
           {!mapId && <DigestMailPanel />}
+
+          {/* Personal leave (#664) — shown only in workspace-wide view */}
+          {!mapId && <LeavePanel />}
 
           {/* Registration policy — shown only in workspace-wide view */}
           {!mapId && <RegistrationPolicyPanel />}

@@ -791,6 +791,14 @@ export interface MindMap {
   workerCount: number;
 
   /**
+   * Who does the map's work (#664): user ids, one per worker track — track
+   * t is `workers[t]`. Their personal leave pauses the work on their track;
+   * an assigned node follows its assignee's leave instead. Empty / absent =
+   * nobody's leave applies. Server source: `maps.workers`.
+   */
+  workers?: string[];
+
+  /**
    * Fraction of calendar time that actually reaches planned-ticket work
    * (0.05–1.0). Captures the drag of meetings, support, firefighting and
    * unplanned work — a team spending half its time on planned tickets has a

@@ -233,6 +233,26 @@ export interface ScheduleContext {
   hoursPerDay?: number;
 }
 
+/** Days off as sorted, non-overlapping [start, end) intervals in scheduler units. */
+export type DaysOff = Array<[number, number]>;
+
+/**
+ * Whose days off the work follows (#664). Absent = everyone works every
+ * (working) day — the schedule before personal leave.
+ *
+ * - `tracks[t]`: the days off of worker track t's person (the map's
+ *   `workers[t]`). A track without an entry works every day.
+ * - `nodes`: a leaf's own days off instead of its track's — its assignee's,
+ *   or `[]` for fleet-built work, which ignores leave.
+ * - `pinnedTrack`: a leaf whose assignee is a map worker goes on that
+ *   worker's track.
+ */
+export interface ScheduleCalendars {
+  tracks?: DaysOff[];
+  nodes?: Map<NodeId, DaysOff>;
+  pinnedTrack?: Map<NodeId, number>;
+}
+
 // Priority enum ordering. Lower number = higher priority.
 // P0 = 0 (highest), P1 = 1, P2 = 2, P3 = 3, null = 4 (lowest).
 const PRIORITY_ENUM_ORDER: Record<string, number> = {
@@ -384,13 +404,40 @@ function priorityTopologicalOrder(
   return out;
 }
 
-/** Earliest t >= from with [t, t + duration) clear of the busy intervals. */
-function earliestFit(busy: Array<[number, number]>, from: number, duration: number): number {
-  let t = from;
+/** The first moment at or after `t` that is not a day off. */
+function skipDaysOff(t: number, off: DaysOff): number {
+  for (const [s, e] of off) {
+    if (s > t) break;
+    if (e > t) t = e;
+  }
+  return t;
+}
+
+/**
+ * Where work of `duration` starting at `start` ends when it pauses on the
+ * days off (#664): effort only moves forward on days the person works.
+ * Exported for tests.
+ */
+export function endOverDaysOff(start: number, duration: number, off: DaysOff): number {
+  let end = start + duration;
+  for (const [s, e] of off) {
+    if (e <= start) continue;
+    if (s >= end) break;
+    end += e - Math.max(s, start);
+  }
+  return end;
+}
+
+/**
+ * Earliest t >= from (not on a day off) where the work — stretched over the
+ * days off — is clear of the busy intervals.
+ */
+function earliestFit(busy: Array<[number, number]>, from: number, duration: number, off: DaysOff = []): number {
+  let t = skipDaysOff(from, off);
   for (const [s, e] of busy) {
     if (e <= t) continue;
-    if (s >= t + duration) break;
-    t = e;
+    if (s >= endOverDaysOff(t, duration, off)) break;
+    t = skipDaysOff(e, off);
   }
   return t;
 }
@@ -468,6 +515,8 @@ export function schedule(
    *  `capacityCriticalPath` needs to tell "waited for a free worker" apart
    *  from "waited for a dependency". Left untouched when omitted. */
   trackOut?: Map<NodeId, number>,
+  /** Days off per person (#664): work pauses on its person's leave. */
+  calendars?: ScheduleCalendars,
 ): ScheduledNode[] {
   // Step 1: Expand any parent-level user deps to leaves (handles the rare
   // case where someone wrote "Section A depends on Section B" at the parent
@@ -657,22 +706,33 @@ export function schedule(
     // a booked task. Ties: the track whose cursor is earliest, then lowest
     // index — deterministic and gives leaf 0 to track 0 when all cursors
     // are tied (clean visual order on day 0).
-    let bestTrack = 0;
+    //
+    // With days off (#664) the work pauses on its person's leave, so the
+    // track that FINISHES first wins (without leave that is the one that
+    // starts first). A leaf whose assignee is a map worker stays on that
+    // worker's track.
+    const wantedTrack = calendars?.pinnedTrack?.get(node.id);
+    const pinned = wantedTrack !== undefined && wantedTrack >= 0 && wantedTrack < workers ? wantedTrack : undefined;
+    const ownOff = calendars?.nodes?.get(node.id);
+    let bestTrack = pinned ?? 0;
     let start = Infinity;
-    for (let t = 0; t < workers; t++) {
-      const s = duration > 0 ? earliestFit(trackBusy[t], earliestStart, duration) : Math.max(trackCursors[t], earliestStart);
-      if (s < start || (s === start && trackCursors[t] < trackCursors[bestTrack])) {
+    let end = Infinity;
+    for (let t = pinned ?? 0; t < (pinned !== undefined ? pinned + 1 : workers); t++) {
+      const off = duration > 0 ? (ownOff ?? calendars?.tracks?.[t] ?? []) : [];
+      const s = duration > 0 ? earliestFit(trackBusy[t], earliestStart, duration, off) : Math.max(trackCursors[t], earliestStart);
+      const e = endOverDaysOff(s, duration, off);
+      if (e < end || (e === end && (s < start || (s === start && trackCursors[t] < trackCursors[bestTrack])))) {
         start = s;
+        end = e;
         bestTrack = t;
       }
     }
-    const end = start + duration;
 
     scheduled.set(node.id, {
       nodeId: node.id,
       computedStart: start,
       computedEnd: end,
-      duration,
+      duration: end - start,
     });
 
     if (duration > 0) book(trackBusy[bestTrack], start, end);

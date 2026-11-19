@@ -5,7 +5,7 @@
 
 import type { MapDetail, NodeWithComputed, ScheduleResult, ReleaseTrendRow, ChangeEvent } from './api.js';
 import * as api from './api.js';
-import { makeDayMapper, describeHolidayCalendar } from '@mindblown/core';
+import { makeDayMapper, describeHolidayCalendar, describeLeave, formatLeaveRange } from '@mindblown/core';
 import { formatApproval, formatReporter } from '@mindblown/tool-kit';
 
 // ── Status icons ────────────────────────────────────────────────
@@ -256,6 +256,23 @@ export function formatScheduleReport(mapData: MapDetail, scheduleData: ScheduleR
       ? `**Calendar:** working days from ${scheduleData.projectStartDate} — Mon–Fri${wc.jurisdiction ? `, ${wc.jurisdiction} public holidays` : ''}${wc.holidays.length > 0 ? ' and the map\'s own days off' : ''} skipped\n`
       : `**Calendar:** every day counts from ${scheduleData.projectStartDate} (no holiday calendar set)\n`,
   );
+
+  // Personal leave (#664): the days off each track's person takes inside
+  // the projected work — the dates above already work around them.
+  const leave = scheduleData.leave ?? [];
+  if (leave.length > 0) {
+    const line = describeLeave(leave);
+    if (line) lines.push(`**${line}** (dates below work around it)\n`);
+    lines.push('## Leave per track');
+    for (const p of leave) {
+      const who = p.track !== null ? `Track ${p.track + 1} — ${p.name}` : `${p.name} (assigned nodes)`;
+      const ranges = p.ranges
+        .map((r) => `${formatLeaveRange(r)}${r.note ? ` (${r.note})` : ''}: ${r.workingDays} working day${r.workingDays === 1 ? '' : 's'}`)
+        .join('; ');
+      lines.push(`- ${who}: ${ranges} — days off: ${p.days.join(', ')}`);
+    }
+    lines.push('');
+  }
 
   // Critical path — capacity-aware (#112): the chain that decides the
   // projected end under the map's worker count, dependencies AND waiting
