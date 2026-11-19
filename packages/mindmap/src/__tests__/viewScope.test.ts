@@ -556,14 +556,16 @@ describe('scope-only getVisibleNodes as the data basis for HillChart/WorkloadVie
   });
 
   describe('default getVisibleNodes() semantics stay intact for existing callers', () => {
-    it('respects maxDepth by default', () => {
+    it('ignores maxDepth by default — the mindmap\'s Depth is opt-in (#641)', () => {
       useMindmapStore.setState({ maxDepth: 1 });
-      const ids = useMindmapStore
-        .getState()
-        .getVisibleNodes()
-        .map((v) => v.node.id)
-        .sort();
-      expect(ids).toEqual(['epicA', 'epicB', 'root']); // leaves cut at depth 1
+      const ids = (opts?: { respectDepth: boolean }) =>
+        useMindmapStore
+          .getState()
+          .getVisibleNodes(opts)
+          .map((v) => v.node.id)
+          .sort();
+      expect(ids()).toEqual(['a1', 'a2', 'b1', 'b2', 'epicA', 'epicB', 'root']);
+      expect(ids({ respectDepth: true })).toEqual(['epicA', 'epicB', 'root']); // leaves cut at depth 1
     });
 
     it('respects collapse by default', () => {

@@ -264,10 +264,9 @@ export function ListView() {
   // ── Flatten tree (respects drill-down and collapse) ─────────────
 
   const flatRows = useMemo(() => {
-    // Not the mindmap's Depth limit (#641): it is 1 on every map load and
-    // List has no control for it, so the table showed only the top level.
-    // Collapse still applies — the row chevron toggles it.
-    const visibleNodes = getVisibleNodes({ respectDepth: false });
+    // Not the mindmap's Depth limit (#641) — getVisibleNodes leaves it
+    // off by default. Collapse still applies: the row chevron toggles it.
+    const visibleNodes = getVisibleNodes();
     if (visibleNodes.length === 0) return [];
 
     const rows: FlatRow[] = [];

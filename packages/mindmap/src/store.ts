@@ -74,17 +74,21 @@ export interface VisibleNode {
 }
 
 /**
- * Options for getVisibleNodes(). All default to true (full drill-down
- * semantics — what the tree-shaped views want). Aggregate views (Hill
- * Chart, Workload) pass all three as false so ONLY the version/sprint
- * scope walk (incl. tag inheritance + ancestor connect) applies, and
- * drill-down focus, depth limit, and collapse state don't cut their
- * data basis.
+ * Options for getVisibleNodes(). Focus and collapse default to true
+ * (drill-down semantics — what the tree-shaped views want); the depth
+ * limit defaults to FALSE. Aggregate views (Hill Chart, Workload) pass
+ * all three as false so ONLY the version/sprint scope walk (incl. tag
+ * inheritance + ancestor connect) applies.
  */
 export interface VisibleNodesOptions {
   /** Walk from the drill-down focus node and append dimmed context siblings. */
   respectFocus?: boolean;
-  /** Truncate the walk at the maxDepth level (0 = unlimited). */
+  /**
+   * Truncate the walk at the maxDepth level (0 = unlimited). Opt-in:
+   * maxDepth is the mindmap canvas's Depth control, and only the mindmap
+   * editor passes true. A view that inherited it showed one level on
+   * every map load with no control to change it (List #641, Calendar).
+   */
   respectDepth?: boolean;
   /** Don't descend into collapsed nodes. */
   respectCollapsed?: boolean;
@@ -95,6 +99,16 @@ export interface VisibleNodesOptions {
  * Broadcast over WebSocket; viewport is encoded as a logical SVG center
  * (cx, cy) + zoom so it survives different window sizes.
  */
+/**
+ * The mindmap's Depth on map load. A product decision with history: 1
+ * (April) → 3 (#53, "can the map support more than three layers?") → 1
+ * again (f64bd90, unreviewed, inside a search-button commit). Depth 1
+ * is only usable because the "+N" pill drills in on click (#640) and no
+ * other view reads maxDepth (#641). Pinned by a test; change it on
+ * purpose, not on the side.
+ */
+export const DEFAULT_MAX_DEPTH = 1;
+
 export interface RemotePresence {
   userId: string;
   name: string;
@@ -321,7 +335,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   computed: new Map(),
   layoutType: 'tree-lr' as const,
   focusNodeId: null,
-  maxDepth: 1,
+  maxDepth: DEFAULT_MAX_DEPTH,
   cycles: [],
   activeCycleFilter: null,
   versions: [],
@@ -448,7 +462,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
         editingNodeId: null,
         computed: recomputeValues(nodesMap),
         focusNodeId: null,
-        maxDepth: 1,
+        maxDepth: DEFAULT_MAX_DEPTH,
         loading: false,
         error: null,
         presence: {},
@@ -495,7 +509,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       editingNodeId: null,
       computed: new Map(),
       focusNodeId: null,
-      maxDepth: 1,
+      maxDepth: DEFAULT_MAX_DEPTH,
       versions: [],
       activeVersionFilter: null,
       reqVersionFilter: null,
@@ -841,7 +855,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   setFollowingUser: (userId) => set({ followingUserId: userId }),
 
   getVisibleNodes: (options) => {
-    const { respectFocus = true, respectDepth = true, respectCollapsed = true } = options ?? {};
+    const { respectFocus = true, respectDepth = false, respectCollapsed = true } = options ?? {};
     const { nodes, rootNodeId, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter, activePhaseFilter } = get();
     if (!rootNodeId) return [];
 
