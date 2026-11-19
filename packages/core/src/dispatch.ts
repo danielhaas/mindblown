@@ -14,7 +14,7 @@
  * Unknown entries match NOTHING (fail-closed): a typo in the gate empties
  * the queue loudly instead of silently opening the fence.
  */
-import type { ApprovalState, Node, NodeMap, StatusDef } from './types.js';
+import type { ApprovalState, Node, NodeMap, PhaseDef, StatusDef } from './types.js';
 import { isForgeLink } from './types.js';
 import { effectiveVersionId } from './versions.js';
 import { isReady } from './dependencies.js';
@@ -25,12 +25,50 @@ import { proseMirrorToPlainText } from './richtext.js';
 /** Default ranking when `dispatchPolicy` is empty. */
 export const DEFAULT_DISPATCH_POLICY = ['bugs', 'priority', 'age'];
 
+/**
+ * The default on a map planned in milestones (#675): within bugs and
+ * priority, the earlier milestone's tickets go out first.
+ */
+export const PHASED_DISPATCH_POLICY = ['bugs', 'priority', 'milestone', 'age'];
+
+const MILESTONE_TITLE = /^\s*(m\d+\b|milestone\b|phase\b|stage\b|step\b)/i;
+
+/**
+ * Whether the root's children read as milestones ("M1 test VM", "Phase 2 —
+ * pilot", …): at least two of them do, and at least half. Usually the
+ * root's children are functional areas (the map is organised by *what*,
+ * not *when*), and ranking by them would be noise.
+ */
+export function hasMilestoneRoots(nodes: readonly Pick<Node, 'id' | 'parentId' | 'text' | 'childrenIds'>[]): boolean {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  return nodes
+    .filter((n) => n.parentId === null)
+    .some((root) => {
+      const kids = root.childrenIds.map((id) => byId.get(id)).filter((k) => k !== undefined);
+      const shaped = kids.filter((k) => MILESTONE_TITLE.test(k.text ?? '')).length;
+      return shaped >= 2 && shaped * 2 >= kids.length;
+    });
+}
+
+/**
+ * What an empty `dispatchPolicy` sorts by on this map: with `milestone`
+ * when the map has phases or milestone-shaped root children
+ * (`hasMilestoneRoots`), else bugs › priority › age.
+ */
+export function defaultDispatchPolicy(
+  phases: readonly PhaseDef[] | null | undefined,
+  nodes: readonly Pick<Node, 'id' | 'parentId' | 'text' | 'childrenIds'>[] = [],
+): string[] {
+  const planned = (phases ?? []).length > 0 || hasMilestoneRoots(nodes);
+  return [...(planned ? PHASED_DISPATCH_POLICY : DEFAULT_DISPATCH_POLICY)];
+}
+
 /** Every FIXED key `dispatchPolicy` understands, in the order the UI offers
  *  them. The one parametric key (`mix:bugs=<N>`, below) is deliberately not
  *  in this list — it is not a chip the UI toggles but a valued entry with
  *  its own control, and every consumer that iterates "the plain keys"
  *  (chip pickers, per-key comparators) must not see it. */
-export const DISPATCH_POLICY_KEYS = ['bugs', 'size', 'priority', 'age'] as const;
+export const DISPATCH_POLICY_KEYS = ['bugs', 'size', 'priority', 'milestone', 'age'] as const;
 export type DispatchPolicyKey = (typeof DISPATCH_POLICY_KEYS)[number];
 
 /** Prefix of the one parametric policy entry, `mix:bugs=<N>`. */
@@ -62,6 +100,12 @@ export const NEEDS_BRIEF_TAG = 'needs-brief';
 /** Gate entry that fences the queue to bug-tagged tickets. */
 export const GATE_BUGS_ONLY = 'type:bug';
 export const GATE_VERSION_PREFIX = 'version:';
+/**
+ * Gate entry that fences the queue to the current milestone (#675): only the
+ * earliest milestone with work an agent can do is handed out
+ * (`milestoneFence`). A standalone entry — not a term inside an `|` entry.
+ */
+export const GATE_MILESTONE_CURRENT = 'milestone:current';
 
 /** Bug detection for gate/policy purposes: node carries the "bug" or
  *  "type:bug" tag, case-insensitive (node.tags mirrors GitHub labels, and
@@ -205,6 +249,8 @@ export type GateEntry =
   | GateTerm
   /** Any one of `options` (#265) — e.g. "bugs, or the release". */
   | { kind: 'any'; raw: string; options: GateTerm[] }
+  /** `milestone:current` (#675) — applied by `milestoneFence`, not per node. */
+  | { kind: 'milestone'; raw: string }
   | { kind: 'unknown'; raw: string };
 
 /**
@@ -218,6 +264,7 @@ export type GateEntry =
  * a whole (fail-closed, like any other unknown entry).
  */
 export function parseGateEntry(raw: string): GateEntry {
+  if (raw === GATE_MILESTONE_CURRENT) return { kind: 'milestone', raw };
   if (raw.includes(GATE_OR)) {
     const options = raw.split(GATE_OR).map(parseGateTerm);
     if (options.length < 2 || options.some((o) => o === null)) return { kind: 'unknown', raw };
@@ -248,7 +295,9 @@ export function gateVersionIds(gate: string[]): string[] {
  * AND-filter over the map's dispatchGate; an entry with `|` matches when any
  * of its terms does (#265). Empty gate = no fence. `version:` matches the
  * node's EFFECTIVE version (own or inherited from the nearest versioned
- * ancestor), not only `node.versionId`.
+ * ancestor), not only `node.versionId`. `milestone:current` passes here:
+ * which milestone is current depends on the whole map, so `milestoneFence`
+ * applies it on top.
  */
 export function matchesDispatchGate(node: Node, gate: string[], nodeMap: NodeMap): boolean {
   const term = (t: GateTerm): boolean =>
@@ -257,6 +306,7 @@ export function matchesDispatchGate(node: Node, gate: string[], nodeMap: NodeMap
     const parsed = parseGateEntry(entry);
     if (parsed.kind === 'any') return parsed.options.some(term);
     if (parsed.kind === 'unknown') return false;
+    if (parsed.kind === 'milestone') return true;
     return term(parsed);
   });
 }
@@ -455,6 +505,123 @@ export function parentHolds(
   return [...byParent.values()].sort((a, b) => b.count - a.count || a.text.localeCompare(b.text));
 }
 
+/** A node's milestone (#675): its rank (0 = earliest) and its name. */
+export interface MilestoneRef {
+  rank: number;
+  name: string;
+}
+
+/**
+ * Which milestone each node belongs to, in plan order (#675).
+ *
+ * On a map with phases: the node's phase — its own `phaseId` or the nearest
+ * ancestor's, the same inheritance the views use — ranked by
+ * `PhaseDef.position`. A node in no phase (or one the map no longer has)
+ * has no milestone.
+ *
+ * Without phases: the root child the node sits under, in the root's child
+ * order — the order the timeline export keeps for milestones without
+ * projected dates. Deliberately not the projected dates themselves: those
+ * come from the scheduler, which this order would then feed back into.
+ * The root itself has no milestone.
+ */
+export function milestoneOrder(nodes: Node[], phases: readonly PhaseDef[] | null | undefined): (nodeId: string) => MilestoneRef | null {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const memo = new Map<string, MilestoneRef | null>();
+  const sorted = [...(phases ?? [])].sort((a, b) => a.position - b.position);
+  if (sorted.length > 0) {
+    const refs = new Map(sorted.map((p, i) => [p.id, { rank: i, name: p.name }]));
+    return (nodeId) => {
+      if (memo.has(nodeId)) return memo.get(nodeId)!;
+      const seen = new Set<string>();
+      let ref: MilestoneRef | null = null;
+      for (let n = byId.get(nodeId); n && !seen.has(n.id); n = n.parentId ? byId.get(n.parentId) : undefined) {
+        seen.add(n.id);
+        if (n.phaseId) {
+          ref = refs.get(n.phaseId) ?? null;
+          break;
+        }
+      }
+      memo.set(nodeId, ref);
+      return ref;
+    };
+  }
+  return (nodeId) => {
+    if (memo.has(nodeId)) return memo.get(nodeId)!;
+    const seen = new Set<string>();
+    let ref: MilestoneRef | null = null;
+    for (let n = byId.get(nodeId); n && n.parentId !== null && !seen.has(n.id); n = byId.get(n.parentId)) {
+      seen.add(n.id);
+      const parent = byId.get(n.parentId);
+      if (parent && parent.parentId === null) {
+        const rank = parent.childrenIds.indexOf(n.id);
+        if (rank >= 0) ref = { rank, name: n.text };
+        break;
+      }
+    }
+    memo.set(nodeId, ref);
+    return ref;
+  };
+}
+
+/** Whether the gate carries `milestone:current`. */
+export function hasMilestoneGate(gate: readonly string[]): boolean {
+  return gate.includes(GATE_MILESTONE_CURRENT);
+}
+
+/** What `milestone:current` does to the in-gate set right now. */
+export interface MilestoneFence {
+  /** The milestone being handed out; null = no fence (no gate entry, or nothing an agent can do anywhere). */
+  current: MilestoneRef | null;
+  /** Whether the fence holds this node back: it sits in a later milestone than `current`. */
+  waits(nodeId: string): boolean;
+}
+
+/**
+ * The `milestone:current` fence (#675): hand out only from the earliest
+ * milestone that still has work an agent can do — a ready leaf inside the
+ * gate with no hold and a brief, or a leaf an agent is running on (a claim
+ * that takes a cap slot, no hold on it). So the fleet finishes the
+ * milestone before it runs ahead.
+ *
+ * A milestone whose open leaves all wait on something else — a person
+ * (skip tag, blocker, approval, no brief), a dependency, a PR review, a
+ * parked branch — does not keep the gate: it moves on to the next one, and
+ * the fleet never sits idle on work only people can finish. Leaves in no
+ * milestone are not fenced (they rank last under the `milestone` key).
+ * Without the gate entry nothing waits.
+ */
+export function milestoneFence(
+  nodes: Node[],
+  opts: { workflow: StatusDef[]; gate: string[]; phases?: readonly PhaseDef[] | null },
+  milestoneOf: (nodeId: string) => MilestoneRef | null = milestoneOrder(nodes, opts.phases),
+): MilestoneFence {
+  const none: MilestoneFence = { current: null, waits: () => false };
+  if (!hasMilestoneGate(opts.gate)) return none;
+  const { pullable, nodeMap } = pullableNodes(nodes, opts.workflow);
+  const isDone = buildIsDonePredicate(opts.workflow);
+  const ancestors = { nodeMap, isDone };
+  const hasChild = new Set(nodes.map((n) => n.parentId).filter((p): p is string => p !== null));
+  const ready = pullable.filter((n) => hasBrief(n));
+  const running = nodes.filter((n) => n.parentId !== null && !hasChild.has(n.id) && !isDone(n.status) && holdsCapSlot(n));
+  let current: MilestoneRef | null = null;
+  for (const n of [...ready, ...running]) {
+    const m = milestoneOf(n.id);
+    if (m === null || (current !== null && m.rank >= current.rank)) continue;
+    if (!matchesDispatchGate(n, opts.gate, nodeMap) || dispatchHold(n, ancestors) !== null) continue;
+    current = m;
+  }
+  if (current === null) return none;
+  const cur = current;
+  return {
+    current: cur,
+    waits: (id) => {
+      const m = milestoneOf(id);
+      return m !== null && m.rank > cur.rank;
+    },
+  };
+}
+
 export type DispatchState = 'hold' | 'full' | 'empty' | 'running';
 
 export interface DispatchQueueSnapshot {
@@ -487,6 +654,12 @@ export interface DispatchQueueSnapshot {
   unversionedOutsideGate: number;
   /** Gate entries the server cannot interpret — each one empties the queue. */
   unknownGateEntries: string[];
+  /**
+   * `milestone:current` (#675): the milestone being handed out, and the
+   * grantable tickets in later milestones that wait for it — not in `inGate`.
+   */
+  currentMilestone: string | null;
+  milestoneWaiting: number;
   /** Grantable ticket ids, for drill-down lists. */
   inGateIds: string[];
   /** The `needsBrief` tickets — each a brief row on the Questions card. */
@@ -511,7 +684,7 @@ export interface DispatchQueueSnapshot {
  */
 export function dispatchQueueSnapshot(
   nodes: Node[],
-  opts: { workflow: StatusDef[]; cap: number; gate: string[] },
+  opts: { workflow: StatusDef[]; cap: number; gate: string[]; phases?: readonly PhaseDef[] | null },
 ): DispatchQueueSnapshot {
   const cap = Math.max(0, Math.floor(opts.cap));
   const activeClaims = nodes.filter(holdsCapSlot).length;
@@ -523,7 +696,9 @@ export function dispatchQueueSnapshot(
   const gated = gatedAll.filter((n) => holds.get(n.id) === null);
   // Same split as the server's skipped[] reasons: any approval hold counts as awaiting approval.
   const awaitingApproval = gatedAll.filter((n) => holds.get(n.id)?.approval != null).length;
-  const inGate = gated.filter(hasBrief);
+  const fence = milestoneFence(nodes, opts);
+  const briefed = gated.filter(hasBrief);
+  const inGate = briefed.filter((n) => !fence.waits(n.id));
   const gateHasVersion = gateVersionIds(opts.gate).length > 0;
   // Unversioned tickets the gate keeps out — with `type:bug|version:X` an
   // unversioned bug is inside, so count against the gate itself.
@@ -550,6 +725,8 @@ export function dispatchQueueSnapshot(
     heldByParents: parentHolds(gatedAll, ancestors),
     unversionedOutsideGate,
     unknownGateEntries,
+    currentMilestone: fence.current?.name ?? null,
+    milestoneWaiting: briefed.length - inGate.length,
     inGateIds: inGate.map((n) => n.id),
     needsBriefIds: gated.filter((n) => !hasBrief(n)).map((n) => n.id),
     state,

@@ -127,10 +127,13 @@ export const getNextTicketTool = defineTool({
     '     A claim whose PR waits on a person (the worker\'s own "Fleet worker …:" blocker,',
     '     no fix asked for) does not count; any other blocker on a claim still does.',
     '  2. dispatchGate AND-filter fences the ready set ("version:<id>", "type:bug",',
-    '     or "type:bug|version:<id>" = either; empty = no fence). Tickets outside',
+    '     or "type:bug|version:<id>" = either; "milestone:current" = only the earliest',
+    '     milestone with agent work, later ones wait — skipped[] reason "milestone";',
+    '     empty = no fence). Tickets outside',
     '     the gate are invisible, not deprioritized — an "empty" answer then carries',
     '     gatedOut {count, unversioned}: ready work the gate keeps out. Log it.',
-    '  3. dispatchPolicy orders what\'s left (default ["bugs","priority","age"]).',
+    '  3. dispatchPolicy orders what\'s left (default ["bugs","priority","age"];',
+    '     with phases ["bugs","priority","milestone","age"] — earlier milestone first).',
     '     A "mix:bugs=<0-100>" entry deterministically interleaves bug and',
     '     non-bug tickets at that percentage (0 = inert, 100 = all bugs first;',
     '     a drained class is back-filled by the other). The weave phase is',
@@ -305,6 +308,17 @@ export const getNextTicketTool = defineTool({
           + (s.heldBy ? ` — via parent ${s.heldBy.id} "${s.heldBy.text}"` : '');
         lines.push(`  - ${s.id} "${s.text}" [${why}]${s.mapId && fleetId !== undefined ? ` (map ${s.mapId})` : ''}`);
       }
+    }
+    const later = result.skipped.filter((s) => s.reason === 'milestone');
+    if (later.length > 0) {
+      // One line per milestone waited for, not per ticket: these are planned work, just not yet.
+      const byMilestone = new Map<string, number>();
+      for (const s of later) {
+        const key = `"${s.waitingFor ?? 'the current milestone'}"${s.mapId && fleetId !== undefined ? ` (map ${s.mapId})` : ''}`;
+        byMilestone.set(key, (byMilestone.get(key) ?? 0) + 1);
+      }
+      lines.push('');
+      for (const [m, n] of byMilestone) lines.push(`${n} ready ticket(s) in later milestones wait for ${m} to finish (gate milestone:current).`);
     }
     if (awaiting.length > 0) {
       lines.push('');

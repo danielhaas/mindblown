@@ -96,6 +96,14 @@ describe('update_map tool — dispatch knobs', () => {
     expect(() => schema.parse({ mapId: 'm1', dispatchGate: ['type:bug|'] })).toThrow();
     expect(() => schema.parse({ mapId: 'm1', dispatchPolicy: ['chaos'] })).toThrow();
   });
+
+  it('accepts the milestone gate entry and policy key (#675) — the entry on its own only', () => {
+    const parsed = schema.parse({ mapId: 'm1', dispatchGate: ['milestone:current', 'type:bug'], dispatchPolicy: ['bugs', 'priority', 'milestone', 'age'] });
+    expect(parsed.dispatchGate).toEqual(['milestone:current', 'type:bug']);
+    expect(parsed.dispatchPolicy).toEqual(['bugs', 'priority', 'milestone', 'age']);
+    expect(() => schema.parse({ mapId: 'm1', dispatchGate: ['type:bug|milestone:current'] })).toThrow();
+    expect(() => schema.parse({ mapId: 'm1', dispatchGate: ['milestone:M1'] })).toThrow();
+  });
 });
 
 // mix:bugs=<N> — the one parametric dispatchPolicy entry. The MCP surface

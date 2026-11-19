@@ -33,6 +33,7 @@ import {
   STALE_CLAIM_HOURS,
   STATE_WORD,
   GATE_BUGS_ONLY,
+  GATE_MILESTONE_CURRENT,
   PRESETS,
   applyPreset,
   claimRows,
@@ -170,17 +171,18 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
   useEffect(() => setPolicyDraft(policy), [policySig]);
 
   const workflow = currentMap?.statusWorkflow;
+  const phases = currentMap?.phases;
   const snapshot: DispatchQueueSnapshot | null = useMemo(() => {
     if (!workflow) return null;
-    return dispatchQueueSnapshot(Object.values(nodes), { workflow, cap, gate });
-  }, [nodes, workflow, cap, gate]);
+    return dispatchQueueSnapshot(Object.values(nodes), { workflow, cap, gate, phases });
+  }, [nodes, workflow, cap, gate, phases]);
 
   // What the DRAFT gate would leave grantable — shown while editing so a
   // fail-closed typo is visible before it goes live.
   const draftInGate = useMemo(() => {
     if (!workflow || sameList(gateDraft, gate)) return null;
-    return dispatchQueueSnapshot(Object.values(nodes), { workflow, cap, gate: gateDraft }).inGate;
-  }, [nodes, workflow, cap, gate, gateDraft]);
+    return dispatchQueueSnapshot(Object.values(nodes), { workflow, cap, gate: gateDraft, phases }).inGate;
+  }, [nodes, workflow, cap, gate, gateDraft, phases]);
 
   const versionOptions = useMemo(() => versionGateOptions(versions), [versions]);
   // Null when the audit window came back FULL without ever seeing a
@@ -256,6 +258,14 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
     </div>
   );
 
+  // milestone:current (#675): ready work in later milestones waits — say for what.
+  const milestoneNote = snapshot.milestoneWaiting > 0 && snapshot.currentMilestone !== null && (
+    <div style={{ ...warnBox, background: '#f0f9ff', borderColor: '#bae6fd', color: '#075985' }} data-testid="dispatch-milestone-wait">
+      {snapshot.milestoneWaiting} ready ticket{snapshot.milestoneWaiting === 1 ? '' : 's'} in later milestones{' '}
+      {snapshot.milestoneWaiting === 1 ? 'waits' : 'wait'} for <strong>{snapshot.currentMilestone}</strong> to finish (gate: current milestone).
+    </div>
+  );
+
   // Developer lens: the same facts, none of the levers. Saved values only —
   // no drafts, no Apply, no presets. Steering stays a PM/operator action.
   if (readOnly) {
@@ -264,6 +274,7 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
         {header}
         {emptyDiagnosis}
         {parentHoldNote}
+        {milestoneNote}
         <KnobRow field="maxActiveClaims" write={writes.maxActiveClaims} versions={versions} hint={KNOB_HINT.maxActiveClaims}>
           <div style={row}>
             <span style={{ fontSize: 13, color: '#334155' }}>
@@ -299,7 +310,7 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
               );
             })}
             {policy.length === 0 && (
-              <span style={{ fontSize: 12, color: '#64748b' }}>default: {effectivePolicy([]).map(policyKeyLabel).join(' › ')}</span>
+              <span style={{ fontSize: 12, color: '#64748b' }}>default: {effectivePolicy([], currentMap.phases, Object.values(nodes)).map(policyKeyLabel).join(' › ')}</span>
             )}
           </div>
         </KnobRow>
@@ -333,6 +344,7 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
       {header}
       {emptyDiagnosis}
       {parentHoldNote}
+      {milestoneNote}
       {saveError && <div style={{ ...warnBox, marginBottom: 8 }}>{saveError}</div>}
 
       {/* ── Cap ── */}
@@ -431,6 +443,17 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
             />
             Bugs only
           </label>
+          <label
+            title="Hands out only the earliest milestone (phase, or else top-level branch) that still has work an agent can do. A milestone whose open tickets all wait on people does not hold the queue."
+            style={{ fontSize: 12, color: '#334155', display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
+          >
+            <input
+              type="checkbox"
+              checked={gateDraft.includes(GATE_MILESTONE_CURRENT)}
+              onChange={() => setGateDraft(toggleGateEntry(gateDraft, GATE_MILESTONE_CURRENT))}
+            />
+            Current milestone only
+          </label>
           <ApplyButton dirty={gateDirty} busy={busy === 'dispatchGate'} locked={busyAny} onClick={() => save('dispatchGate', { dispatchGate: gateDraft })} />
           {draftInGate !== null && (
             <span style={{ fontSize: 12, color: draftInGate === 0 ? '#b91c1c' : '#64748b' }}>
@@ -523,7 +546,7 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
           )}
         </div>
         {policyDraft.length === 0 && (
-          <div style={{ fontSize: 12, color: '#64748b' }}>Sorting by default: {effectivePolicy([]).map(policyKeyLabel).join(' › ')}</div>
+          <div style={{ fontSize: 12, color: '#64748b' }}>Sorting by default: {effectivePolicy([], currentMap.phases, Object.values(nodes)).map(policyKeyLabel).join(' › ')}</div>
         )}
       </KnobRow>
 

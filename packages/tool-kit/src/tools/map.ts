@@ -130,12 +130,12 @@ export const updateMapTool = defineTool({
         z
           .string()
           .regex(
-            /^(version:[^|]+|type:bug)(\|(version:[^|]+|type:bug))*$/,
-            'gate entries must be "version:<versionId>" or "type:bug", or several joined by "|" (any of them)',
+            /^((version:[^|]+|type:bug)(\|(version:[^|]+|type:bug))*|milestone:current)$/,
+            'gate entries must be "version:<versionId>" or "type:bug", or several joined by "|" (any of them), or "milestone:current" on its own',
           ),
       )
       .optional()
-      .describe('Pull-queue AND-filter (REPLACE mode — the full new array). Entries: "version:<versionId>" (effective version, ancestor-inherited) and "type:bug" (node tagged "bug" or "type:bug", case-insensitive — forge-mirrored labels arrive as "type:bug"). Join terms with "|" inside one entry to accept ANY of them: ["type:bug|version:<id>"] = bugs from anywhere OR the release — with dispatchPolicy ["bugs","priority","age"] that is "bugs first, the release as fallback". Empty array = no fence. Tickets outside the gate are invisible to get_next_ticket — the fleet never sees them. So it is not silent: an "empty" pull answers gatedOut {count, unversioned}, and while the map has nothing grantable inside the gate and ready tickets outside it, its owner gets one question on the Questions card (Version them / Widen the gate / Leave it; also in waiting_on_humans and the daily mail) — asked again only when that set changes. In a gate that names a version, a new leaf created without a version gets the map\'s active version (versionId: null keeps it unversioned).'),
+      .describe('Pull-queue AND-filter (REPLACE mode — the full new array). Entries: "version:<versionId>" (effective version, ancestor-inherited) and "type:bug" (node tagged "bug" or "type:bug", case-insensitive — forge-mirrored labels arrive as "type:bug"). Join terms with "|" inside one entry to accept ANY of them: ["type:bug|version:<id>"] = bugs from anywhere OR the release — with dispatchPolicy ["bugs","priority","age"] that is "bugs first, the release as fallback". Empty array = no fence. "milestone:current" (an entry on its own) hands out only the earliest milestone that still has work an agent can do (a ready, unheld, briefed leaf or one an agent is running on); tickets in later milestones wait (skipped[] reason "milestone", waitingFor names the milestone). A milestone whose open leaves all wait on people, dependencies or PR review does not hold the queue — the gate moves on to the next. Milestones are the map\'s phases (node phaseId, inherited; by position), or without phases the root\'s children in tree order. Tickets outside the gate are invisible to get_next_ticket — the fleet never sees them. So it is not silent: an "empty" pull answers gatedOut {count, unversioned}, and while the map has nothing grantable inside the gate and ready tickets outside it, its owner gets one question on the Questions card (Version them / Widen the gate / Leave it; also in waiting_on_humans and the daily mail) — asked again only when that set changes. In a gate that names a version, a new leaf created without a version gets the map\'s active version (versionId: null keeps it unversioned).'),
     dispatchPolicy: z
       .array(
         // One refine, one message naming BOTH alternatives — a union of
@@ -151,7 +151,7 @@ export const updateMapTool = defineTool({
         // (invalid_union still reports "Invalid"). Not an oversight.
         z.string().refine(
           (k) => (DISPATCH_POLICY_KEYS as readonly string[]).includes(k) || MIX_BUGS_REGEX.test(k),
-          { message: 'policy entries must be "bugs", "priority", "size", "age", or "mix:bugs=<N>" with integer N 0-100' },
+          { message: 'policy entries must be "bugs", "priority", "size", "milestone", "age", or "mix:bugs=<N>" with integer N 0-100' },
         ),
       )
       .superRefine((arr, ctx) => {
@@ -165,7 +165,7 @@ export const updateMapTool = defineTool({
         }
       })
       .optional()
-      .describe('Pull-queue ranking keys in order (REPLACE mode): bugs = bug-tagged ("bug"/"type:bug") first, priority = priorityRank then P0–P3, size = smallest estimate first (nulls last), age = oldest first. Empty array = default ["bugs","priority","age"]. May additionally contain at most ONE parametric entry "mix:bugs=<N>" (integer N 0-100): candidates are split into bugs and non-bugs, each class is sorted by the remaining keys, then interleaved deterministically at N:(100-N) — N=0 is inert (exactly the ordering without the entry), N=100 hands out all bugs first, and a drained class is back-filled gaplessly by the other. The weave phase is persisted server-side per map and advances only on actual grants, so repeated single-ticket get_next_ticket pulls walk the pattern instead of restarting it; it is internal state, not configurable.'),
+      .describe('Pull-queue ranking keys in order (REPLACE mode): bugs = bug-tagged ("bug"/"type:bug") first, priority = priorityRank then P0–P3, size = smallest estimate first (nulls last), milestone = earlier milestone first (the map\'s phases by position, node phaseId inherited; without phases the root\'s children in tree order; no milestone = last), age = oldest first. Empty array = default ["bugs","priority","age"], or ["bugs","priority","milestone","age"] on a map with phases. May additionally contain at most ONE parametric entry "mix:bugs=<N>" (integer N 0-100): candidates are split into bugs and non-bugs, each class is sorted by the remaining keys, then interleaved deterministically at N:(100-N) — N=0 is inert (exactly the ordering without the entry), N=100 hands out all bugs first, and a drained class is back-filled gaplessly by the other. The weave phase is persisted server-side per map and advances only on actual grants, so repeated single-ticket get_next_ticket pulls walk the pattern instead of restarting it; it is internal state, not configurable.'),
     archived: z
       .boolean()
       .optional()
