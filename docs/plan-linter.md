@@ -107,7 +107,7 @@ Deliberately not a rule: the `#N ` prefix on imported node titles. The import wr
 
 A manual sweep on 19.11.2026 found stranded work, stale blockers, done-at-0 % tickets and silent blockers across four maps. plan_lint knew almost all of it, but nothing ran it and nothing acted on it. Now a job does (`packages/server/src/lint/daily.ts`):
 
-- **When.** Every 10 minutes the server checks the clock; from `LINT_DAILY_HOUR` (default 06:00, in `DIGEST_MAIL_TZ`, default Europe/Zurich — before the 08:00 mail) it runs plan_lint with **scope all** on every active (not archived) map not yet checked that local day. On demand: `POST /api/maps/:id/lint/runs` or the MCP tool `lint_runs` with `run: true` (edit on the map; replaces today's run). Dismissed findings and muted rules are left alone, as in the panel.
+- **When.** Every 10 minutes the server checks the clock; from `LINT_DAILY_HOUR` (default 06:00, in `DIGEST_MAIL_TZ`, default Europe/Zurich — before the 08:00 mail) it runs plan_lint with **scope all** on every active (not archived) map that **opted in** (at least one rule on in `lintAutoFix`) and is not yet checked that local day. Maps nobody opted in — other owners' projects — are never touched by the scheduled run. `LINT_DAILY_HOUR=off` switches the scheduled run off. On demand: `POST /api/maps/:id/lint/runs` or the MCP tool `lint_runs` with `run: true` (edit on the map; replaces today's run). Dismissed findings and muted rules are left alone, as in the panel.
 - **What it does with a finding** is declared per rule in `packages/core/src/lint.ts`, `LINT_DAILY`:
 
 | Handling | Rules | What happens |
@@ -118,7 +118,7 @@ A manual sweep on 19.11.2026 found stranded work, stale blockers, done-at-0 % ti
 | `off` | the rest | Not part of the daily check; the panel and plan_lint still show them. |
 
 - **Asks once.** The asks are derived on read from the map's newest run (`services/derivedAsks.ts`), not stored while open — a fleet push replaces the stored open set. The id is per rule and node and the run keeps a finding's first-seen time, so tomorrow's run shows the **same** row, not a new one. An answered row stays answered while its question reads the same (Leave it does not come back tomorrow); Later / Delegate snooze it like other derived rows. A node that already has another derived row (a blocker, stalled, step, question … row) gets no lint row — that row is its question; so the `stalled-unclaimed` ask is the existing `stalled-<node>` row.
-- **Switch.** Per map, `lintAutoFix` (`update_map lintAutoFix`, `PUT /api/maps/:id`): rule id → `false` turns that rule's auto-fix off and its findings become asks. A missing key is on.
+- **Switch.** Per map, `lintAutoFix` (`update_map lintAutoFix`, `PUT /api/maps/:id`): rule id → `true` turns that rule's auto-fix on (opt-in); a missing key or `false` is off and its findings become asks. A map with no rule on is not in the scheduled run at all.
 - **Run summary.** Each run is stored per map and local day (`lint_runs`): the fixes applied (each listed, failed ones with why), the asks, the counts. `GET /api/maps/:id/lint/runs?days=N`, `GET /api/lint/runs?days=N` (every map the caller can view), MCP `lint_runs`.
 - **Not covered here:** ready work outside the dispatch gate is not a lint rule, so the daily check does not see it; it gets its own Questions-card ask in a separate change ("ready work outside the dispatch gate is never silent").
 

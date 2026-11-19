@@ -210,7 +210,7 @@ export const updateMapTool = defineTool({
     lintAutoFix: z
       .record(z.enum(LINT_AUTO_RULES as [LintRuleId, ...LintRuleId[]]), z.boolean())
       .optional()
-      .describe("The daily self-check's auto-fixes, per rule (full replacement; a missing rule is on). Once a day plan_lint runs on every active map and applies the safe fixes through plan_fix: status-progress-mismatch (a done leaf below 100 % → mark-done), stale-blocked-reason (a fleet worker's own note on a done node → clear-blocker), stalled-unclaimed (merged PR → mark-done, a worker's orphan idle 24 h → requeue). { \"stalled-unclaimed\": false } turns that one off — its findings become asks on the Questions card instead. lint_runs shows what each run did."),
+      .describe("The daily self-check, opt-in per rule (full replacement; a missing rule is off). Once a day plan_lint runs on every active map with at least one rule on and applies the safe fixes through plan_fix: status-progress-mismatch (a done leaf below 100 % → mark-done), stale-blocked-reason (a fleet worker's own note on a done node → clear-blocker), stalled-unclaimed (merged PR → mark-done, a worker's orphan idle 24 h → requeue). { \"stalled-unclaimed\": true } turns that one on; rules left off become asks on the Questions card instead. A map with no rule on is not in the daily run. lint_runs shows what each run did."),
     autoImportNewIssues: z
       .boolean()
       .optional()

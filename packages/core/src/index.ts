@@ -109,7 +109,7 @@ export {
 } from './statusWorkflow.js';
 
 // Plan-lint vocabulary shared by engine, MCP tool and panel (docs/plan-linter.md)
-export { LINT_RULE_IDS, LINT_ACTIONS, LINT_ACTION_IDS, LINT_FIX_ACTIONS, LINT_DAILY, LINT_AUTO_RULES, lintAutoFixOn, LINT_ASK_PREFIX, lintAskId, parseLintAskId, lintAskNodeId, LINT_ASK_LEAVE, lintAnswerAction, sanitizeLintAutoFix, lintDigestLine, buildLintAsk } from './lint.js';
+export { LINT_RULE_IDS, LINT_ACTIONS, LINT_ACTION_IDS, LINT_FIX_ACTIONS, LINT_DAILY, LINT_AUTO_RULES, lintAutoFixOn, lintDailyOptedIn, LINT_ASK_PREFIX, lintAskId, parseLintAskId, lintAskNodeId, LINT_ASK_LEAVE, lintAnswerAction, sanitizeLintAutoFix, lintDigestLine, buildLintAsk } from './lint.js';
 export type { LintRuleId, LintActionId, LintHandling, LintAutoFix, LintRun, LintRunFix, LintRunAsk } from './lint.js';
 
 // Release ordering

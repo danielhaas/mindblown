@@ -87,7 +87,7 @@ export const LINT_FIX_ACTIONS: Partial<Record<LintRuleId, LintActionId[]>> = {
  *
  *   auto   — apply the safe fix through plan_fix's write path when the
  *            finding is the safe case (lint/daily.ts autoAction), else ask.
- *            Off per rule with the map's `lintAutoFix` → ask.
+ *            On per rule with the map's `lintAutoFix` (opt-in); off → ask.
  *   ask    — one ask per finding on the map's Questions card
  *            (`lint-<rule>-<node>`), options from the finding's fixes.
  *   digest — counted into one line per map in the daily mail.
@@ -124,17 +124,26 @@ export const LINT_DAILY: Record<LintRuleId, { handling: LintHandling; label?: st
   'misfiled-repo': { handling: 'ask' },
 };
 
-/** The rules whose handling is `auto` — the keys `lintAutoFix` may switch off. */
+/** The rules whose handling is `auto` — the keys `lintAutoFix` may switch on. */
 export const LINT_AUTO_RULES = LINT_RULE_IDS.filter((r) => LINT_DAILY[r].handling === 'auto');
 
 /**
- * Per-map switch for the daily auto-fixes: rule id → false turns that
- * rule's auto-fix off (its findings become asks); a missing key is on.
+ * Per-map opt-in for the daily self-check: rule id → true turns that
+ * rule's auto-fix on; a missing key (or false) is off and its findings
+ * become asks. A map with no rule on is not part of the scheduled daily
+ * run at all — the check writes into a map only when its owner asked for
+ * it (19.11.2026: "every active map" would have rewritten other owners'
+ * projects, as the done-repair #663 nearly did).
  */
 export type LintAutoFix = Partial<Record<LintRuleId, boolean>>;
 
 export function lintAutoFixOn(setting: LintAutoFix | null | undefined, ruleId: LintRuleId): boolean {
-  return LINT_DAILY[ruleId].handling === 'auto' && setting?.[ruleId] !== false;
+  return LINT_DAILY[ruleId].handling === 'auto' && setting?.[ruleId] === true;
+}
+
+/** The map opted in to the scheduled daily self-check: at least one auto rule switched on. */
+export function lintDailyOptedIn(setting: LintAutoFix | null | undefined): boolean {
+  return LINT_AUTO_RULES.some((r) => setting?.[r] === true);
 }
 
 /** A daily-check finding on the Questions card: `lint-<rule>-<node uuid>`. */
