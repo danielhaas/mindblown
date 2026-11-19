@@ -231,6 +231,7 @@ export interface MapDetail {
     holidayOverrides?: { add: string[]; remove: string[] };
     /** #664 — who does the map's work, one user id per worker track. */
     workers?: string[];
+    deployProbe?: string | null;
   };
   nodes: NodeWithComputed[];
   /** In-progress leaves nobody is working on (core findStalled); absent on older servers. */
@@ -564,6 +565,7 @@ export function updateMap(
     holidayJurisdiction?: string | null;
     holidayOverrides?: { add: string[]; remove: string[] };
     workers?: string[];
+    deployProbe?: string | null;
     phases?: PhaseDef[];
     archived?: boolean;
     setupCompleted?: boolean;

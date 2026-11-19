@@ -1636,8 +1636,10 @@ export interface DeployDrift {
   commits: Array<{ sha: string; at: string; subject: string }>;
 }
 
-export async function fetchDeployDrift(mapId: string): Promise<DeployDrift | null> {
-  return (await request<{ drift: DeployDrift | null }>(`/api/maps/${mapId}/deploy-drift`)).drift;
+/** The map's drift, from its deploy probe (or the server's own checkout); `probeError` when the probe failed. */
+export async function fetchDeployDrift(mapId: string): Promise<{ drift: DeployDrift | null; probeError: string | null }> {
+  const r = await request<{ drift: DeployDrift | null; probeError?: string | null }>(`/api/maps/${mapId}/deploy-drift`);
+  return { drift: r.drift, probeError: r.probeError ?? null };
 }
 
 export function fetchSchedule(mapId: string): Promise<ScheduleResponse> {

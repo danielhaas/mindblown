@@ -35,6 +35,8 @@ const BROADCAST_MAP_SETTINGS = [
   // Holiday calendar (#110): the Gantt's label and dates follow it.
   'holidayJurisdiction',
   'holidayOverrides',
+  // Deploy probe — the Fleet tab's "merged, not live" follows it.
+  'deployProbe',
   // Archive flips in another tab must land here: the banner and the
   // agent-refusal state follow the server, never an optimistic edit.
   'archivedAt',
@@ -205,7 +207,7 @@ export interface MindmapState {
    * write moves the fleet within ~2 min, so callers apply explicitly, never
    * on-change.
    */
-  updateMapSettings: (fields: Partial<Pick<MindMap, 'name' | 'description' | 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy' | 'aiEstimateDrafts' | 'fleetId' | 'fleetShare' | 'fleetCanEditCi' | 'githubInstallationId' | 'githubRepoOwner' | 'githubRepoName' | 'autoImportNewIssues'>> & { archived?: boolean; setupCompleted?: boolean }) => Promise<boolean>;
+  updateMapSettings: (fields: Partial<Pick<MindMap, 'name' | 'description' | 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy' | 'aiEstimateDrafts' | 'fleetId' | 'fleetShare' | 'fleetCanEditCi' | 'githubInstallationId' | 'githubRepoOwner' | 'githubRepoName' | 'autoImportNewIssues' | 'deployProbe'>> & { archived?: boolean; setupCompleted?: boolean }) => Promise<boolean>;
   /**
    * Append a new phase (PhaseDef) to the current map's phases list and
    * persist via PUT /api/maps/:id. Returns the new phase's id (so callers
@@ -330,6 +332,32 @@ export function getWsClient(): WsClient | null {
 }
 
 // ── Store implementation ───────────────────────────────────────
+
+/**
+ * Fold (`collapsed = true`) or open every branch below `scopeId`. The scope
+ * node itself always ends up open, so a collapse-all still shows its first
+ * level. Returns a new nodes record, or null when nothing changes.
+ */
+export function setCollapsedInSubtree(
+  nodes: Record<string, Node>,
+  scopeId: string,
+  collapsed: boolean,
+): Record<string, Node> | null {
+  let next: Record<string, Node> | null = null;
+  const stack = [scopeId];
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    const node = nodes[id];
+    if (!node || node.childrenIds.length === 0) continue;
+    const want = id === scopeId ? false : collapsed;
+    if (!!node.collapsed !== want) {
+      next ??= { ...nodes };
+      next[id] = { ...node, collapsed: want };
+    }
+    for (const cid of node.childrenIds) stack.push(cid);
+  }
+  return next;
+}
 
 export const useMindmapStore = create<MindmapState>((set, get) => ({
   user: null,
@@ -1553,26 +1581,23 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     });
   },
 
+  // Both act on the visible subtree — the drill-down focus when there is
+  // one, else the whole map — and land as ONE store update however many
+  // nodes change (a per-node toggle re-lays-out the map once per node).
   expandAll: () => {
-    const state = get();
-    const updatedNodes = { ...state.nodes };
-    for (const [id, node] of Object.entries(updatedNodes)) {
-      if (node.collapsed && node.childrenIds.length > 0) {
-        updatedNodes[id] = { ...node, collapsed: false };
-      }
-    }
-    set({ nodes: updatedNodes });
+    const { nodes, rootNodeId, focusNodeId } = get();
+    const scopeId = focusNodeId ?? rootNodeId;
+    if (!scopeId) return;
+    const changed = setCollapsedInSubtree(nodes, scopeId, false);
+    if (changed) set({ nodes: changed });
   },
 
   collapseAll: () => {
-    const state = get();
-    const updatedNodes = { ...state.nodes };
-    for (const [id, node] of Object.entries(updatedNodes)) {
-      if (!node.collapsed && node.childrenIds.length > 0 && id !== state.rootNodeId) {
-        updatedNodes[id] = { ...node, collapsed: true };
-      }
-    }
-    set({ nodes: updatedNodes });
+    const { nodes, rootNodeId, focusNodeId } = get();
+    const scopeId = focusNodeId ?? rootNodeId;
+    if (!scopeId) return;
+    const changed = setCollapsedInSubtree(nodes, scopeId, true);
+    if (changed) set({ nodes: changed });
   },
 
   recompute: () => {

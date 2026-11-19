@@ -174,6 +174,8 @@ export interface MapDetail {
     holidayOverrides?: { add: string[]; remove: string[] };
     /** #664 — who does the map's work, one user id per worker track. */
     workers?: string[];
+    /** Deploy probe URL, 'none', or null = not set (merged, not live). */
+    deployProbe?: string | null;
     /** #477 — the fleet the map is connected to; null/absent = none. */
     fleetId?: string | null;
     fleetName?: string | null;

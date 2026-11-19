@@ -715,6 +715,17 @@ export function GanttView() {
     });
   }, []);
 
+  // Collapse all folds every row with children but the root, so the first
+  // level shows; expand all opens them. One state update each.
+  const collapseAllRows = useCallback(() => {
+    const next = new Set<string>();
+    for (const [id, n] of Object.entries(nodes)) {
+      if (id !== rootNodeId && n.childrenIds.length > 0) next.add(id);
+    }
+    setCollapsedSet(next);
+  }, [nodes, rootNodeId]);
+  const expandAllRows = useCallback(() => setCollapsedSet(new Set()), []);
+
   // ── Drag to reschedule ──────────────────────────────────────────
 
   // Bar drag uses direct listener attachment rather than a
@@ -1124,6 +1135,32 @@ export function GanttView() {
             }}
           >
             {s.charAt(0).toUpperCase() + s.slice(1)}
+          </button>
+        ))}
+
+        <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+
+        {/* Collapse all / expand all rows */}
+        {(['collapse', 'expand'] as const).map((kind) => (
+          <button
+            key={kind}
+            onClick={kind === 'collapse' ? collapseAllRows : expandAllRows}
+            title={kind === 'collapse' ? 'Collapse all rows — only the first level stays open' : 'Expand all rows'}
+            data-testid={`gantt-${kind}-all`}
+            style={{
+              padding: '3px 10px',
+              borderRadius: 4,
+              border: '1px solid #e2e8f0',
+              fontSize: 11,
+              fontWeight: 600,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              background: '#fff',
+              color: '#475569',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {kind === 'collapse' ? 'Collapse all' : 'Expand all'}
           </button>
         ))}
 

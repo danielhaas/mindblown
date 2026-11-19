@@ -23,6 +23,7 @@ import { AiProviderPanel } from './AiProviderPanel.js';
 import { forgeLabel } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
 import { MapAiPolicyPanel } from './MapAiPolicyPanel.js';
+import { MapDeployProbePanel } from './MapDeployProbePanel.js';
 import { MapArchivePanel } from './MapArchivePanel.js';
 import { MapFleetPanel } from './MapFleetPanel.js';
 import { MapTrustPolicyPanel } from './MapTrustPolicyPanel.js';
@@ -452,6 +453,9 @@ export function WorkspaceSettings({
 
           {/* Per-map AI policy (#375) — shown only for a map */}
           {mapId && <MapAiPolicyPanel />}
+
+          {/* How the map's project is deployed — merged, not live */}
+          {mapId && <MapDeployProbePanel />}
 
           {/* Archive switch — last, it is the "stop everything" lever */}
           {mapId && <MapArchivePanel />}
