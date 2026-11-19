@@ -88,6 +88,9 @@ function renderTreeNode(
   } else if (node.computedEffort > 0) {
     parts.push(`effort: ${node.computedEffort}`);
   }
+  // Parked branches (#655): out of the parent's effort, shown on their own.
+  if (node.parked) parts.push('PARKED (later — no dates, not pulled by the fleet)');
+  else if (node.parkedEffort) parts.push(`parked: ${node.parkedEffort}`);
   if (node.status) parts.push(`status: ${node.status}`);
   if (node.startedAt && node.computedProgress < 100) parts.push(`started: ${node.startedAt}`);
   if (node.expectedDoneAt && node.computedProgress < 100) {

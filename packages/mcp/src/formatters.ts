@@ -290,7 +290,27 @@ export function formatScheduleReport(mapData: MapDetail, scheduleData: ScheduleR
     lines.push(`- ${name} [${s.nodeId}]: day ${s.computedStart} - ${s.computedEnd} (${dates(s.computedStart, s.computedEnd)}${s.duration} duration)${marker}`);
   }
 
+  // Parked branches (#655): kept in the map, left out of the schedule.
+  // Only the top of each parked branch is listed.
+  const parked = mapData.nodes.filter((n) => n.parked === true && !hasParkedAncestor(n, lookup));
+  if (parked.length > 0) {
+    lines.push('', '## Parked (later — not scheduled, not in the total)');
+    for (const n of parked) lines.push(`- ${n.text} [${n.id}]${n.computedEffort > 0 ? ` — ${n.computedEffort} ${mapData.map.effortUnit ?? 'hours'}` : ''}`);
+  }
+
   return lines.join('\n');
+}
+
+function hasParkedAncestor(node: NodeWithComputed, lookup: Map<string, NodeWithComputed>): boolean {
+  const seen = new Set<string>();
+  for (let id = node.parentId; id && !seen.has(id); ) {
+    seen.add(id);
+    const a = lookup.get(id);
+    if (!a) return false;
+    if (a.parked === true) return true;
+    id = a.parentId;
+  }
+  return false;
 }
 
 export async function formatSprintOverview(mapData: MapDetail): Promise<string> {

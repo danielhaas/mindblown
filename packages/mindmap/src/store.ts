@@ -1108,6 +1108,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       externalLinks: [],
       attachments: [],
       autoProgress: 'off',
+      parked: false,
       priorityRank: null,
     completedAt: null,
       startedAt: null,

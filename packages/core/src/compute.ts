@@ -19,7 +19,7 @@ import type {
  * `computedEffort` (forecasts, "smallest ready node", capacity math) need
  * the truth — a leaf with no estimate has 0 known effort, not 1.
  */
-export function computeEffort(node: Node, nodeMap: NodeMap): number {
+export function computeEffort(node: Node, nodeMap: NodeMap, inParked: boolean = node.parked === true): number {
   if (node.childrenIds.length === 0) {
     return node.effortEstimate ?? 0;
   }
@@ -27,9 +27,34 @@ export function computeEffort(node: Node, nodeMap: NodeMap): number {
   let total = 0;
   for (const childId of node.childrenIds) {
     const child = nodeMap.get(childId);
-    if (child) {
-      total += computeEffort(child, nodeMap);
+    if (child && !skipsParked(child, inParked)) {
+      total += computeEffort(child, nodeMap, inParked);
     }
+  }
+  return total;
+}
+
+/**
+ * A parked child (#655) is left out of its parent's rollups — effort,
+ * progress, health, blocked — unless the parent sits in a parked branch
+ * itself (then the branch's own totals count everything in it).
+ */
+function skipsParked(child: Node, inParked: boolean): boolean {
+  return child.parked === true && !inParked;
+}
+
+/**
+ * Effort in parked branches below a node (#655): what `computeEffort`
+ * leaves out, shown separately ("parked: 10d"). 0 inside a parked branch,
+ * where nothing is left out.
+ */
+export function computeParkedEffort(node: Node, nodeMap: NodeMap): number {
+  if (node.parked === true) return 0;
+  let total = 0;
+  for (const childId of node.childrenIds) {
+    const child = nodeMap.get(childId);
+    if (!child) continue;
+    total += child.parked === true ? computeEffort(child, nodeMap, true) : computeParkedEffort(child, nodeMap);
   }
   return total;
 }
@@ -42,7 +67,7 @@ export function computeEffort(node: Node, nodeMap: NodeMap): number {
  * partly-done parent next to fully-done estimated siblings reads as
  * 100% even though work remains).
  */
-function effortWeight(node: Node, nodeMap: NodeMap): number {
+function effortWeight(node: Node, nodeMap: NodeMap, inParked: boolean): number {
   if (node.childrenIds.length === 0) {
     return node.effortEstimate ?? 1;
   }
@@ -50,8 +75,8 @@ function effortWeight(node: Node, nodeMap: NodeMap): number {
   let total = 0;
   for (const childId of node.childrenIds) {
     const child = nodeMap.get(childId);
-    if (child) {
-      total += effortWeight(child, nodeMap);
+    if (child && !skipsParked(child, inParked)) {
+      total += effortWeight(child, nodeMap, inParked);
     }
   }
   return total;
@@ -65,7 +90,7 @@ function effortWeight(node: Node, nodeMap: NodeMap): number {
  * where unestimated leaves count as weight 1 (see `effortWeight`).
  * If total weight is 0, returns 0.
  */
-export function computeProgress(node: Node, nodeMap: NodeMap): number {
+export function computeProgress(node: Node, nodeMap: NodeMap, inParked: boolean = node.parked === true): number {
   if (node.childrenIds.length === 0) {
     // Leaf node
     return node.percentComplete ?? 0;
@@ -76,10 +101,10 @@ export function computeProgress(node: Node, nodeMap: NodeMap): number {
 
   for (const childId of node.childrenIds) {
     const child = nodeMap.get(childId);
-    if (!child) continue;
+    if (!child || skipsParked(child, inParked)) continue;
 
-    const childWeight = effortWeight(child, nodeMap);
-    const childProgress = computeProgress(child, nodeMap);
+    const childWeight = effortWeight(child, nodeMap, inParked);
+    const childProgress = computeProgress(child, nodeMap, inParked);
     totalWeight += childWeight;
     weightedProgress += childWeight * childProgress;
   }
@@ -149,6 +174,7 @@ export function computeHealth(
   nodeMap: NodeMap,
   threshold: number = 0.2,
   now?: Date,
+  inParked: boolean = node.parked === true,
 ): HealthSignal {
   if (node.childrenIds.length === 0) {
     return leafHealth(node, threshold, now);
@@ -158,9 +184,9 @@ export function computeHealth(
 
   for (const childId of node.childrenIds) {
     const child = nodeMap.get(childId);
-    if (!child) continue;
+    if (!child || skipsParked(child, inParked)) continue;
 
-    const childHealth = computeHealth(child, nodeMap, threshold, now);
+    const childHealth = computeHealth(child, nodeMap, threshold, now, inParked);
 
     if (childHealth === 'behind') {
       return 'behind'; // short-circuit: can't get worse
@@ -184,6 +210,7 @@ export function computeHealth(
 export function computeIsBlocked(
   node: Node,
   nodeMap: NodeMap,
+  inParked: boolean = node.parked === true,
 ): { isBlocked: boolean; blockedBy: BlockedBy } {
   if (node.childrenIds.length === 0) {
     const manual = node.blockedReason != null;
@@ -205,8 +232,8 @@ export function computeIsBlocked(
   let blockedDescendantCount = 0;
   for (const childId of node.childrenIds) {
     const child = nodeMap.get(childId);
-    if (!child) continue;
-    const childResult = computeIsBlocked(child, nodeMap);
+    if (!child || skipsParked(child, inParked)) continue;
+    const childResult = computeIsBlocked(child, nodeMap, inParked);
     if (child.childrenIds.length === 0) {
       if (childResult.isBlocked) blockedDescendantCount += 1;
     } else {
@@ -248,6 +275,7 @@ export function computeTree(
       healthSignal: computeHealth(node, nodeMap, threshold, now),
       isBlocked: blocked.isBlocked,
       blockedBy: blocked.blockedBy,
+      parkedEffort: computeParkedEffort(node, nodeMap),
     });
   }
 

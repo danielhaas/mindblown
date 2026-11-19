@@ -54,7 +54,9 @@ export {
   leafHealth,
   computeIsBlocked,
   computeTree,
+  computeParkedEffort,
 } from './compute.js';
+export { parkedNodeIds, isInParkedBranch, withoutParked } from './parked.js';
 export { explainBlockedParent, outsideBranch } from './blockedParent.js';
 export type { BlockedRootCause, BlockedParentExplanation } from './blockedParent.js';
 
@@ -146,6 +148,7 @@ export {
   parentHolds,
   isEpicLeaf,
   EPIC_HOLD_TAG,
+  PARKED_HOLD_TAG,
   DISPATCH_SKIP_TAGS,
   BLOCKED_TAG,
   FLEET_FIX_TAG,
@@ -502,6 +505,7 @@ export type {
 export {
   renderTimelineMarkdown,
   timelineMilestones,
+  timelineLater,
   formatTimelineDay,
   isTimeZone,
   isWaitingLeaf,

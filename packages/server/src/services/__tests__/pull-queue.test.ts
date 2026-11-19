@@ -195,6 +195,19 @@ describe('ready-set membership', () => {
   });
 });
 
+describe('parked branches (#655)', () => {
+  it('never grants a node under a parked branch; it is held like a skip tag', () => {
+    const m6 = makeNode({ id: 'm6', parked: true });
+    const d = select([
+      m6,
+      makeNode({ id: 'widget', parentId: 'm6' }),
+      makeNode({ id: 'plain' }),
+    ]);
+    expect(d.ranked.map((n) => n.id)).toEqual(['plain']);
+    expect(d.humanOnly.map((h) => [h.node.id, h.tag, h.heldBy?.id])).toEqual([['widget', 'parked', 'm6']]);
+  });
+});
+
 describe('dispatchGate', () => {
   it('version: matches own and ancestor-inherited versionIds', () => {
     const epic = makeNode({ id: 'epic', versionId: 'v1' });

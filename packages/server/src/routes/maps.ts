@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
-import { computeTree, schedule, criticalPath, capacityCriticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline } from '@mindblown/core';
+import { computeTree, schedule, criticalPath, capacityCriticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline, withoutParked, parkedNodeIds } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { buildTimelineMarkdown, TimelineOptionError } from '../export/timeline.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
@@ -76,7 +76,9 @@ interface MapProjection {
  * scope_simulate endpoint to compute before/after snapshots without
  * persisting anything.
  */
-function projectMap(nodes: CoreNode[], map: MindMap): MapProjection {
+function projectMap(allNodes: CoreNode[], map: MindMap): MapProjection {
+  // Parked branches (#655) are not planned: out of the totals and the finish.
+  const nodes = withoutParked(allNodes);
   const leaves = nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
   let totalScope = 0;
   let totalDone = 0;
@@ -681,6 +683,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           externalLinks: [],
           attachments: [],
           autoProgress: 'off',
+          parked: false,
           priorityRank: null,
           completedAt: null,
           startedAt: null,
@@ -798,6 +801,10 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       scopeLabel = `version ${versionId}` + (nodeId ? ` within ${scopeLabel}` : '');
       leaves = leaves.filter((n) => effectiveVersionId(n.id, nodeById) === versionId);
     }
+    // Parked branches (#655) are not planned — out of the forecast, unless
+    // the forecast asks for a parked subtree itself.
+    const parkedIds = parkedNodeIds(data.nodes);
+    if (!(nodeId && parkedIds.has(nodeId))) leaves = leaves.filter((n) => !parkedIds.has(n.id));
 
     // ── Remaining effort + open-ticket count ──
     let remainingEffort = 0;
@@ -894,7 +901,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
         }
       } else {
         // Whole map: the critical-path scheduler IS the right answer.
-        const scheduled = schedule(data.nodes, 0, constraints, undefined, workers);
+        const scheduled = schedule(withoutParked(data.nodes), 0, constraints, undefined, workers);
         const scopedIds = new Set(leaves.map((l) => l.id));
         maxScopedEnd = scheduled
           .filter((s) => scopedIds.has(s.nodeId))

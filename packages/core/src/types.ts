@@ -489,6 +489,17 @@ export interface Node {
    */
   autoProgress: 'off' | 'children';
 
+  // ── Parked ("later") ──────────────────────────────────────
+  /**
+   * Parked branch (#655): the node and its subtree stay in the map for
+   * context but are not planned. The scheduler leaves them out (no dates,
+   * no critical path, not in the total duration), parents' rollups count
+   * them separately (`parkedEffort`), the timeline export lists them under
+   * "Later", and the fleet never pulls them (a dispatch hold). Optional so
+   * fixtures need not set it; absent = false.
+   */
+  parked?: boolean;
+
   // ── Metadata ──────────────────────────────────────────────
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
@@ -525,6 +536,8 @@ export interface ComputedNodeValues {
   healthSignal: HealthSignal;
   isBlocked: boolean;
   blockedBy: BlockedBy;
+  /** Effort in parked branches below this node (#655), left out of `computedEffort`. 0 = none. */
+  parkedEffort?: number;
 }
 
 /** Detail behind isBlocked — which signals fired. */

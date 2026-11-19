@@ -555,6 +555,12 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS auto_progress TEXT NOT NULL DEFAULT 'off'
   `);
 
+  // ── Parked branches (#655) ────────────────────────────────────
+  // Default false: every existing node stays planned.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS parked BOOLEAN NOT NULL DEFAULT false
+  `);
+
   // ── API Keys (per-user, GitHub-PAT style) ────────────────────
   // Plaintext format: `mb_<32-char base64url>`. We store only the scrypt
   // hash (salt+key, same format as the password_hash column) plus the

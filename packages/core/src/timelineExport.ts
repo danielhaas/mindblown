@@ -16,6 +16,7 @@ import { computeProgress } from './compute.js';
 import { buildIsDonePredicate, resolveStatusDef } from './statusWorkflow.js';
 import { proseMirrorToPlainText } from './richtext.js';
 import { BLOCKED_TAG } from './dispatch.js';
+import { isInParkedBranch } from './parked.js';
 
 export type TimelineDetail = 'summary' | 'full';
 export const TIMELINE_DETAILS: readonly TimelineDetail[] = ['summary', 'full'];
@@ -137,14 +138,41 @@ function effortText(effort: number, unit: EffortUnit | undefined): string {
   return `${n} ${u}`;
 }
 
-/** Leaves under a node in tree order; a childless node is its own leaf. */
-function leavesOf(node: Node, byId: Map<NodeId, Node>): Node[] {
+/**
+ * Leaves under a node in tree order; a childless node is its own leaf.
+ * `skipParked`: parked branches below (#655) are left out — they are listed
+ * under "Later" instead.
+ */
+function leavesOf(node: Node, byId: Map<NodeId, Node>, skipParked = false): Node[] {
   if (node.childrenIds.length === 0) return [node];
   const out: Node[] = [];
   for (const id of node.childrenIds) {
     const child = byId.get(id);
-    if (child) out.push(...leavesOf(child, byId));
+    if (child && !(skipParked && child.parked === true)) out.push(...leavesOf(child, byId, skipParked));
   }
+  return out;
+}
+
+/**
+ * The parked branches under the export root (#655), in tree order: the
+ * top-most parked node of each, listed under "Later" without dates. Empty
+ * when the root itself sits in a parked branch — then the whole export is
+ * that branch.
+ */
+export function timelineLater(input: Pick<TimelineInput, 'nodes' | 'rootNodeId'>): Node[] {
+  const byId = new Map(input.nodes.map((n) => [n.id, n]));
+  const root = byId.get(input.rootNodeId);
+  if (!root || isInParkedBranch(root, byId)) return [];
+  const out: Node[] = [];
+  const walk = (n: Node) => {
+    for (const id of n.childrenIds) {
+      const child = byId.get(id);
+      if (!child) continue;
+      if (child.parked === true) out.push(child);
+      else walk(child);
+    }
+  };
+  walk(root);
   return out;
 }
 
@@ -179,6 +207,9 @@ export function timelineMilestones(input: TimelineInput): TimelineMilestone[] {
   const byId = new Map(input.nodes.map((n) => [n.id, n]));
   const root = byId.get(input.rootNodeId);
   if (!root) return [];
+  // Parked branches (#655) go to "Later", not into the milestones — unless
+  // the export is of a parked branch itself.
+  const skipParked = !isInParkedBranch(root, byId);
   const isDoneStatus = buildIsDonePredicate(input.statusWorkflow);
   const leafDone = (n: Node) => isDoneStatus(n.status) || (n.percentComplete ?? 0) >= 100;
   const leafStarted = (n: Node) =>
@@ -187,8 +218,8 @@ export function timelineMilestones(input: TimelineInput): TimelineMilestone[] {
   const milestones: TimelineMilestone[] = [];
   for (const id of root.childrenIds) {
     const node = byId.get(id);
-    if (!node) continue;
-    const leaves = leavesOf(node, byId);
+    if (!node || (skipParked && node.parked === true)) continue;
+    const leaves = leavesOf(node, byId, skipParked);
     const done = leaves.filter(leafDone);
     const remaining = leaves.filter((l) => !leafDone(l));
     const waiting = remaining.filter(isWaitingLeaf).map((n) => ({ node: n, note: waitingNote(n) }));
@@ -237,6 +268,7 @@ export function renderTimelineMarkdown(input: TimelineInput): string {
   const byId = new Map(input.nodes.map((n) => [n.id, n]));
   const root = byId.get(input.rootNodeId);
   const milestones = timelineMilestones(input);
+  const later = timelineLater(input);
 
   const title = root && root.parentId !== null ? `${input.mapName} — ${root.text}` : input.mapName;
   const out: string[] = [`# ${inline(title)} — timeline`, ''];
@@ -260,7 +292,8 @@ export function renderTimelineMarkdown(input: TimelineInput): string {
 
   if (milestones.length === 0) {
     out.push('_Nothing planned under this node yet._', '');
-    return out.join('\n');
+    pushLater(out, later, byId, full, input.effortUnit);
+    return out.join('\n').replace(/\n+$/, '\n');
   }
 
   // ── Summary table ──
@@ -328,5 +361,24 @@ export function renderTimelineMarkdown(input: TimelineInput): string {
     }
   }
 
+  pushLater(out, later, byId, full, input.effortUnit);
   return out.join('\n').replace(/\n+$/, '\n');
+}
+
+/** The "Later" section (#655): parked branches, no dates — they are not planned. */
+function pushLater(out: string[], later: Node[], byId: Map<NodeId, Node>, full: boolean, unit: EffortUnit | undefined): void {
+  if (later.length === 0) return;
+  out.push('## Later', '', '_Parked — kept for context, not planned and not scheduled._', '');
+  for (const n of later) {
+    const link = issueLink(n);
+    const label = link ? `[${inline(n.text)}](${link})` : inline(n.text);
+    const extras: string[] = [];
+    if (full) {
+      const effort = leavesOf(n, byId).reduce((s, l) => s + (l.effortEstimate ?? 0), 0);
+      if (effort > 0) extras.push(effortText(effort, unit));
+      extras.push(`\`${n.id}\``);
+    }
+    out.push(`- ${label}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}`);
+  }
+  out.push('');
 }

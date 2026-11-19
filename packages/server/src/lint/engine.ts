@@ -24,6 +24,7 @@ import {
   type StalledLeaf,
   type ForgeProblem,
   parentHolds,
+  PARKED_HOLD_TAG,
 } from '@mindblown/core';
 
 // The vocabulary lives in core so the MCP tool and the panel share it.
@@ -819,8 +820,10 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
   // count is invisible: a needs-human tag on the Navy security-audit
   // umbrella held all 18 findings overnight (21.10.2026).
   const openLeaves = scopedNodes.filter((n) => (n.childrenIds?.length ?? 0) === 0 && !isDone(n));
-  // A parent that waits for approval (#492) holds its subtree on purpose: not this finding.
-  const holds = parentHolds(openLeaves, { nodeMap: nodeById, isDone: isDoneStatus }).filter((h) => h.tag !== null || h.blockedReason !== null);
+  // A parent that waits for approval (#492) or is parked (#655) holds its subtree on purpose: not this finding.
+  const holds = parentHolds(openLeaves, { nodeMap: nodeById, isDone: isDoneStatus }).filter(
+    (h) => (h.tag !== null && h.tag !== PARKED_HOLD_TAG) || h.blockedReason !== null,
+  );
   rules.push({
     ruleId: 'hold-on-parent',
     severity: 'warn',

@@ -304,6 +304,9 @@ export function dispatchSkipTag(node: Pick<Node, 'tags'>): string | null {
   return (node.tags ?? []).find((t) => skip.has(t.toLowerCase())) ?? null;
 }
 
+/** The tag a parked branch is held under (#655) — it shows where a skip tag would. */
+export const PARKED_HOLD_TAG = 'parked';
+
 /** The tag an epic leaf is held under (it shows where a skip tag would). */
 export const EPIC_HOLD_TAG = 'epic';
 
@@ -333,7 +336,7 @@ export interface DispatchHold {
   heldBy: { id: string; text: string } | null;
 }
 
-type HoldFields = Pick<Node, 'tags' | 'blockedReason' | 'approval'>;
+type HoldFields = Pick<Node, 'tags' | 'blockedReason' | 'approval' | 'parked'>;
 
 /**
  * `self`: the ticket must carry an approved stamp, and no stamp waits like
@@ -341,7 +344,8 @@ type HoldFields = Pick<Node, 'tags' | 'blockedReason' | 'approval'>;
  * proposed or rejected stamp: the map root carries none.
  */
 function ownHold(node: HoldFields, self: boolean): Omit<DispatchHold, 'heldBy'> | null {
-  const tag = dispatchSkipTag(node);
+  // A parked branch (#655) is "later": held like a skip tag, on the node and its subtree.
+  const tag = dispatchSkipTag(node) ?? (node.parked === true ? PARKED_HOLD_TAG : null);
   const blockedReason = node.blockedReason?.trim() ? node.blockedReason : null;
   const state = node.approval?.state ?? (self ? 'proposed' : 'approved');
   const approval = state === 'approved' ? null : state;
