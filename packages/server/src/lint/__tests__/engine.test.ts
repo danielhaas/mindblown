@@ -10,6 +10,7 @@ let seq = 0;
 function makeNode(overrides: Partial<Node> & { id: string }): Node {
   seq++;
   return {
+    approval: { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' },
     mapId: 'm1',
     parentId: null,
     childrenIds: [],
@@ -91,18 +92,52 @@ describe('computePlanLint — stalled-unclaimed', () => {
     makeNode({ id: 'b', parentId: 'root', status: 'wip', percentComplete: 25 }),
   ];
 
-  it('one finding per stalled leaf in scope, with the claim trail and park / reopen', () => {
+  it('one finding per stalled leaf in scope, with the claim trail and done / requeue / needs-human', () => {
     const r = rule(lint(nodes, { stalled: [stalled('a')] }), 'stalled-unclaimed');
     expect(r.findings.map((f) => f.nodeId)).toEqual(['a']);
     expect(r.findings[0].detail).toBe('25 %, no change for 9 h, released by host-a/worker-3 9 h ago (release)');
-    expect(r.findings[0].actions?.map((a) => a.id)).toEqual(['park', 'reopen']);
-    expect(LINT_FIX_ACTIONS['stalled-unclaimed']).toEqual(['park', 'reopen']);
+    expect(r.findings[0].actions?.map((a) => a.id)).toEqual(['mark-done', 'requeue', 'needs-human']);
+    expect(LINT_FIX_ACTIONS['stalled-unclaimed']).toEqual(['mark-done', 'requeue', 'needs-human']);
     // scoped like every rule
     expect(rule(lint(nodes, { stalled: [stalled('a')], nodeId: 'b' }), 'stalled-unclaimed').findings).toEqual([]);
   });
 
   it('is skipped, not silently green, when the stalled list could not be loaded', () => {
     expect(rule(lint(nodes), 'stalled-unclaimed').skipped).toBe('change history unavailable');
+  });
+});
+
+describe('computePlanLint — stuck-work pack', () => {
+  const nodes = [
+    makeNode({ id: 'root', childrenIds: ['asked', 'silent', 'done', 'audit'] }),
+    makeNode({ id: 'asked', parentId: 'root', blockedReason: 'Which username for the admin?' }),
+    makeNode({ id: 'silent', parentId: 'root', blockedReason: 'Needs a check on a real phone' }),
+    makeNode({ id: 'done', parentId: 'root', status: 'done', percentComplete: 100, blockedReason: 'leftover' }),
+    makeNode({ id: 'audit', parentId: 'root', tags: ['needs-human'], childrenIds: ['f1', 'f2', 'f3'] }),
+    makeNode({ id: 'f1', parentId: 'audit' }),
+    makeNode({ id: 'f2', parentId: 'audit' }),
+    makeNode({ id: 'f3', parentId: 'audit', status: 'done', percentComplete: 100 }),
+  ];
+  const map = { effortUnit: 'days', statusWorkflow: [{ id: 'done', category: 'done' }] };
+
+  it('blocker-without-question: an open blocker nobody is asked about, with the needs-human fix', () => {
+    const r = rule(lint(nodes, { map, openAskNodeIds: new Set(['asked']) }), 'blocker-without-question');
+    expect(r.findings.map((f) => f.nodeId)).toEqual(['silent']);
+    expect(r.findings[0].detail).toBe('"Needs a check on a real phone"');
+    expect(r.findings[0].actions?.map((a) => a.id)).toEqual(['needs-human']);
+    expect(LINT_FIX_ACTIONS['blocker-without-question']).toEqual(['needs-human']);
+  });
+
+  it('blocker-without-question is skipped for a map with no Questions card', () => {
+    const r = rule(lint(nodes, { map }), 'blocker-without-question');
+    expect(r.skipped).toBe('no Questions card (map not in a fleet)');
+    expect(r.findings).toEqual([]);
+  });
+
+  it('hold-on-parent: the tagged parent and how many open tickets it holds', () => {
+    const r = rule(lint(nodes, { map }), 'hold-on-parent');
+    expect(r.findings.map((f) => [f.nodeId, f.detail])).toEqual([['audit', 'tag needs-human holds 2 open tickets below it']]);
+    expect(r.findings[0].actions).toBeUndefined();
   });
 });
 
@@ -702,5 +737,31 @@ describe('computePlanLint — sprint-state (#324)', () => {
     const done = run([sprint({ status: 'completed' })]);
     if ('error' in done) throw new Error(done.error);
     expect(rule(done, 'sprint-state').findings).toEqual([]);
+  });
+});
+
+describe('computePlanLint — broken-repo-connection (#513)', () => {
+  const run = (forgeProblem?: Parameters<typeof computePlanLint>[0]['forgeProblem']) =>
+    computePlanLint({ map: {}, nodes: [makeNode({ id: 'root' })], unitsPerDay: 1, history: emptyHistory(), dismissals: [], forgeProblem, now: NOW });
+
+  it('one map-level warning carrying the problem sentence, scope-independent', () => {
+    const r = run({ kind: 'unbound', repo: 'dan/Sonarpipe', message: 'Map names dan/Sonarpipe, but no forge connection binds it' });
+    if ('error' in r) throw new Error(r.error);
+    const b = rule(r, 'broken-repo-connection');
+    expect(b.severity).toBe('warn');
+    expect(b.findings).toEqual([expect.objectContaining({ nodeId: null, detail: 'Map names dan/Sonarpipe, but no forge connection binds it' })]);
+    const fine = run(null);
+    if ('error' in fine) throw new Error(fine.error);
+    expect(r.warnCount).toBe(fine.warnCount + 1);
+  });
+
+  it('nothing when the map reaches its repo or names none; skipped when not checked', () => {
+    const fine = run(null);
+    if ('error' in fine) throw new Error(fine.error);
+    expect(rule(fine, 'broken-repo-connection').findings).toEqual([]);
+    expect(rule(fine, 'broken-repo-connection').skipped).toBeUndefined();
+    const unchecked = run();
+    if ('error' in unchecked) throw new Error(unchecked.error);
+    expect(rule(unchecked, 'broken-repo-connection').skipped).toBe('repo connection not checked');
   });
 });

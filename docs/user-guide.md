@@ -315,6 +315,20 @@ MindBlown is real-time. Multiple users can edit the same map at the same time, a
 - **Comments** -- every node has a comment thread. Open the Comments panel from the sidebar when a node is selected. You can edit and delete your own comments.
 - **Sharing** -- open the **Share dialog** from the toolbar. Invite people by email with one of three permission levels: **view**, **edit**, or **admin**. You can also generate a **public read-only link** for sharing with non-members -- handy for showing a plan to a client without setting up accounts.
 - **Presence** -- cursors and selections from other users are visible as long as they are on the same map.
+- **Offline (read-only)** -- when the server can't be reached, MindBlown keeps showing the maps and views you last opened, with a notice at the bottom: **Offline — read-only**. Nothing can be saved until the connection is back; **Reload** then fetches the latest data. Only what you opened while online is available, and signing out clears it. Needs an https address (or localhost).
+
+### Fleets: workers on your map
+
+A **fleet** is a group of worker hosts (AI coding agents) that pulls ready tickets from your maps and works on them. One fleet can serve several projects; a map is connected to at most one fleet. A fleet's workers take tickets only from the maps connected to it (a worker set up to pull one map directly still can, within that map's own cap). The workers' account also needs **edit** access to each connected map, and an archived map is skipped until it is unarchived.
+
+- **Connect a map** -- open the **Fleet** tab (or the map's **Settings**), pick a fleet in the **Fleet** picker and click **Connect**. **Create fleet…** makes a new one, owned by you, and connects the map in one step. Choose **No fleet** to disconnect; if workers hold claims on the map right now, you are asked first. Their claims stay on the tickets; the fleet just takes no new ones from this map. Moving the map to another fleet moves its claims too: they count against the new fleet's cap from then on.
+- **Shares** -- when a fleet serves more than one map, each map has a **share**: how often the fleet picks it relative to the others. 1 is an equal turn; 2 means twice as often as a map with 1.
+- **Who may do what** -- connecting and disconnecting needs admin on the map, and connecting needs ownership of the fleet. Only the fleet's owner sets the share; that works with edit access to the map, too. Everyone else, and the Developer and Stakeholder lenses, see which fleet a map is on but get no controls.
+
+The map's own pull-queue knobs on the Fleet tab -- its cap, gate and policy -- still decide which tickets are handed out and how many at once. A cap of 0 holds the map even when it is connected.
+
+- **One fleet, many projects** -- on a connected map the Fleet tab shows the fleet: its cap against the claims held across all its maps, and each map's share. The workers, the Questions and the journal show **this project** by default; switch to **All projects** to see the whole fleet, each entry labelled with its project. A worker busy on a project you can't view shows as such, without its ticket. **Fleet page →** opens the same view without a map (`?fleet=<id>`).
+- **Fleet keys** -- a fleet's workers sign in with a key of the fleet itself (map Settings → Fleet → Fleet keys, fleet owner only). It reaches exactly the maps connected to the fleet, with edit, and loses a map the moment it is disconnected. A key is shown once; to rotate, issue a new one, switch the workers, revoke the old one.
 
 ---
 

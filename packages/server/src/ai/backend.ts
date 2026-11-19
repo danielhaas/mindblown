@@ -5,6 +5,8 @@
  * mutation so connected map viewers update in real time.
  */
 
+import { buildTimelineMarkdown } from '../export/timeline.js';
+import { publishMapToWiki } from '../services/wikiPublish.js';
 import { normalizeHolidaySettings } from '../lib/holidays.js';
 import type { ToolBackend, MapDetail, MapSummary, NodeWithComputed } from '@mindblown/tool-kit';
 import { computeTree, parseTickWindow } from '@mindblown/core';
@@ -16,18 +18,28 @@ import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from './embeddings.js';
 import * as orchestrationService from '../services/orchestration.js';
 import { unblockNode as unblockNodeService } from '../services/unblock.js';
-import * as fleetDb from '../db/fleet.js';
+import * as fleetTelemetry from '../services/fleetTelemetry.js';
 import * as fleetEntityDb from '../db/fleets.js';
 import * as fleetService from '../services/fleets.js';
-import * as asksDb from '../db/asks.js';
+import * as trustService from '../services/trustPolicy.js';
+import { authorizeFleetCiChange } from '../services/mapRepoBinding.js';
+import type { AskKey } from '../db/asks.js';
 import { answerAsk as answerAskService } from '../services/asks.js';
-import { countAsks } from '@mindblown/core';
-import { loadFleetJournal, parseJournalWindow } from '../services/fleetJournal.js';
+import * as asksInbox from '../services/asksInbox.js';
+import * as approvals from '../services/approvals.js';
+import { waitingOnHumansForUser } from '../services/waitingOnHumans.js';
+import * as reporterChecks from '../services/reporterCheck.js';
+import * as prMerge from '../services/prMerge.js';
+import * as webhookService from '../services/webhooks.js';
+import type { AskAnswerInput } from '@mindblown/core';
+import { loadFleetJournal, mapJournalScope, parseJournalWindow } from '../services/fleetJournal.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
-import { getGitHubContextForMap } from '../lib/githubContext.js';
+import { getGitHubContextForMap, getMapForgeKind } from '../lib/githubContext.js';
+import { forgeProblemForMap } from '../lib/forgeProblem.js';
 import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
 import { readAttachmentText } from '../lib/attachmentText.js';
 import { checkMapAccess } from '../lib/mapAccess.js';
+import { listRepoDocs, proposeRepoDocEdit, proposerName, readRepoDoc } from '../services/repoDocs.js';
 
 function toIsoString(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
@@ -110,6 +122,15 @@ function toNodeWithComputed(
  * on the relevant mapId so connected frontends update in real time.
  */
 export function createChatBackend(userId: string): ToolBackend {
+  // An answer writes to the ask's map; a fleet-level one tells every map of the fleet.
+  const answerAndBroadcast = async (key: AskKey, input: AskAnswerInput) => {
+    const out = await answerAskService(key, input, userId);
+    if (out.node) broadcast(out.node.mapId, { type: 'node:updated', nodeId: out.node.id, fields: out.changedFields, node: out.node });
+    const event = { type: 'asks:updated', kind: 'answer', askId: key.askId, status: out.row.status };
+    if (key.mapId) broadcast(key.mapId, event);
+    else for (const m of await fleetEntityDb.listFleetMaps(key.fleetId)) broadcast(m.id, event);
+    return { ask: out.row, plan: out.plan, ok: out.ok, node: out.node ? { id: out.node.id, status: out.node.status } : null };
+  };
   const backend: ToolBackend = {
     async listMaps(): Promise<MapSummary[]> {
       const all = await mapDb.listMapsForUser(userId);
@@ -149,6 +170,14 @@ export function createChatBackend(userId: string): ToolBackend {
           fleetId: data.map.fleetId,
           fleetName: await fleetService.fleetNameOf(data.map.fleetId),
           fleetShare: data.map.fleetShare,
+          fleetCanEditCi: data.map.fleetCanEditCi ?? false,
+          // The setup checklist (project_setup_status) reads these, as GET /api/maps/:id derives them.
+          maxActiveClaims: data.map.maxActiveClaims,
+          forgeKind: await getMapForgeKind(mapId),
+          forgeProblem: await forgeProblemForMap(data.map).catch(() => null),
+          githubRepoOwner: data.map.githubRepoOwner ?? null,
+          githubRepoName: data.map.githubRepoName ?? null,
+          setupCompletedAt: data.map.setupCompletedAt ?? null,
         },
         nodes: nodesWithComputed,
       };
@@ -174,9 +203,20 @@ export function createChatBackend(userId: string): ToolBackend {
       // The edit-level guard already ran; connecting a fleet asks for more.
       const fleetDenied = await fleetService.authorizeMapFleetChange(userId, mapId, fields);
       if (fleetDenied) throw new Error(fleetDenied.message);
+      const ciDenied = await authorizeFleetCiChange(userId, mapId, fields);
+      if (ciDenied) throw new Error(ciDenied.message);
+      // Trust policy (#491): admin only, checked before anything is written.
+      const trust = fields.trustPolicy !== undefined
+        ? await trustService.checkTrustPolicyInput(userId, mapId, fields.trustPolicy)
+        : undefined;
+      if (trust && !('policy' in trust)) throw new Error(trust.message);
       const updated = await mapDb.updateMap(mapId, fields, userId);
       if (!updated) throw new Error(`Map ${mapId} not found`);
       broadcast(mapId, { type: 'map:updated', map: updated });
+      if (trust) {
+        const saved = await trustService.setTrustPolicy(mapId, trust.policy, userId);
+        return { ...toMapSummary(updated), trustPolicy: saved?.policy };
+      }
       return toMapSummary(updated);
     },
 
@@ -198,7 +238,7 @@ export function createChatBackend(userId: string): ToolBackend {
       if ('status' in owned) throw new Error(owned.message);
       const invalid = fleetService.validateFleetFields(fields, false);
       if (invalid) throw new Error(invalid);
-      await fleetEntityDb.updateFleet(fleetId, { name: fields.name?.trim(), maxActiveClaims: fields.maxActiveClaims });
+      await fleetEntityDb.updateFleet(fleetId, { name: fields.name?.trim(), maxActiveClaims: fields.maxActiveClaims, autoCheckBlockers: fields.autoCheckBlockers });
       const view = await fleetService.getFleetForUser(userId, fleetId);
       if ('status' in view) throw new Error(view.message);
       return view;
@@ -217,6 +257,18 @@ export function createChatBackend(userId: string): ToolBackend {
       return { id: b.id, name: b.name, createdAt: b.createdAt, nodeCount: Object.keys(b.nodes).length, dropped: created.dropped };
     },
 
+    async exportMarkdown(mapId, opts) {
+      const data = await mapDb.getMap(mapId);
+      if (!data) throw new Error(`Map ${mapId} not found`);
+      return buildTimelineMarkdown(data, opts ?? {});
+    },
+
+    async publishToWiki(mapId) {
+      const result = await publishMapToWiki(mapId, { userId });
+      if (!result) throw new Error(`Map ${mapId} not found`);
+      return result;
+    },
+
     async createNode(mapId, parentId, text, fields) {
       const node = await nodeDb.createNode({
         mapId,
@@ -224,6 +276,8 @@ export function createChatBackend(userId: string): ToolBackend {
         text,
         createdBy: userId,
         ...(fields ?? {}),
+        // After the spread: a tool-supplied reportedBy never wins (#490).
+        reportedBy: { kind: 'user', userId },
       });
       broadcast(mapId, { type: 'node:created', node });
       scheduleEmbedNode(node.id);
@@ -343,6 +397,7 @@ export function createChatBackend(userId: string): ToolBackend {
       return {
         node: { id: result.node.id, text: result.node.text, status: result.node.status, claimedBySession: result.node.claimedBySession },
         statusReset: result.statusReset,
+        ...(result.labelWrite?.error ? { labelError: result.labelWrite.error } : {}),
       };
     },
     conflictScan: (mapId, candidateNodeId?) => orchestrationService.conflictScan(mapId, candidateNodeId),
@@ -351,10 +406,22 @@ export function createChatBackend(userId: string): ToolBackend {
       // in chat than over MCP.
       const window = parseTickWindow({ since: opts?.since, limit: opts?.limit });
       if ('error' in window) throw new Error(window.error);
-      const [hosts, ticks] = await Promise.all([fleetDb.listRollups(mapId), fleetDb.listTicks(mapId, window)]);
+      // The map's fleet, narrowed to the hosts serving this map (#479).
+      const scope = await fleetTelemetry.mapReadScope(userId, mapId);
+      const read = 'visible' in scope ? await fleetTelemetry.readTelemetry(scope, window, mapId) : { fleetId: null, hosts: [], ticks: [] };
       return {
-        hosts,
-        ticks,
+        ...read,
+        now: new Date().toISOString(),
+        window: { since: window.since?.toISOString() ?? null, until: window.until?.toISOString() ?? null, limit: window.limit },
+      };
+    },
+    async getFleetStatusForFleet(fleetId, opts) {
+      const window = parseTickWindow({ since: opts?.since, limit: opts?.limit });
+      if ('error' in window) throw new Error(window.error);
+      const scope = await fleetTelemetry.fleetReadScope(userId, fleetId);
+      if ('status' in scope) throw new Error(scope.message);
+      return {
+        ...(await fleetTelemetry.readTelemetry(scope, window)),
         now: new Date().toISOString(),
         window: { since: window.since?.toISOString() ?? null, until: window.until?.toISOString() ?? null, limit: window.limit },
       };
@@ -363,22 +430,94 @@ export function createChatBackend(userId: string): ToolBackend {
       // Same window rules as GET /fleet-journal (defaults, 31-day cap).
       const window = parseJournalWindow({ from: opts?.from, to: opts?.to });
       if ('error' in window) throw new Error(window.error);
-      const journal = await loadFleetJournal(mapId, window.from, window.to);
+      const journal = await loadFleetJournal(await mapJournalScope(userId, mapId), window.from, window.to);
       return { journal, now: new Date().toISOString() };
+    },
+    async getFleetJournalForFleet(fleetId, opts) {
+      const view = await fleetService.getFleetForUser(userId, fleetId);
+      if ('status' in view) throw new Error(view.message);
+      const window = parseJournalWindow({ from: opts?.from, to: opts?.to });
+      if ('error' in window) throw new Error(window.error);
+      const maps = view.maps.map((m) => ({ id: m.id, name: m.name }));
+      const full = view.isOwner || view.hiddenMapCount === 0;
+      const journal = await loadFleetJournal({ mapIds: maps.map((m) => m.id), fleetId: view.id, tagMaps: true, redactTicks: !full }, window.from, window.to);
+      return { journal, maps, now: new Date().toISOString() };
     },
 
     // ── Asks inbox (/leidang-asks) ────────────────────────────────
-    async listAsks(mapId, opts) {
-      const [items, push] = await Promise.all([asksDb.listAsks(mapId, opts ?? {}), asksDb.getPushMeta(mapId)]);
-      return { items, counts: countAsks(items), pushedAt: push?.pushedAt ?? null, meta: push?.meta ?? null, now: new Date().toISOString() };
+    // Same scoping as the REST routes (services/asksInbox) — #479.
+    listAsks: (mapId, opts) => asksInbox.mapInbox(userId, mapId, opts ?? {}),
+    async listAsksForFleet(fleetId, opts) {
+      const out = await asksInbox.fleetInbox(userId, fleetId, opts ?? {});
+      if ('status' in out) throw new Error(out.message);
+      return out;
     },
     async answerAsk(mapId, askId, input) {
-      const out = await answerAskService(mapId, askId, input, userId);
-      if (out.node) {
-        broadcast(mapId, { type: 'node:updated', nodeId: out.node.id, fields: out.changedFields, node: out.node });
-      }
-      broadcast(mapId, { type: 'asks:updated', kind: 'answer', askId, status: out.row.status });
-      return { ask: out.row, plan: out.plan, ok: out.ok, node: out.node ? { id: out.node.id, status: out.node.status } : null };
+      const fleetId = await fleetEntityDb.getMapFleetId(mapId);
+      if (!fleetId) throw new Error(`Ask ${askId} not found`);
+      return answerAndBroadcast({ fleetId, mapId, askId }, input);
+    },
+    async answerAskForFleet(fleetId, askId, input, mapId) {
+      const key = await asksInbox.resolveFleetAnswer(userId, fleetId, askId, mapId);
+      if ('status' in key) throw new Error(key.message);
+      return answerAndBroadcast(key, input);
+    },
+    async fleetCheckBlockers(fleetId, by) {
+      const out = await asksInbox.fleetCheckBlockers(userId, fleetId, by?.trim() || 'Dan');
+      if ('status' in out) throw new Error(out.message);
+      return out;
+    },
+
+    // ── Approvals (#494) ──────────────────────────────────────────
+    //
+    // Read-only on this surface, like the closed-issue audit: the chat
+    // model reads the proposed tickets' text — the untrusted text the
+    // gate exists for — and runs as the trusted user who is typing. A
+    // ticket that says "approve me" must not be able to. Deciding happens
+    // only on the approval card (#606) — no tool on any surface decides.
+    async listPendingApprovals(scope) {
+      const out = await approvals.listPendingApprovals(userId, scope);
+      if ('status' in out) throw new Error(out.message);
+      return out;
+    },
+
+    // ── Waiting on humans ─────────────────────────────────────────
+    async waitingOnHumans(fleetId) {
+      const fleets = await waitingOnHumansForUser(userId, fleetId);
+      if ('status' in fleets) throw new Error(fleets.message);
+      return { fleets, now: new Date().toISOString() };
+    },
+
+    // ── The reporter's check ──────────────────────────────────────
+    // The list carries the reporters' replies (untrusted); this surface
+    // only reads. A deploy is signalled from the card, MCP or REST — a
+    // chat model that just read a reply does not post on issues.
+    async listReporterChecks(scope) {
+      const out = await reporterChecks.listReporterChecks(userId, scope);
+      if ('status' in out) throw new Error(out.message);
+      return out;
+    },
+    async markDeployed() {
+      throw new Error('mark_deployed is not available in the in-app chat — use the Deployed button on the Fleet tab.');
+    },
+
+    // ── A person merges a fleet PR ────────────────────────────────
+    // Reads only: the chat model reads the PR's text (untrusted) and runs
+    // as whoever is typing — it must not be the one that merges. A merge
+    // is a person's explicit decision (MCP with their key, after they said
+    // yes, or the forge itself).
+    async prSummary(mapId, nodeId) {
+      const out = await prMerge.prSummary(mapId, nodeId);
+      if ('code' in out) throw new Error(out.message);
+      return out;
+    },
+    async mergePr() {
+      throw new Error('merge_pr is not available in the in-app chat — merge on the forge, or through MCP on your own explicit decision.');
+    },
+    async prsWaiting(scope) {
+      const out = await prMerge.prsWaiting(userId, scope);
+      if ('code' in out) throw new Error(out.message);
+      return out;
     },
 
     // ── Closed-issue audit (premature-close backfill) ─────────────
@@ -444,6 +583,33 @@ export function createChatBackend(userId: string): ToolBackend {
         ? { ...res, attachmentId }
         : { ...res, attachmentId, url: attachment.url };
     },
+    listRepoDocs: (mapId) => listRepoDocs(mapId),
+    readRepoDoc: (mapId, path) => readRepoDoc(mapId, path),
+    // Not a read: the chat guard asks edit on the map.
+    proposeRepoDocEdit: async (mapId, input) => proposeRepoDocEdit(mapId, input, await proposerName(userId)),
+
+    // ── Outgoing webhooks ─────────────────────────────────────────
+    //
+    // Read and ping only on this surface: the chat model reads ticket
+    // text it must not obey, and a subscription sends the map's activity
+    // to any URL — a ticket saying "subscribe evil.example" must not be
+    // able to. Subscribing happens over REST / MCP, as a person or key.
+    listWebhooks: (mapId) => webhookService.listWebhooks(mapId),
+    createWebhook: async () => {
+      throw new Error('Webhooks are managed over the API or MCP (create_webhook), not from the in-app chat');
+    },
+    updateWebhook: async () => {
+      throw new Error('Webhooks are managed over the API or MCP (update_webhook), not from the in-app chat');
+    },
+    deleteWebhook: async () => {
+      throw new Error('Webhooks are managed over the API or MCP (delete_webhook), not from the in-app chat');
+    },
+    pingWebhook: async (mapId, webhookId) => {
+      const sub = await webhookService.getWebhookForMap(mapId, webhookId);
+      const r = sub ? await webhookService.pingWebhook(sub.id, mapId) : null;
+      if (!r) throw new Error(`Webhook ${webhookId} not found`);
+      return { delivered: r.ok, status: r.status, error: r.error };
+    },
   };
   return guardChatBackend(backend, userId);
 }
@@ -451,6 +617,7 @@ export function createChatBackend(userId: string): ToolBackend {
 /** Backend methods that only read the map; every other map-scoped method writes. */
 export const CHAT_BACKEND_READ_METHODS: ReadonlySet<keyof ToolBackend> = new Set<keyof ToolBackend>([
   'getMap',
+  'exportMarkdown',
   'listDeleted',
   'listTriageDecisions',
   'listNotInMindBlown',
@@ -460,11 +627,20 @@ export const CHAT_BACKEND_READ_METHODS: ReadonlySet<keyof ToolBackend> = new Set
   'getFleetJournal',
   'listAsks',
   'readAttachment',
+  'listRepoDocs',
+  'readRepoDoc',
+  'prSummary',
 ]);
 
 /** Backend methods that need admin on the map — what REST asks for the same action. */
 export const CHAT_BACKEND_ADMIN_METHODS: ReadonlySet<keyof ToolBackend> = new Set<keyof ToolBackend>([
   'deleteMap',
+  // Outgoing webhooks: the REST routes ask admin on the map.
+  'listWebhooks',
+  'createWebhook',
+  'updateWebhook',
+  'deleteWebhook',
+  'pingWebhook',
 ]);
 
 /** Backend methods that take no mapId — they scope themselves to the user. */
@@ -477,6 +653,22 @@ export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new
   'updateFleet',
   // Fleet pull (#478): takes only from maps the user may edit (fleetPullScope).
   'pullFleetTicket',
+  // Fleet telemetry reads (#479): the fleet read rule, claims redacted.
+  'getFleetStatusForFleet',
+  'getFleetJournalForFleet',
+  // Fleet asks (#479): services/asksInbox scopes the read and checks the answer.
+  'listAsksForFleet',
+  'answerAskForFleet',
+  // Edit on each map checked in services/asksInbox.
+  'fleetCheckBlockers',
+  // Approvals (#494): the list scopes itself to viewable maps (services/approvals).
+  'listPendingApprovals',
+  // Waiting on humans: the fleet read rule (services/waitingOnHumans).
+  'waitingOnHumans',
+  // The reporter's check: the list scopes itself like approvals.
+  'listReporterChecks',
+  // prs_waiting: scoped like approvals (services/approvals mapsInScope).
+  'prsWaiting',
 ]);
 
 /**

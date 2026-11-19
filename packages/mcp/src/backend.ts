@@ -24,6 +24,8 @@ export const httpBackend: ToolBackend = {
   createFleet: (name, maxActiveClaims) => api.createFleet(name, maxActiveClaims),
   updateFleet: (fleetId, fields) => api.updateFleet(fleetId, fields),
   freezeBaseline: (mapId, name) => api.freezeBaseline(mapId, name),
+  exportMarkdown: (mapId, opts) => api.exportMarkdown(mapId, opts),
+  publishToWiki: (mapId) => api.publishToWiki(mapId),
   createNode: (mapId, parentId, text, fields) => api.createNode(mapId, parentId, text, fields),
   updateNode: (mapId, nodeId, fields) => api.updateNode(mapId, nodeId, fields),
   deleteNode: (mapId, nodeId) => api.deleteNode(mapId, nodeId),
@@ -48,9 +50,23 @@ export const httpBackend: ToolBackend = {
   conflictScan: (mapId, candidateNodeId?) => api.conflictScan(mapId, candidateNodeId),
   getFleetStatus: (mapId, opts) => api.getFleetStatus(mapId, opts),
   getFleetJournal: (mapId, opts) => api.getFleetJournal(mapId, opts),
+  getFleetStatusForFleet: (fleetId, opts) => api.getFleetStatusForFleet(fleetId, opts),
+  getFleetJournalForFleet: (fleetId, opts) => api.getFleetJournalForFleet(fleetId, opts),
   // ── Asks inbox (/leidang-asks) ──────────────────────────────────
   listAsks: (mapId, opts) => api.listAsks(mapId, opts),
   answerAsk: (mapId, askId, input) => api.answerAsk(mapId, askId, input),
+  listAsksForFleet: (fleetId, opts) => api.listAsksForFleet(fleetId, opts),
+  answerAskForFleet: (fleetId, askId, input, mapId) => api.answerAskForFleet(fleetId, askId, input, mapId),
+  fleetCheckBlockers: (fleetId, by) => api.fleetCheckBlockers(fleetId, by),
+  // ── Approvals (#494) ────────────────────────────────────────────
+  listPendingApprovals: (scope) => api.listPendingApprovals(scope),
+  waitingOnHumans: (fleetId) => api.waitingOnHumans(fleetId),
+  listReporterChecks: (scope) => api.listReporterChecks(scope),
+  markDeployed: (mapId) => api.markDeployed(mapId),
+  // ── A person merges a fleet PR ──────────────────────────────────
+  prSummary: (mapId, nodeId) => api.prSummary(mapId, nodeId),
+  mergePr: (mapId, nodeId, input) => api.mergePr(mapId, nodeId, input),
+  prsWaiting: (scope) => api.prsWaiting(scope),
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues: (mapId, opts) => api.auditClosedIssues(mapId, opts),
   // ── Attachments ─────────────────────────────────────────────────
@@ -58,4 +74,14 @@ export const httpBackend: ToolBackend = {
   attachFile: (mapId, nodeId, file) => api.attachFile(mapId, nodeId, file),
   removeAttachment: (mapId, nodeId, attachmentId) => api.removeAttachment(mapId, nodeId, attachmentId),
   readAttachment: (mapId, nodeId, attachmentId, opts) => api.readAttachment(mapId, nodeId, attachmentId, opts),
+  // ── Repo docs (#550) ────────────────────────────────────────────
+  listRepoDocs: (mapId) => api.listRepoDocs(mapId),
+  readRepoDoc: (mapId, path) => api.readRepoDoc(mapId, path),
+  proposeRepoDocEdit: (mapId, input) => api.proposeRepoDocEdit(mapId, input),
+  // ── Outgoing webhooks ───────────────────────────────────────────
+  listWebhooks: (mapId) => api.listWebhooks(mapId),
+  createWebhook: (mapId, input) => api.createWebhook(mapId, input),
+  updateWebhook: (mapId, webhookId, patch) => api.updateWebhook(mapId, webhookId, patch),
+  deleteWebhook: (mapId, webhookId) => api.deleteWebhook(mapId, webhookId),
+  pingWebhook: (mapId, webhookId) => api.pingWebhook(mapId, webhookId),
 };

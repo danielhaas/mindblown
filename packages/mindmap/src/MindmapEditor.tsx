@@ -95,13 +95,17 @@ function isAncestor(
 }
 
 // ── "+" handle position per layout direction ────────────────
-// Children flow right in tree-lr/radial/org-chart-LR style; down in
-// tree-tb. Place the handle so its 10-radius circle overlaps the
+// Children flow right in tree-lr/radial; down in tree-tb and org-chart.
+// Place the handle so its 10-radius circle overlaps the
 // node's edge by ~2px — any visible gap fires mouseleave on the
 // wrapper <g> as the cursor crosses it, which unmounts the handle
 // before you can reach it.
+function handleBelow(layoutType: LayoutType): boolean {
+  return layoutType === 'tree-tb' || layoutType === 'org-chart';
+}
+
 function getCreateHandlePos(ln: LayoutNode, layoutType: LayoutType): { cx: number; cy: number } {
-  if (layoutType === 'tree-tb') {
+  if (handleBelow(layoutType)) {
     return { cx: ln.x + ln.width / 2, cy: ln.y + ln.height + 8 };
   }
   return { cx: ln.x + ln.width + 8, cy: ln.y + ln.height / 2 };
@@ -516,7 +520,7 @@ export function MindmapEditor() {
 
   // ── Visible nodes computation ───────────────────────────────
 
-  const visibleNodes = useMemo(() => getVisibleNodes(), [nodes, focusNodeId, maxDepth, rootNodeId, activeVersionFilter, activeCycleFilter, activePhaseFilter, getVisibleNodes]);
+  const visibleNodes = useMemo(() => getVisibleNodes({ respectDepth: true }), [nodes, focusNodeId, maxDepth, rootNodeId, activeVersionFilter, activeCycleFilter, activePhaseFilter, getVisibleNodes]);
 
   // Build a filtered nodes record containing only visible (non-dimmed) nodes
   // with adjusted parentId for the layout algorithm
@@ -1571,6 +1575,14 @@ export function MindmapEditor() {
                       ? nodeData.childrenIds.length
                       : undefined
                   }
+                  onShowHidden={() => {
+                    // Drill in, same as double-click. A folded node would
+                    // open empty, so unfold it first.
+                    if (nodeData.collapsed) toggleCollapse(ln.id);
+                    setFocusNode(ln.id);
+                  }}
+                  onExpand={() => toggleCollapse(ln.id)}
+                  createHandleRight={!handleBelow(layoutType)}
                   onRefineClick={() =>
                     setRefine({ parentId: ln.id, parentText: nodeData.text })
                   }

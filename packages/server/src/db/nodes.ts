@@ -5,8 +5,9 @@ import { db } from './connection.js';
 import { nodes, maps, changeEvents, mediaOwners } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { hasCycle, resolveStatusDef, isForgeLink, isPrematureCloseLink } from '@mindblown/core';
-import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
+import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, NodeApproval, NodeReporter, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
+import { approvalForNewNode } from '../services/trustPolicy.js';
 
 // Soft-delete filter shared by every read that returns user-visible nodes.
 // Audit / pre-delete-snapshot paths in routes/nodes.ts deliberately bypass
@@ -239,6 +240,12 @@ export interface CreateNodeInput {
   parentId: string;
   text: string;
   createdBy: string;
+  /**
+   * Who asked for the node (#490). Set by the server from the
+   * authenticated user or the forge issue author — never from a request
+   * body. Omit = unknown (null).
+   */
+  reportedBy?: NodeReporter | null;
   position?: number; // index in parent's children_order; omit = append
   x?: number; // explicit canvas position; omit = auto-layout
   y?: number;
@@ -253,6 +260,8 @@ export interface CreateNodeInput {
   autoProgress?: 'off' | 'children';
   priorityRank?: number | null;
   completedAt?: string | null;
+  /** The worker's own ETA (ISO 8601); null clears it. */
+  expectedDoneAt?: string | null;
   requirementId?: string | null;
   requirementPriority?: 'must' | 'should' | 'could' | null;
   requirementText?: string | null;
@@ -306,6 +315,10 @@ export async function createNode(
     if (def?.category === 'in_progress') startedAt = now;
   }
 
+  // The approval stamp (#492), from the reporter against the map's trust
+  // policy — every create path passes through here, so none can skip it.
+  const approval = await approvalForNewNode(input.mapId, input.reportedBy ?? null, now);
+
   // Create the node
   let row;
   try {
@@ -328,6 +341,7 @@ export async function createNode(
       priorityRank: input.priorityRank ?? null,
       completedAt: input.completedAt ? new Date(input.completedAt) : null,
       startedAt,
+      expectedDoneAt: input.expectedDoneAt ? new Date(input.expectedDoneAt) : null,
       requirementId: input.requirementId ?? null,
       requirementPriority: input.requirementPriority ?? null,
       requirementText: input.requirementText ?? null,
@@ -352,6 +366,8 @@ export async function createNode(
       createdAt: now,
       updatedAt: now,
       createdBy: input.createdBy,
+      reportedBy: input.reportedBy ?? null,
+      approval,
     }).returning();
   } catch (err) {
     if (isRequirementIdUniqueViolation(err)) {
@@ -486,6 +502,8 @@ export interface UpdateNodeInput {
   autoProgress?: 'off' | 'children';
   priorityRank?: number | null;
   completedAt?: string | null;
+  /** The worker's own ETA (ISO 8601); null clears it. */
+  expectedDoneAt?: string | null;
   requirementId?: string | null;
   requirementPriority?: 'must' | 'should' | 'could' | null;
   requirementText?: string | null;
@@ -625,6 +643,8 @@ export async function updateNode(
   if (input.claimedBySession !== undefined) updates.claimedBySession = input.claimedBySession;
   if (input.claimedAt !== undefined) updates.claimedAt = input.claimedAt ? new Date(input.claimedAt) : null;
   if (input.scopes !== undefined) updates.scopes = input.scopes;
+  if (input.expectedDoneAt !== undefined)
+    updates.expectedDoneAt = input.expectedDoneAt ? new Date(input.expectedDoneAt) : null;
   if (input.linkedPr !== undefined) updates.linkedPr = input.linkedPr;
 
   // Auto-release claim when status transitions to a 'done' category (#111)
@@ -645,12 +665,18 @@ export async function updateNode(
     // update hot path from 3 queries to 2 (the original UPDATE still
     // fires below).
     const [row] = await handle
-      .select({ mapId: nodes.mapId, statusWorkflow: maps.statusWorkflow, startedAt: nodes.startedAt })
+      .select({
+        mapId: nodes.mapId,
+        statusWorkflow: maps.statusWorkflow,
+        startedAt: nodes.startedAt,
+        completedAt: nodes.completedAt,
+      })
       .from(nodes)
       .innerJoin(maps, eq(maps.id, nodes.mapId))
       .where(and(eq(nodes.id, nodeId), notDeleted));
     if (row) {
       const workflow = ((row.statusWorkflow as StatusDef[]) ?? []);
+      const completedAtWasSet = row.completedAt != null;
 
       // Resolve whether the post-update node is "done":
       //   - status (if changing) → check its category in the workflow
@@ -688,6 +714,9 @@ export async function updateNode(
         updates.startedAt = new Date();
       } else if (movingToTodo && !movingToStarted && !movingToDone) {
         updates.startedAt = null;
+        // Back in the queue: the last worker's ETA no longer holds —
+        // unless this same call sets a new one.
+        if (input.expectedDoneAt === undefined) updates.expectedDoneAt = null;
       }
 
       if (movingToDone && !claimTouched) {
@@ -700,6 +729,12 @@ export async function updateNode(
         // Transitioning OUT of done with no overriding move-to-done in
         // the same call → clear the timestamp.
         updates.completedAt = null;
+      }
+      // A reopened node needs a fresh ETA — the old one would read
+      // "overdue" the moment the card lands back in progress. Only out of
+      // done: completedAt is the stamp that says the node was done.
+      if (movingFromDone && !movingToDone && completedAtWasSet && input.expectedDoneAt === undefined) {
+        updates.expectedDoneAt = null;
       }
     }
   }
@@ -740,6 +775,66 @@ export async function updateNode(
     if (current) throw new RevisionConflictError(current);
   }
   return null;
+}
+
+/**
+ * Write a node's approval stamp (#494) — the one path that changes it
+ * after creation. Not through updateNode: the stamp is a decision about
+ * the ticket, not its content, so it does not bump `revision` (that
+ * would mark requirement sign-offs stale). Written only while the stamp
+ * is still `fromState` (null = no stamp). Returns the node, or null when
+ * it is gone or someone decided first.
+ */
+export async function setApproval(nodeId: string, approval: NodeApproval, fromState: string | null): Promise<CoreNode | null> {
+  const [row] = await db
+    .update(nodes)
+    .set({ approval, updatedAt: new Date() })
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        notDeleted,
+        fromState === null ? sql`${nodes.approval} IS NULL` : sql`${nodes.approval}->>'state' = ${fromState}`,
+      ),
+    )
+    .returning();
+  return row ? dbNodeToCore(row as unknown as Record<string, unknown>) : null;
+}
+
+/**
+ * Proposed nodes on these maps (#494), oldest first. Archived maps are
+ * on hold — nothing there waits on anyone. Done ones are left to the
+ * caller, which knows each map's workflow.
+ */
+export async function listProposedNodes(mapIds: string[]): Promise<CoreNode[]> {
+  if (mapIds.length === 0) return [];
+  const rows = await db
+    .select()
+    .from(nodes)
+    .where(and(inArray(nodes.mapId, mapIds), notDeleted, onActiveMap, sql`${nodes.approval}->>'state' = 'proposed'`))
+    .orderBy(nodes.createdAt);
+  return rows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
+}
+
+/**
+ * Finished tickets that may owe their reporter a check (services/reporterCheck.ts):
+ * reported on a forge, let through by a person (the approval gate), finished
+ * since `since`. Done-ness and the issue's state are read by the caller.
+ */
+export async function listReporterCheckCandidates(since: Date): Promise<CoreNode[]> {
+  const rows = await db
+    .select()
+    .from(nodes)
+    .where(
+      and(
+        notDeleted,
+        onActiveMap,
+        sql`${nodes.reportedBy}->>'kind' = 'forge'`,
+        sql`${nodes.approval}->>'state' = 'approved'`,
+        sql`${nodes.approval}->>'by' IS NOT NULL`,
+        sql`${nodes.completedAt} >= ${since}`,
+      ),
+    );
+  return rows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
 }
 
 /**
@@ -850,19 +945,19 @@ export function buildAttachment(
   // is present, so `{"url": 5}` reaches here, and `.trim()` on a number is
   // a TypeError — a 500 for what is plainly a bad request.
   if (typeof input.url !== "string") {
-    throw new AttachmentValidationError("url muss Text sein");
+    throw new AttachmentValidationError("url must be a string");
   }
   if (input.title !== undefined && typeof input.title !== "string") {
-    throw new AttachmentValidationError("title muss Text sein");
+    throw new AttachmentValidationError("title must be a string");
   }
   if (input.kind !== "file" && input.kind !== "link") {
-    throw new AttachmentValidationError('kind muss "file" oder "link" sein');
+    throw new AttachmentValidationError('kind must be "file" or "link"');
   }
 
   const raw = input.url.trim();
   if (!isHttpUrl(raw)) {
     throw new AttachmentValidationError(
-      "URL muss mit http:// oder https:// beginnen",
+      "URL must start with http:// or https://",
     );
   }
 
@@ -878,7 +973,7 @@ export function buildAttachment(
   // ~600 KB of jsonb on one node while the number looked like 100.
   if (parsed.href.length > MAX_URL_LENGTH) {
     throw new AttachmentValidationError(
-      `URL ist länger als ${MAX_URL_LENGTH} Zeichen`,
+      `URL is longer than ${MAX_URL_LENGTH} characters`,
     );
   }
 
@@ -955,7 +1050,7 @@ export async function addAttachment(
       .where(and(eq(nodes.id, nodeId), notDeleted));
     throw new AttachmentValidationError(
       row
-        ? `Höchstens ${MAX_ATTACHMENTS_PER_NODE} Anhänge pro Knoten`
+        ? `At most ${MAX_ATTACHMENTS_PER_NODE} attachments per node`
         : `Node ${nodeId} not found`,
     );
   }
@@ -1185,6 +1280,19 @@ export async function findMapNodesLinkingIssue(
   return rows
     .filter((r) => ((r.externalLinks as ExternalLink[]) ?? []).some((l) => isForgeLink(l) && l.externalId === externalId))
     .map((r) => ({ id: r.id as string, text: r.text as string }));
+}
+
+/** A map's nodes whose PR mirror is open (prs_waiting). */
+export async function listOpenLinkedPrNodes(
+  mapId: string,
+): Promise<Array<{ id: string; text: string; linkedPr: LinkedPrState }>> {
+  const rows = await db
+    .select({ id: nodes.id, text: nodes.text, linkedPr: nodes.linkedPr })
+    .from(nodes)
+    .where(and(eq(nodes.mapId, mapId), notDeleted, sql`${nodes.linkedPr}->>'state' = 'open'`));
+  return rows
+    .filter((r) => r.linkedPr != null)
+    .map((r) => ({ id: r.id as string, text: r.text as string, linkedPr: r.linkedPr as LinkedPrState }));
 }
 
 export async function findNodeIdByExternalId(

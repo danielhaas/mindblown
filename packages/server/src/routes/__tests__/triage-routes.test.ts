@@ -22,6 +22,7 @@ interface TriageRow {
   externalId: string;
   issueTitle: string;
   issueState: string;
+  issueReporter?: unknown;
   decision: 'place' | 'skip' | 'uncertain';
   reason: string;
   confidence: number;
@@ -813,6 +814,22 @@ describe('POST .../override', () => {
     expect(row.decidedBy).toBe('operator');
     expect(row.reviewed).toBe(true);
     expect(row.placedNodeId).toBe('created-node');
+  });
+
+  it('place: the node is reported by the issue author, not the operator (#492)', async () => {
+    const author = { kind: 'forge', provider: 'github', login: 'stranger' };
+    seedRow({ id: 'tr-1', externalId: 'o/r#43', issueTitle: 'Theirs', issueState: 'open', decision: 'uncertain', issueReporter: author });
+    nodes.set('epic-1', { id: 'epic-1', mapId: 'map-1', parentId: 'root-1' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/override',
+      payload: { decision: 'place', parentNodeId: 'epic-1' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(createNodeMock.mock.calls[0][0]).toMatchObject({ reportedBy: author });
   });
 
   it('place: rejects parentNodeId that is not in this map', async () => {

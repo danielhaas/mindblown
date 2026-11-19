@@ -14,7 +14,7 @@
  * Unknown entries match NOTHING (fail-closed): a typo in the gate empties
  * the queue loudly instead of silently opening the fence.
  */
-import type { Node, NodeMap, StatusDef } from './types.js';
+import type { ApprovalState, Node, NodeMap, StatusDef } from './types.js';
 import { isForgeLink } from './types.js';
 import { effectiveVersionId } from './versions.js';
 import { isReady } from './dependencies.js';
@@ -73,20 +73,82 @@ export function isBugNode(node: Pick<Node, 'tags'>): boolean {
 }
 
 /**
+ * A title this long is a request in itself, not a label: "Done tickets
+ * should show how long they needed …" (28.10.2026) was typed in the app
+ * as a title alone and refused as briefless. The worker prompt carries the
+ * title on its Ticket line, so the text reaches the agent either way.
+ */
+export const TITLE_BRIEF_MIN_WORDS = 10;
+
+/**
  * Empty-brief guard: a ticket is dispatchable only if the worker gets a
- * self-contained brief — a non-empty description, or a linked GitHub
+ * self-contained brief — a non-empty description, a linked GitHub
  * issue it can read (inbound sync copies issue bodies into the
- * description, so a linked node normally carries the text locally too).
+ * description, so a linked node normally carries the text locally too),
+ * or a title of at least TITLE_BRIEF_MIN_WORDS words.
  * This is the predicate; the `needs-brief` TAG is only the trace the pull
  * leaves behind and is never removed when a brief is added later.
  */
-export function hasBrief(node: Pick<Node, 'description' | 'externalLinks'>): boolean {
+export function hasBrief(node: Pick<Node, 'text' | 'description' | 'externalLinks'>): boolean {
   if (proseMirrorToPlainText(node.description).trim() !== '') return true;
+  if ((node.text ?? '').trim().split(/\s+/).filter(Boolean).length >= TITLE_BRIEF_MIN_WORDS) return true;
   return node.externalLinks.some((l) => isForgeLink(l));
 }
 
 /** Tag the fleet's give-up path (blocked.sh) sets next to status=blocked + blockedReason. */
 export const BLOCKED_TAG = 'blocked';
+
+/**
+ * "Fleet can fix it" on a worker's red-CI or merge-conflict blocker: the
+ * worker that holds the claim runs its agent on the PR branch again, then
+ * drops the tag (claude-fleet fleet-worker fix_pr).
+ */
+export const FLEET_FIX_TAG = 'fleet-fix';
+
+/**
+ * The note a fleet worker writes on a claim it keeps while its PR waits on
+ * a person (red CI, a conflict, no CI, a refused merge). Session ids have no
+ * spaces. Server SQL twin: db/fleets `holdsCapSlotSql`.
+ */
+export const WORKER_WAIT_NOTE = /^Fleet worker [^ ]+: /;
+
+/**
+ * A claim that uses up the map's / fleet's cap. The one exception: the
+ * worker's own wait note on its PR, with no fix asked for — the worker
+ * follows the PR but runs no agent, so the slot is free for the next
+ * ticket. Every other blocker still counts: a person's Stop lands while the
+ * agent runs, and a fix run (fleet-fix / fleet-check tag) is an agent.
+ */
+export function holdsCapSlot(node: Pick<Node, 'claimedBySession' | 'blockedReason' | 'tags'>): boolean {
+  if (node.claimedBySession === null) return false;
+  const waiting =
+    WORKER_WAIT_NOTE.test((node.blockedReason ?? '').trim()) && !node.tags.includes(FLEET_FIX_TAG) && !node.tags.includes(FLEET_CHECK_TAG);
+  return !waiting;
+}
+
+/** A blocker the fleet worker wrote about its own PR that an agent can work on: red CI, a merge conflict. */
+export function fleetCanFix(blockedReason: string | null | undefined): boolean {
+  return /^Fleet worker \S+: (CI failed on PR #\d+|PR #\d+ has merge conflicts)/.test((blockedReason ?? '').trim());
+}
+
+/**
+ * "Fleet can fix it" on any other blocker: the queue hands the ticket out
+ * again ahead of the rest, gate and blocker notwithstanding, with the
+ * blocker in the brief — the agent gets past it or writes down what a
+ * person must do (server orchestration claimFromMap, fleet-worker check).
+ */
+export const FLEET_CHECK_TAG = 'fleet-check';
+
+/**
+ * Which fix "Fleet can fix it" means: the worker's red-CI / conflict note →
+ * the worker reworks its PR; else a check run. Not the MindBlown claim: the
+ * worker follows its PR from its own claim file, and the node's claim can
+ * be gone (released, swept) while it does — on 22.10.2026 three such PRs
+ * were sent to the queue as fresh check runs, one of them over its open PR.
+ */
+export function fleetFixAction(blockedReason: string | null | undefined): 'fleet-fix' | 'fleet-check' {
+  return fleetCanFix(blockedReason) ? 'fleet-fix' : 'fleet-check';
+}
 
 export interface UnblockPlan {
   /** New status, or undefined when the status stays as it is. */
@@ -199,17 +261,26 @@ export function matchesDispatchGate(node: Node, gate: string[], nodeMap: NodeMap
 }
 
 /**
- * The pullable set BEFORE the gate: a non-root node in a todo status (or
+ * The pullable set BEFORE the gate: a non-root LEAF in a todo status (or
  * no status), unclaimed, with every dependency predecessor done. The
  * server's `selectPullCandidates` starts from exactly this set.
+ *
+ * Leaves only, same rule as ready_nodes (#323): a node with children is a
+ * container — its children are the work. The pull handed out an untagged
+ * container ("Phase 2.5: Make it fun", 25.10.2026); the worker could only
+ * flag a blocker on it, which held its whole subtree and emptied the queue.
+ * "Has children" is read from `parentId` of the nodes passed in, so a
+ * deleted child (not in the list) does not keep its parent a container.
  */
 export function pullableNodes(nodes: Node[], workflow: StatusDef[]): { pullable: Node[]; nodeMap: NodeMap } {
   const isDone = buildIsDonePredicate(workflow);
   const todoIds = buildTodoIds(workflow);
   const nodeMap: NodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const hasChild = new Set(nodes.map((n) => n.parentId).filter((p): p is string => p !== null));
   const pullable = nodes.filter(
     (n) =>
       n.parentId !== null &&
+      !hasChild.has(n.id) &&
       (n.status === null || todoIds.has(n.status)) &&
       n.claimedBySession === null &&
       isReady(n, nodeMap, isDone),
@@ -229,21 +300,52 @@ export const DISPATCH_SKIP_TAGS = ['kira-skip', 'needs-human', 'needs-daniel-inp
 /** The skip tag a node carries, or null — the first match, as written on the node. */
 export function dispatchSkipTag(node: Pick<Node, 'tags'>): string | null {
   const skip = new Set<string>(DISPATCH_SKIP_TAGS);
-  return node.tags.find((t) => skip.has(t.toLowerCase())) ?? null;
+  // `?? []`: lint and test fixtures build nodes without tags.
+  return (node.tags ?? []).find((t) => skip.has(t.toLowerCase())) ?? null;
 }
 
-/** Why a ticket waits for a person: a skip tag, a manual blocker, or both. */
+/** The tag an epic leaf is held under (it shows where a skip tag would). */
+export const EPIC_HOLD_TAG = 'epic';
+
+const EPIC_TAGS = new Set(['epic', 'type:epic']);
+// "#482 Epic: …", "Epic – …", "[EPIC] Source & Ingestion", "epic(compliance): …".
+// Needs the colon, dash or brackets: "epic (danielhaas/epic)" is a repo name,
+// not an epic — a scope must touch "epic" with no space.
+const EPIC_TITLE = /^\s*(#\d+\s+)?(\[epic\]|epic(\([^)]*\))?!?\s*[:\-–—])/i;
+
+/**
+ * An epic sitting in the map as a leaf: its work lives in other issues or
+ * sub-issues, not in the node. The pull handed #482 to an agent as if it
+ * were a ticket (20.10.2026). Tag `epic` / `type:epic`, or a title that
+ * starts with "Epic:", "epic(scope):" or "[EPIC]".
+ */
+export function isEpicLeaf(node: Pick<Node, 'tags' | 'text'>): boolean {
+  return (node.tags ?? []).some((t) => EPIC_TAGS.has(t.toLowerCase())) || EPIC_TITLE.test(node.text ?? '');
+}
+
+/** Why a ticket waits for a person: a skip tag, a manual blocker, a missing approval, or several. */
 export interface DispatchHold {
   tag: string | null;
   blockedReason: string | null;
+  /** Not approved (#492): `proposed` waits for a trusted person, `rejected` stays out. null = approved. */
+  approval: Exclude<ApprovalState, 'approved'> | null;
   /** The open ancestor that carries the hold, or null when it is on the ticket itself. */
   heldBy: { id: string; text: string } | null;
 }
 
-function ownHold(node: Pick<Node, 'tags' | 'blockedReason'>): Omit<DispatchHold, 'heldBy'> | null {
+type HoldFields = Pick<Node, 'tags' | 'blockedReason' | 'approval'>;
+
+/**
+ * `self`: the ticket must carry an approved stamp, and no stamp waits like
+ * `proposed` (fail-closed, #492). An ancestor holds only with an explicit
+ * proposed or rejected stamp: the map root carries none.
+ */
+function ownHold(node: HoldFields, self: boolean): Omit<DispatchHold, 'heldBy'> | null {
   const tag = dispatchSkipTag(node);
   const blockedReason = node.blockedReason?.trim() ? node.blockedReason : null;
-  return tag === null && blockedReason === null ? null : { tag, blockedReason };
+  const state = node.approval?.state ?? (self ? 'proposed' : 'approved');
+  const approval = state === 'approved' ? null : state;
+  return tag === null && blockedReason === null && approval === null ? null : { tag, blockedReason, approval };
 }
 
 /**
@@ -258,12 +360,21 @@ function ownHold(node: Pick<Node, 'tags' | 'blockedReason'>): Omit<DispatchHold,
  * ancestor's leftover reason does not count — it would silently freeze
  * every ticket added under it later (plan-lint flags that text instead).
  * The nearest holding ancestor wins.
+ *
+ * An epic leaf (`isEpicLeaf`) is held too, under the tag `epic`, but only
+ * on the ticket itself: an epic ancestor with children is the normal tree
+ * shape, and its sub-tickets are the work.
+ *
+ * The approval gate (#492): the ticket runs only with an `approved` stamp,
+ * and a proposed or rejected open ancestor holds its subtree.
  */
 export function dispatchHold(
-  node: Pick<Node, 'tags' | 'blockedReason'> & { parentId?: string | null },
+  node: HoldFields & { parentId?: string | null; text?: string },
   ancestors?: { nodeMap: NodeMap; isDone: (status: string | null) => boolean },
 ): DispatchHold | null {
-  const own = ownHold(node);
+  const own =
+    ownHold(node, true) ??
+    (isEpicLeaf({ tags: node.tags, text: node.text ?? '' }) ? { tag: EPIC_HOLD_TAG, blockedReason: null, approval: null } : null);
   if (own) return { ...own, heldBy: null };
   if (!ancestors) return null;
   const seen = new Set<string>();
@@ -272,12 +383,70 @@ export function dispatchHold(
     const a = ancestors.nodeMap.get(id);
     if (!a) break;
     if (!ancestors.isDone(a.status)) {
-      const hold = ownHold(a);
+      const hold = ownHold(a, false);
       if (hold) return { ...hold, heldBy: { id: a.id, text: a.text } };
     }
     id = a.parentId;
   }
   return null;
+}
+
+/**
+ * The approval part of `dispatchHold` alone (#492): the ticket's own stamp
+ * (no stamp = proposed), else the nearest proposed / rejected open
+ * ancestor. For paths that skip the other holds on purpose — a "Fleet can
+ * fix it" check run goes past its blocker, never past the approval gate.
+ */
+export function approvalHold(
+  node: Pick<Node, 'approval'> & { parentId?: string | null },
+  ancestors: { nodeMap: NodeMap; isDone: (status: string | null) => boolean },
+): DispatchHold['approval'] {
+  const own = node.approval?.state ?? 'proposed';
+  if (own !== 'approved') return own;
+  const seen = new Set<string>();
+  for (let id = node.parentId ?? null; id !== null && !seen.has(id); ) {
+    seen.add(id);
+    const a = ancestors.nodeMap.get(id);
+    if (!a) break;
+    const state = a.approval?.state;
+    if (!ancestors.isDone(a.status) && (state === 'proposed' || state === 'rejected')) return state;
+    id = a.parentId;
+  }
+  return null;
+}
+
+/** An open parent whose skip tag or blocker holds tickets below it. */
+export interface ParentHold {
+  id: string;
+  text: string;
+  tag: string | null;
+  blockedReason: string | null;
+  approval: DispatchHold['approval'];
+  /** Tickets below it that would otherwise be pullable. */
+  count: number;
+}
+
+/**
+ * The parents holding tickets, most first. A hold on a parent holds its
+ * whole subtree (dispatchHold) — meant for "this epic waits on a
+ * decision", but nothing shows how much it takes out of the queue: a
+ * needs-human tag on the Navy security-audit umbrella silently held all
+ * 18 of its findings (21.10.2026). Shared by the Dispatch card and the
+ * hold-on-parent lint rule.
+ */
+export function parentHolds(
+  tickets: Array<Pick<Node, 'tags' | 'blockedReason' | 'approval' | 'parentId' | 'text'>>,
+  ancestors: { nodeMap: NodeMap; isDone: (status: string | null) => boolean },
+): ParentHold[] {
+  const byParent = new Map<string, ParentHold>();
+  for (const t of tickets) {
+    const hold = dispatchHold(t, ancestors);
+    if (!hold?.heldBy) continue;
+    const prev = byParent.get(hold.heldBy.id);
+    if (prev) prev.count++;
+    else byParent.set(hold.heldBy.id, { id: hold.heldBy.id, text: hold.heldBy.text, tag: hold.tag, blockedReason: hold.blockedReason, approval: hold.approval, count: 1 });
+  }
+  return [...byParent.values()].sort((a, b) => b.count - a.count || a.text.localeCompare(b.text));
 }
 
 export type DispatchState = 'hold' | 'full' | 'empty' | 'running';
@@ -300,6 +469,10 @@ export interface DispatchQueueSnapshot {
   unestimated: number;
   /** Pullable, inside the gate, but held for a person (skip tag or manual blocker, on it or an open ancestor — `dispatchHold`) — never granted. */
   humanOnly: number;
+  /** Pullable, inside the gate, but not approved (#492), on it or an open ancestor — never granted until a trusted person approves. Not in `humanOnly`. */
+  awaitingApproval: number;
+  /** The open parents behind `humanOnly` / `awaitingApproval` that hold tickets through their subtree, most first. */
+  heldByParents: ParentHold[];
   /**
    * Pullable tickets with NO effective version while the gate fences on a
    * version — invisible to the fleet until someone versions them. The
@@ -310,6 +483,8 @@ export interface DispatchQueueSnapshot {
   unknownGateEntries: string[];
   /** Grantable ticket ids, for drill-down lists. */
   inGateIds: string[];
+  /** The `needsBrief` tickets — each a brief row on the Questions card. */
+  needsBriefIds: string[];
   state: DispatchState;
 }
 
@@ -333,12 +508,15 @@ export function dispatchQueueSnapshot(
   opts: { workflow: StatusDef[]; cap: number; gate: string[] },
 ): DispatchQueueSnapshot {
   const cap = Math.max(0, Math.floor(opts.cap));
-  const activeClaims = nodes.filter((n) => n.claimedBySession !== null).length;
+  const activeClaims = nodes.filter(holdsCapSlot).length;
   const { pullable, nodeMap } = pullableNodes(nodes, opts.workflow);
   const gatedAll = pullable.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
   // Tickets held for a person (#266, blockers) are inside the gate but never granted.
   const ancestors = { nodeMap, isDone: buildIsDonePredicate(opts.workflow) };
-  const gated = gatedAll.filter((n) => dispatchHold(n, ancestors) === null);
+  const holds = new Map(gatedAll.map((n) => [n.id, dispatchHold(n, ancestors)]));
+  const gated = gatedAll.filter((n) => holds.get(n.id) === null);
+  // Same split as the server's skipped[] reasons: any approval hold counts as awaiting approval.
+  const awaitingApproval = gatedAll.filter((n) => holds.get(n.id)?.approval != null).length;
   const inGate = gated.filter(hasBrief);
   const gateHasVersion = gateVersionIds(opts.gate).length > 0;
   // Unversioned tickets the gate keeps out — with `type:bug|version:X` an
@@ -361,10 +539,13 @@ export function dispatchQueueSnapshot(
     inGate: inGate.length,
     needsBrief: gated.length - inGate.length,
     unestimated: inGate.filter((n) => n.effortEstimate === null).length,
-    humanOnly: gatedAll.length - gated.length,
+    humanOnly: gatedAll.length - gated.length - awaitingApproval,
+    awaitingApproval,
+    heldByParents: parentHolds(gatedAll, ancestors),
     unversionedOutsideGate,
     unknownGateEntries,
     inGateIds: inGate.map((n) => n.id),
+    needsBriefIds: gated.filter((n) => !hasBrief(n)).map((n) => n.id),
     state,
   };
 }

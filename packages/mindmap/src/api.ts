@@ -9,6 +9,7 @@ import type {
   RequirementStage,
   FleetRollup,
   FleetTickPayload,
+  AgentOutput,
   AskRow,
   AskCounts,
   AskDocumentMeta,
@@ -16,15 +17,24 @@ import type {
   AskWritePlan,
   AskStatus,
   FleetJournal,
+  FleetWithMaps,
   StalledLeaf,
+  TrustPolicy,
+  NodeApproval,
+  PendingApprovalList,
+  ReporterCheckList,
+  DeployedResult,
+  ApproveInput,
+  RejectInput,
 } from '@mindblown/core';
+import { cachedResponse, clearApiCache, markOffline, markOnline, saveResponse } from './offline.js';
 
-// Leer = gleiche Herkunft. Im Dev-Betrieb proxied Vite `/api` und `/ws` an den
-// Server (siehe vite.config.ts), im Produktivbetrieb liegen Oberfläche und API
-// ohnehin hinter demselben Host. Der frühere Default `http://localhost:3001`
-// funktionierte nur, wenn der Browser auf derselben Maschine lief wie der
-// Server — von jedem anderen Rechner zeigte er auf dessen eigenen localhost.
-// Wer die API woanders hat, setzt VITE_API_URL explizit.
+// Empty = same origin. In dev, Vite proxies `/api` and `/ws` to the server
+// (see vite.config.ts); in production UI and API sit behind the same host
+// anyway. The former default `http://localhost:3001` only worked when the
+// browser ran on the same machine as the server — from any other machine it
+// pointed at that machine's own localhost. If the API lives elsewhere, set
+// VITE_API_URL explicitly.
 const BASE_URL: string = import.meta.env.VITE_API_URL ?? '';
 
 // ── Token helpers ────────────────────────────────────────────────
@@ -36,10 +46,12 @@ export function getToken(): string | null {
 }
 
 export function setToken(token: string): void {
+  clearApiCache();
   localStorage.setItem(TOKEN_KEY, token);
 }
 
 export function clearToken(): void {
+  clearApiCache();
   localStorage.removeItem(TOKEN_KEY);
 }
 
@@ -214,10 +226,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...init,
-    headers,
-  });
+  const url = `${BASE_URL}${path}`;
+  const isGet = (init?.method ?? 'GET').toUpperCase() === 'GET';
+  let res: Response;
+  try {
+    res = await fetch(url, { ...init, headers });
+  } catch (err) {
+    // No response at all: serve the last copy of a read, read-only (#572).
+    if (err instanceof TypeError) {
+      const hit = isGet ? await cachedResponse(url) : null;
+      markOffline(hit?.cachedAt);
+      if (hit) return hit.data as T;
+    }
+    throw err;
+  }
+  markOnline();
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new ApiError(
@@ -228,7 +251,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
   if (res.status === 204) return undefined as unknown as T;
-  return res.json();
+  const data = await res.json();
+  if (isGet) void saveResponse(url, data);
+  return data;
 }
 
 export class ApiError extends Error {
@@ -277,6 +302,18 @@ export async function changePassword(currentPassword: string, newPassword: strin
   setToken(token);
 }
 
+/** The daily mail with open questions (#597): the signed-in person's switch. */
+export function getDigestMail(): Promise<{ enabled: boolean }> {
+  return request<{ enabled: boolean }>('/api/me/digest-mail');
+}
+
+export function setDigestMail(enabled: boolean): Promise<{ enabled: boolean }> {
+  return request<{ enabled: boolean }>('/api/me/digest-mail', {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  });
+}
+
 export function adminResetPassword(email: string): Promise<{ email: string; tempPassword: string }> {
   return request<{ email: string; tempPassword: string }>('/api/system/reset-password', {
     method: 'POST',
@@ -321,6 +358,8 @@ export interface MapMember {
   name: string;
   email: string;
   permission: 'view' | 'edit' | 'admin';
+  /** 'fleet' = a fleet's service user (#481). */
+  kind?: 'person' | 'fleet';
 }
 
 /**
@@ -453,6 +492,29 @@ export function getGitHubRepositories(installationId?: string): Promise<{
   return request(`/api/integrations/github/repositories${qs}`);
 }
 
+export interface CreatedRepo {
+  fullName: string;
+  owner: string;
+  name: string;
+  private: boolean;
+  htmlUrl: string;
+}
+
+/** Create a repo with the user's own GitHub token, in one of their installations' accounts. */
+export function createGitHubRepository(input: {
+  installationId: string;
+  name: string;
+  private: boolean;
+  description?: string;
+}): Promise<CreatedRepo & { installationId: string; reachable: boolean; addAccessUrl?: string }> {
+  return request('/api/integrations/github/repositories', { method: 'POST', body: JSON.stringify(input) });
+}
+
+/** Create a repo in the signed-in user's Gitea account. */
+export function createGiteaRepository(input: { name: string; private: boolean; description?: string }): Promise<CreatedRepo> {
+  return request('/api/integrations/gitea/repositories', { method: 'POST', body: JSON.stringify(input) });
+}
+
 export function disconnectGitHub(): Promise<{ disconnected: boolean }> {
   return request('/api/auth/github/disconnect', { method: 'POST' });
 }
@@ -527,14 +589,16 @@ export type ForgeWebhookSetupResult =
   | { status: 'created' | 'updated'; hookId: number; url: string; events: string[] }
   | { status: 'failed'; reason: string; hint?: string };
 
-export function getForgeWebhook(workspaceId: string): Promise<ForgeWebhookState> {
-  return request(`/api/integrations/forge/webhook?workspaceId=${encodeURIComponent(workspaceId)}`);
+/** `repo` ("owner/name") picks the map's connection; a workspace holds one per repo. */
+export function getForgeWebhook(workspaceId: string, repo?: string): Promise<ForgeWebhookState> {
+  const q = `workspaceId=${encodeURIComponent(workspaceId)}${repo ? `&repo=${encodeURIComponent(repo)}` : ''}`;
+  return request(`/api/integrations/forge/webhook?${q}`);
 }
 
-export function setUpForgeWebhook(workspaceId: string): Promise<ForgeWebhookSetupResult> {
+export function setUpForgeWebhook(workspaceId: string, repo?: string): Promise<ForgeWebhookSetupResult> {
   return request(`/api/integrations/forge/webhook`, {
     method: 'POST',
-    body: JSON.stringify({ workspaceId }),
+    body: JSON.stringify({ workspaceId, ...(repo ? { repo } : {}) }),
   });
 }
 
@@ -720,17 +784,18 @@ export function fetchNodeActors(mapId: string): Promise<{ actors: NodeActor[] }>
 
 export function createMap(
   name: string,
-  options: { aiPolicy?: 'any' | 'local' | 'none' } = {},
-): Promise<MindMap> {
+  options: { aiPolicy?: 'any' | 'local' | 'none'; description?: string } = {},
+): Promise<{ map: MindMap }> {
   // createdBy will be inferred from the auth token on the server,
   // but we send it as fallback for compatibility
-  return request<MindMap>('/api/maps', {
+  return request<{ map: MindMap }>('/api/maps', {
     method: 'POST',
     body: JSON.stringify({
       name,
       workspaceId: 'default',
       createdBy: 'current-user',
       ...(options.aiPolicy ? { aiPolicy: options.aiPolicy } : {}),
+      ...(options.description ? { description: options.description } : {}),
     }),
   });
 }
@@ -742,9 +807,23 @@ export function updateMap(id: string, fields: Record<string, unknown>): Promise<
   });
 }
 
+/** Who may run the fleet on a map (#491). Admin only. */
+export function getTrustPolicy(mapId: string): Promise<{ policy: TrustPolicy; isDefault: boolean }> {
+  return request(`/api/maps/${mapId}/trust-policy`);
+}
+
+/** Save the map's trust policy; null goes back to the defaults. Returns the policy now in force. */
+export async function saveTrustPolicy(mapId: string, policy: TrustPolicy | null): Promise<TrustPolicy> {
+  const res = await request<MindMap & { trustPolicy: TrustPolicy }>(`/api/maps/${mapId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ trustPolicy: policy }),
+  });
+  return res.trustPolicy;
+}
+
 /**
  * Fetch the requirements register rendered as a Markdown
- * Anforderungsdokument. Raw text — not JSON.
+ * requirements document. Raw text — not JSON.
  */
 /**
  * Fetch the requirements register as a Word document (docx) — the
@@ -807,6 +886,70 @@ export async function exportRequirements(mapId: string): Promise<string> {
   });
   if (!res.ok) throw new Error(`Export failed: HTTP ${res.status}`);
   return res.text();
+}
+
+// ── Markdown timeline + wiki publish (#637) ──────────────────────
+
+/** The viewer's IANA zone, for the "generated" stamp (#595). */
+export function viewerTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+/** The map as a Markdown timeline for readers outside the project. */
+export async function exportTimelineMarkdown(
+  mapId: string,
+  opts: { rootNodeId?: string; detail?: 'summary' | 'full' } = {},
+): Promise<string> {
+  const token = getToken();
+  const qs = new URLSearchParams({ tz: viewerTimeZone() });
+  if (opts.rootNodeId) qs.set('root', opts.rootNodeId);
+  if (opts.detail) qs.set('detail', opts.detail);
+  const res = await fetch(`${BASE_URL}/api/maps/${mapId}/export.md?${qs}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body?.error?.message ?? `Export failed: HTTP ${res.status}`, body?.error?.code);
+  }
+  return res.text();
+}
+
+export interface WikiStatus {
+  configured: boolean;
+  provider: 'outline';
+  baseUrl: string | null;
+  collectionId: string | null;
+  document: { id: string; url: string; publishedAt: string } | null;
+}
+
+export interface WikiPublishResult {
+  documentId: string;
+  documentUrl: string;
+  created: boolean;
+  publishedAt: string;
+}
+
+export async function getWikiStatus(mapId: string): Promise<WikiStatus> {
+  return (await request<{ wiki: WikiStatus }>(`/api/maps/${mapId}/wiki`)).wiki;
+}
+
+/** Workspace owner: the Outline connection. Leave token empty to keep the stored one. */
+export async function saveWikiSettings(
+  mapId: string,
+  input: { baseUrl: string; token?: string; collectionId: string },
+): Promise<WikiStatus> {
+  return (await request<{ wiki: WikiStatus }>(`/api/maps/${mapId}/wiki`, { method: 'PUT', body: JSON.stringify(input) })).wiki;
+}
+
+export function publishToWiki(mapId: string): Promise<WikiPublishResult> {
+  return request<WikiPublishResult>(`/api/maps/${mapId}/wiki/publish`, {
+    method: 'POST',
+    body: JSON.stringify({ tz: viewerTimeZone() }),
+  });
 }
 
 // ── Media uploads ────────────────────────────────────────────────
@@ -1004,10 +1147,111 @@ export function unblockNode(mapId: string, nodeId: string): Promise<{ node: Node
   });
 }
 
+// ── Fleets (#477) ────────────────────────────────────────────────
+
+/** Fleets the caller owns or whose maps the caller can view. */
+export function listFleets(): Promise<FleetWithMaps[]> {
+  return request<FleetWithMaps[]>('/api/fleets');
+}
+
+/** Create a fleet; the caller becomes its owner. Connect maps via updateMap({ fleetId }). */
+export function createFleet(name: string): Promise<FleetWithMaps> {
+  return request<FleetWithMaps>('/api/fleets', { method: 'POST', body: JSON.stringify({ name }) });
+}
+
+/** One API key of a fleet's service user (#481) — prefix only after creation. */
+export interface FleetCredential {
+  id: string;
+  name: string;
+  prefix: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+export function listFleetCredentials(fleetId: string): Promise<{ credentials: FleetCredential[] }> {
+  return request(`/api/fleets/${fleetId}/credentials`);
+}
+
+/** Issue a key for the fleet; `key` is the plaintext, shown once. */
+export function issueFleetCredential(fleetId: string, name: string): Promise<{ id: string; name: string; key: string; prefix: string }> {
+  return request(`/api/fleets/${fleetId}/credentials`, { method: 'POST', body: JSON.stringify({ name }) });
+}
+
+export function revokeFleetCredential(fleetId: string, keyId: string): Promise<void> {
+  return request(`/api/fleets/${fleetId}/credentials/${keyId}`, { method: 'DELETE' });
+}
+
+/** A machine waiting to be paired (#506) — what it reported when it registered. */
+export interface PairingMachine {
+  hostname: string;
+  agent: string | null;
+  model: string | null;
+  slots: number;
+  registeredAt: string;
+  expiresAt: string;
+}
+
+/** Which machine shows this code. A wrong code counts against a per-user limit. */
+export function lookupPairing(code: string): Promise<PairingMachine> {
+  return request<PairingMachine>('/api/fleet-pairings/lookup', { method: 'POST', body: JSON.stringify({ code }) });
+}
+
+/** Pair the machine: a new fleet (`name`, default its hostname) or `fleetId`, one you own (`replaceKeys`: its other keys go). */
+export function confirmPairing(
+  code: string,
+  target: { name?: string; fleetId?: string; replaceKeys?: boolean },
+): Promise<{ fleetId: string; fleetName: string; created: boolean; machine: PairingMachine }> {
+  return request('/api/fleet-pairings/confirm', { method: 'POST', body: JSON.stringify({ code, ...target }) });
+}
+
+/** Which projects' repo credentials the fleet fetched (#507) — per map and repo, owner only. */
+export interface RepoHandout {
+  mapId: string;
+  mapName: string;
+  repo: string;
+  count: number;
+  lastAt: string;
+}
+
+export function listRepoHandouts(fleetId: string): Promise<{ since: string; handouts: RepoHandout[] }> {
+  return request(`/api/fleets/${fleetId}/repo-handouts`);
+}
+
+/** Rename a fleet (owner only). */
+export function renameFleet(fleetId: string, name: string): Promise<FleetWithMaps> {
+  return request<FleetWithMaps>(`/api/fleets/${fleetId}`, { method: 'PATCH', body: JSON.stringify({ name }) });
+}
+
+/** Switch the automatic blocker check on or off (owner only, PATCH /api/fleets/:id). */
+export function setFleetAutoCheck(fleetId: string, autoCheckBlockers: boolean): Promise<FleetWithMaps> {
+  return request<FleetWithMaps>(`/api/fleets/${fleetId}`, { method: 'PATCH', body: JSON.stringify({ autoCheckBlockers }) });
+}
+
+/** One fleet as this reader sees it — its cap, active claims and connected maps (#480). */
+export function fetchFleetEntity(fleetId: string): Promise<FleetWithMaps> {
+  return request<FleetWithMaps>(`/api/fleets/${fleetId}`);
+}
+
 // ── Leidang fleet telemetry ──────────────────────────────────────
 
+/**
+ * What a Fleet-tab section reads (#480): one map (`/api/maps/:id/…`, the
+ * fleet narrowed to that map) or the whole fleet (`/api/fleets/:id/…`).
+ * A bare string is a map id — the pre-#480 signature.
+ */
+export type FleetTarget = string | { mapId: string } | { fleetId: string };
+
+function fleetBase(target: FleetTarget): string {
+  if (typeof target === 'string') return `/api/maps/${target}`;
+  return 'fleetId' in target ? `/api/fleets/${target.fleetId}` : `/api/maps/${target.mapId}`;
+}
+
 export interface FleetResponse {
-  hosts: { host: string; generatedAt: string; receivedAt: string; rollup: FleetRollup }[];
+  /** The fleet the telemetry belongs to; null = the map has no fleet. */
+  fleetId?: string | null;
+  /** `mapIds` = the maps the host serves that the reader can view. */
+  hosts: { host: string; generatedAt: string; receivedAt: string; mapIds?: string[]; rollup: FleetRollup }[];
   ticks: { id: string; tickAt: string; receivedAt: string; payload: FleetTickPayload }[];
   /** Server clock — staleness is judged against it, not the browser's. */
   now: string;
@@ -1024,22 +1268,30 @@ export interface FleetWindowOptions {
 }
 
 /** Last-known satellite rollups + recent orchestrator ticks; `opts` widens the ticks to a history window. */
-export function fetchFleet(mapId: string, opts: FleetWindowOptions = {}): Promise<FleetResponse> {
+export function fetchFleet(target: FleetTarget, opts: FleetWindowOptions = {}): Promise<FleetResponse> {
   const params = new URLSearchParams();
   if (opts.since !== undefined) params.set('since', opts.since);
   if (opts.until !== undefined) params.set('until', opts.until);
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   const qs = params.toString();
-  return request<FleetResponse>(`/api/maps/${mapId}/fleet${qs ? `?${qs}` : ''}`);
+  return request<FleetResponse>(`${fleetBase(target)}/fleet${qs ? `?${qs}` : ''}`);
+}
+
+/** #585: the last live-view tail a fleet worker reported for a running ticket; `output: null` = none. Needs edit on the map. */
+export function fetchAgentOutput(mapId: string, nodeId: string): Promise<{ output: AgentOutput | null; now: string }> {
+  return request(`/api/maps/${mapId}/nodes/${nodeId}/agent-output`);
 }
 
 /** What the fleet did in a window — the Journal section of the Fleet tab. Server defaults to 24 h, caps at 31 days. */
-export function fetchFleetJournal(mapId: string, opts: { from?: string; to?: string } = {}): Promise<{ journal: FleetJournal; now: string }> {
+export function fetchFleetJournal(
+  target: FleetTarget,
+  opts: { from?: string; to?: string } = {},
+): Promise<{ journal: FleetJournal; now: string; maps?: { id: string; name: string }[] }> {
   const params = new URLSearchParams();
   if (opts.from !== undefined) params.set('from', opts.from);
   if (opts.to !== undefined) params.set('to', opts.to);
   const qs = params.toString();
-  return request(`/api/maps/${mapId}/fleet-journal${qs ? `?${qs}` : ''}`);
+  return request(`${fleetBase(target)}/fleet-journal${qs ? `?${qs}` : ''}`);
 }
 
 // ── Asks inbox (/leidang-asks) ───────────────────────────────────
@@ -1050,6 +1302,8 @@ export interface AsksResponse {
   pushedAt: string | null;
   meta: AskDocumentMeta | null;
   now: string;
+  /** Fleet read (#480): the maps covered — rows name theirs by `mapId` (null = fleet-level). */
+  maps?: { id: string; name: string }[];
 }
 
 export interface AnswerAskResponse {
@@ -1060,11 +1314,11 @@ export interface AnswerAskResponse {
 }
 
 /** The fleet's open human questions, as the orchestrator last pushed them. */
-export function fetchAsks(mapId: string, opts: { status?: AskStatus | 'all' } = {}): Promise<AsksResponse> {
+export function fetchAsks(target: FleetTarget, opts: { status?: AskStatus | 'all' } = {}): Promise<AsksResponse> {
   const params = new URLSearchParams();
   if (opts.status) params.set('status', opts.status);
   const qs = params.toString();
-  return request<AsksResponse>(`/api/maps/${mapId}/asks${qs ? `?${qs}` : ''}`);
+  return request<AsksResponse>(`${fleetBase(target)}/asks${qs ? `?${qs}` : ''}`);
 }
 
 /** Record an answer — the server writes ticket comment + node like leidang-asks-apply. */
@@ -1073,6 +1327,80 @@ export function answerAsk(mapId: string, askId: string, input: AskAnswerInput): 
     method: 'POST',
     body: JSON.stringify(input),
   });
+}
+
+/** Answer through the fleet (#480) — `askMapId` picks the row ('' = fleet-level). */
+export function answerFleetAsk(fleetId: string, askId: string, input: AskAnswerInput, askMapId: string | null): Promise<AnswerAskResponse> {
+  const qs = `?mapId=${encodeURIComponent(askMapId ?? '')}`;
+  return request<AnswerAskResponse>(`/api/fleets/${fleetId}/asks/${encodeURIComponent(askId)}/answer${qs}`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export interface FleetCheckResponse {
+  sent: Array<{ askId: string; mapId: string; action: 'fleet-fix' | 'fleet-check' }>;
+  failed: Array<{ askId: string; mapId: string; error: string }>;
+}
+
+/** "Let the fleet check all blockers": every blocker row of the fleet → Fleet can fix it. */
+export function fleetCheckBlockers(fleetId: string, by: string): Promise<FleetCheckResponse> {
+  return request<FleetCheckResponse>(`/api/fleets/${fleetId}/asks/fleet-check`, { method: 'POST', body: JSON.stringify({ by }) });
+}
+
+// ── Approvals (#494) ─────────────────────────────────────────────
+
+export interface ApprovalResponse {
+  approval: NodeApproval | null;
+  writes: Array<{ kind: 'comment' | 'close'; target: string; done: boolean; error?: string }>;
+  ok: boolean;
+}
+
+/** Proposed tickets on a map, or on a fleet's maps the reader can view. */
+export function fetchApprovals(target: FleetTarget): Promise<PendingApprovalList> {
+  return request<PendingApprovalList>(`${fleetBase(target)}/approvals`);
+}
+
+/** Every ticket waiting for approval on a map the reader can view — the Approvals page. */
+export function fetchAllApprovals(): Promise<PendingApprovalList> {
+  return request<PendingApprovalList>('/api/approvals');
+}
+
+export function approveTicket(mapId: string, nodeId: string, input: ApproveInput): Promise<ApprovalResponse> {
+  return request<ApprovalResponse>(`/api/maps/${mapId}/nodes/${nodeId}/approve`, { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function rejectTicket(mapId: string, nodeId: string, input: RejectInput): Promise<ApprovalResponse> {
+  return request<ApprovalResponse>(`/api/maps/${mapId}/nodes/${nodeId}/reject`, { method: 'POST', body: JSON.stringify(input) });
+}
+
+// ── The reporter's check ─────────────────────────────────────────
+
+export function fetchReporterChecks(target: FleetTarget): Promise<ReporterCheckList> {
+  return request<ReporterCheckList>(`${fleetBase(target)}/reporter-checks`);
+}
+
+/** The project was deployed: reopen the waiting issues and ask their reporters. */
+export function markDeployed(mapId: string): Promise<DeployedResult & { ok: boolean }> {
+  return request<DeployedResult & { ok: boolean }>(`/api/maps/${mapId}/deployed`, { method: 'POST', body: JSON.stringify({}) });
+}
+
+export interface CheckResponse {
+  writes: Array<{ kind: 'comment' | 'close'; target: string; done: boolean; error?: string }>;
+  ok: boolean;
+}
+
+export function reopenAfterCheck(mapId: string, nodeId: string, note: string): Promise<CheckResponse> {
+  return request<CheckResponse>(`/api/maps/${mapId}/nodes/${nodeId}/reporter-check/reopen`, { method: 'POST', body: JSON.stringify({ note }) });
+}
+
+export function closeAfterCheck(mapId: string, nodeId: string): Promise<CheckResponse> {
+  return request<CheckResponse>(`/api/maps/${mapId}/nodes/${nodeId}/reporter-check/close`, { method: 'POST', body: JSON.stringify({}) });
+}
+
+/** Post the questions on the linked issue; the ticket stays proposed. */
+export function askReporter(mapId: string, nodeId: string, input: { questions: string[]; expectedRevision?: number }): Promise<ApprovalResponse> {
+  return request<ApprovalResponse>(`/api/maps/${mapId}/nodes/${nodeId}/ask-reporter`, { method: 'POST', body: JSON.stringify(input) });
 }
 
 // ── Attachments ──────────────────────────────────────────────────
@@ -1557,10 +1885,20 @@ export function aiBraindump(
   parentId: string,
   prose: string,
   maxDepth?: number,
+  /** Answers to /braindump/questions, appended to the prose by the server. */
+  answers?: Array<{ question: string; answer: string }>,
 ): Promise<{ tree: BraindumpNode[] }> {
   return request('/api/ai/braindump', {
     method: 'POST',
-    body: JSON.stringify({ mapId, parentId, prose, maxDepth }),
+    body: JSON.stringify({ mapId, parentId, prose, maxDepth, answers }),
+  });
+}
+
+/** Up to three questions to ask before drafting a plan from `prose` (none when it covers what matters). */
+export function aiBraindumpQuestions(mapId: string, prose: string): Promise<{ questions: string[] }> {
+  return request('/api/ai/braindump/questions', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, prose }),
   });
 }
 
@@ -1850,6 +2188,8 @@ export interface AiConfigResponse {
   models: { ollama: string | null; anthropic: string | null };
   /** Reachability of the local backends (#429). */
   health?: { chat: AiBackendHealth; embeddings: AiBackendHealth };
+  /** Claude refused (credit, key, overload…): the local model takes its calls until `until`. */
+  claudeOutage?: { reason: string; until: string } | null;
 }
 
 export interface AiBackendHealth {
@@ -2533,4 +2873,49 @@ export interface VelocityPaceResponse {
 
 export function fetchVelocity(mapId: string, windowDays = 14): Promise<VelocityPaceResponse> {
   return request<VelocityPaceResponse>(`/api/maps/${mapId}/velocity?windowDays=${windowDays}`);
+}
+
+// ── Repo docs (#550) — mirrors tool-kit RepoDocsList / RepoDocText ──
+
+export interface RepoDocsList {
+  repo: { owner: string; name: string; branch: string; webUrl: string };
+  treeSha: string;
+  docs: { path: string; sha: string; size: number }[];
+  truncated: boolean;
+}
+
+export interface RepoDocText {
+  path: string;
+  sha: string;
+  size: number;
+  text: string;
+  /** False: not valid UTF-8 — the server refuses a proposal, so no Edit. */
+  utf8: boolean;
+  webUrl: string;
+}
+
+export function listRepoDocs(mapId: string): Promise<RepoDocsList> {
+  return request<RepoDocsList>(`/api/maps/${mapId}/docs`);
+}
+
+export function readRepoDoc(mapId: string, path: string): Promise<RepoDocText> {
+  return request<RepoDocText>(`/api/maps/${mapId}/docs/file?path=${encodeURIComponent(path)}`);
+}
+
+/** #552 — branch + commit + PR; never the default branch. 409 CONFLICT when the doc moved on since `baseSha`. */
+export function proposeRepoDocEdit(
+  mapId: string,
+  input: { path: string; text: string; baseSha: string; message?: string },
+): Promise<{ path: string; branch: string; commitSha: string; pullRequest: { number: number; url: string } }> {
+  return request(`/api/maps/${mapId}/docs/propose`, { method: 'POST', body: JSON.stringify(input) });
+}
+
+/** An image a doc embeds — fetched with the token, since an <img src> carries none. Revalidated by ETag (the blob sha) on every fetch. */
+export async function fetchRepoImage(mapId: string, path: string): Promise<Blob> {
+  const token = getToken();
+  const res = await fetch(`${BASE_URL}/api/maps/${mapId}/docs/image?path=${encodeURIComponent(path)}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new ApiError(res.status, `Image failed: HTTP ${res.status}`);
+  return res.blob();
 }

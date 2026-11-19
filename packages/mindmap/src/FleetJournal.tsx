@@ -16,6 +16,8 @@ import type { FleetJournal, JournalPreset, JournalTick, JournalWorker } from '@m
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import { Card, Link } from './DigestView.js';
+import { projectLabel, scopeTarget, useFleetScope } from './fleetScope.js';
+import { projectTag } from './FleetTelemetry.js';
 
 const PRESETS: { id: JournalPreset; label: string; hint: string }[] = [
   { id: 'last-night', label: 'Last night', hint: 'Yesterday 17:00 → today 07:00 (local); before 07:00 the window ends now' },
@@ -37,7 +39,9 @@ function dayKey(iso: string): string {
 }
 function workerLabel(w: JournalWorker | null): string {
   if (!w) return 'unknown worker';
-  return w.host && w.worker ? `${w.worker}@${w.host}` : w.session;
+  const who = w.host && w.worker ? `${w.worker}@${w.host}` : w.session;
+  // The fleet that held the claim (#481), when the trail recorded one.
+  return w.fleet ? `${who} (${w.fleet})` : who;
 }
 function fmtVal(v: unknown): string {
   if (v == null) return '∅';
@@ -56,16 +60,25 @@ export function FleetJournalSection() {
   const [loading, setLoading] = useState(false);
   const [reload, setReload] = useState(0);
   const [open, setOpen] = useState<Record<string, boolean>>({ ticks: false, delivered: true, created: false, claims: false });
+  // This project or the whole fleet (#480); without a provider, this map.
+  const scope = useFleetScope();
+  const target = scopeTarget(scope, currentMapId);
+  const targetKey = target ? JSON.stringify(target) : '';
+  /** `[Beta]` before an entry from another project of the fleet. */
+  const tag = (mapId: string | undefined) => {
+    const label = projectLabel(scope, mapId);
+    return label ? <span style={projectTag}>{label}</span> : null;
+  };
 
   // Window resolved at fetch time, so "last night" is right at 03:40 (still
   // running → ends now) and at 09:00 (ended 07:00) without a ticker.
   useEffect(() => {
-    if (!currentMapId) return;
+    if (!target) return;
     let cancelled = false;
     const w = journalWindow(preset);
     setLoading(true);
     api
-      .fetchFleetJournal(currentMapId, { from: w.from.toISOString(), to: w.to.toISOString() })
+      .fetchFleetJournal(target, { from: w.from.toISOString(), to: w.to.toISOString() })
       .then((r) => {
         if (cancelled) return;
         setJournal(r.journal);
@@ -76,7 +89,8 @@ export function FleetJournalSection() {
     return () => {
       cancelled = true;
     };
-  }, [currentMapId, preset, reload]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- targetKey is `target` by value
+  }, [targetKey, preset, reload]);
 
   const toggle = useCallback((k: string) => setOpen((o) => ({ ...o, [k]: !o[k] })), []);
   const nodeLink = useCallback(
@@ -156,6 +170,7 @@ export function FleetJournalSection() {
                     ) : (
                       <span style={{ color: '#94a3b8' }}>no PR</span>
                     )}{' '}
+                    {tag(d.mapId)}
                     {nodeLink(d.nodeId, d.text)}
                     <span style={{ color: '#64748b' }}>
                       {/* No worker on record = closed by a person, or before the claim trail existed. */}
@@ -195,20 +210,20 @@ export function FleetJournalSection() {
               <ul style={list}>
                 {journal.claims.map((c, i) => (
                   <li key={`c${i}`}>
-                    <span style={{ color: '#94a3b8' }}>{hhmm(c.at)}</span> {workerLabel(c)} picked up {nodeLink(c.nodeId, c.text)}
+                    <span style={{ color: '#94a3b8' }}>{hhmm(c.at)}</span> {workerLabel(c)} picked up {tag(c.mapId)}{nodeLink(c.nodeId, c.text)}
                     <span style={{ color: '#94a3b8' }}> ({c.via})</span>
                   </li>
                 ))}
                 {journal.releases.map((r, i) => (
                   <li key={`r${i}`} style={{ color: '#9a3412' }}>
-                    <span style={{ color: '#94a3b8' }}>{hhmm(r.at)}</span> {workerLabel(r)} handed back {nodeLink(r.nodeId, r.text)} — {r.reason}
+                    <span style={{ color: '#94a3b8' }}>{hhmm(r.at)}</span> {workerLabel(r)} handed back {tag(r.mapId)}{nodeLink(r.nodeId, r.text)} — {r.reason}
                     {r.heldMinutes !== null ? ` after ${r.heldMinutes} min` : ''}
                     {r.note ? <span style={{ color: '#64748b' }}>: {r.note}</span> : null}
                   </li>
                 ))}
                 {journal.blocked.map((b, i) => (
                   <li key={`b${i}`} style={{ color: '#991b1b' }}>
-                    <span style={{ color: '#94a3b8' }}>{hhmm(b.at)}</span> blocked {nodeLink(b.nodeId, b.text)}
+                    <span style={{ color: '#94a3b8' }}>{hhmm(b.at)}</span> blocked {tag(b.mapId)}{nodeLink(b.nodeId, b.text)}
                     {b.reason ? <span style={{ color: '#64748b' }}> — {b.reason}</span> : null}
                   </li>
                 ))}
@@ -228,7 +243,7 @@ export function FleetJournalSection() {
                 <ul style={list}>
                   {journal.created.map((c) => (
                     <li key={c.nodeId}>
-                      <span style={{ color: '#94a3b8' }}>{hhmm(c.createdAt)}</span> {nodeLink(c.nodeId, c.text)}
+                      <span style={{ color: '#94a3b8' }}>{hhmm(c.createdAt)}</span> {tag(c.mapId)}{nodeLink(c.nodeId, c.text)}
                       <span style={{ color: '#64748b' }}>
                         {[c.priority, c.effortEstimate !== null ? `est ${c.effortEstimate}` : null, c.versionName].filter(Boolean).length > 0 &&
                           ` [${[c.priority, c.effortEstimate !== null ? `est ${c.effortEstimate}` : null, c.versionName].filter(Boolean).join(' · ')}]`}
@@ -248,7 +263,7 @@ export function FleetJournalSection() {
               <ul style={list}>
                 {journal.knobWrites.map((k, i) => (
                   <li key={i}>
-                    <span style={{ color: '#94a3b8' }}>{hhmm(k.at)}</span> {k.field}: {fmtVal(k.oldValue)} → <strong>{fmtVal(k.newValue)}</strong>
+                    <span style={{ color: '#94a3b8' }}>{hhmm(k.at)}</span> {tag(k.mapId)}{k.field}: {fmtVal(k.oldValue)} → <strong>{fmtVal(k.newValue)}</strong>
                     {k.userName ? ` — ${k.userName}` : k.userId ? ` — ${k.userId.slice(0, 8)}` : ' — fleet'}
                   </li>
                 ))}

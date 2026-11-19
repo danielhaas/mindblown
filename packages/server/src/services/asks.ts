@@ -3,7 +3,7 @@
  * `bin/leidang-asks-apply`, so the browser round and the terminal round
  * write the same things to the same places:
  *
- *   ticket  → «Entscheid (by, date): …» comment (+ milestone / NEEDS-VERSION
+ *   ticket  → «Decision (by, date): …» comment (+ milestone / NEEDS-VERSION
  *             off when that was the question and a milestone came along)
  *   node    → decision at the top of the description, blockedReason null,
  *             `blocked` tag off, status → todo unless done / claimed / noRequeue
@@ -16,7 +16,7 @@
  * worker's dialog is merged/closed) writes nothing, exactly like apply.
  * Every write is recorded on the row (`writes`) — the ledger.
  */
-import { decisionLine, planAskWrites, planUnblock, prependDecision } from '@mindblown/core';
+import { decisionLine, isDerivedAsk, planAskWrites, planUnblock, prependDecision } from '@mindblown/core';
 import type { AskAnswerInput, AskNodeState, AskRow, AskWrite, AskWritePlan, Node as CoreNode } from '@mindblown/core';
 import { commentOnGitHubIssue, setGitHubIssueMilestone } from '@mindblown/integrations';
 import * as asksDb from '../db/asks.js';
@@ -24,6 +24,7 @@ import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { recordFieldChanges } from '../db/events.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
+import { answerDerivedAsk } from './derivedAsks.js';
 
 export class AskNotFoundError extends Error {
   constructor(askId: string) {
@@ -67,8 +68,9 @@ function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-async function nodeState(mapId: string, nodeId: string | null): Promise<{ node: CoreNode | null; state: AskNodeState | null }> {
-  if (!nodeId) return { node: null, state: null };
+/** The node an ask unblocks — only on the ask's own map; a fleet-level ask (map null) has none. */
+async function nodeState(mapId: string | null, nodeId: string | null): Promise<{ node: CoreNode | null; state: AskNodeState | null }> {
+  if (!nodeId || !mapId) return { node: null, state: null };
   const node = await nodeDb.getNode(nodeId);
   if (!node || node.mapId !== mapId) return { node: null, state: null };
   const workflow = (await mapDb.getStatusWorkflow(mapId)) ?? [];
@@ -76,9 +78,17 @@ async function nodeState(mapId: string, nodeId: string | null): Promise<{ node: 
   return { node, state: { status: node.status, claimedBySession: node.claimedBySession, isDone: def?.category === 'done' } };
 }
 
-export async function answerAsk(mapId: string, askId: string, input: AskAnswerInput, userId: string | null): Promise<AnswerAskOutcome> {
+/**
+ * Answer one ask, identified by its key (#479: fleet, map, id). The ticket
+ * and node writes go to the ask's map; a fleet-level ask records the
+ * answer and flags the worker, nothing else.
+ */
+export async function answerAsk(key: asksDb.AskKey, input: AskAnswerInput, userId: string | null): Promise<AnswerAskOutcome> {
   validateAnswer(input);
-  const row = await asksDb.getAsk(mapId, askId);
+  const { mapId, askId } = key;
+  // MindBlown's own rows (stalled questions, steps) write through the lint fixes, not the collector's plan.
+  if (isDerivedAsk({ id: askId })) return answerDerivedAsk(key, input, userId);
+  const row = await asksDb.getAsk(key);
   if (!row) throw new AskNotFoundError(askId);
   const ask = row.ask;
   const by = input.by?.trim() || 'Dan';
@@ -89,7 +99,7 @@ export async function answerAsk(mapId: string, askId: string, input: AskAnswerIn
 
   if (input.action !== 'answered') {
     writes.push({ kind: 'ledger-only', target: ask.id, detail: input.action + (input.delegateTo ? ` → ${input.delegateTo}` : ''), done: true });
-    const saved = await asksDb.setAnswer(mapId, askId, {
+    const saved = await asksDb.setAnswer(key, {
       status: input.action === 'later' ? 'later' : 'delegated',
       answer,
       answeredBy: by,
@@ -114,9 +124,9 @@ export async function answerAsk(mapId: string, askId: string, input: AskAnswerIn
     const target = `#${plan.github.ticket}`;
     const w: AskWrite = { kind: 'gh-comment', target, detail: decisionLine(by, decision, date), done: false };
     writes.push(w);
-    const ctx = await getGitHubContextForMap(mapId);
+    const ctx = mapId ? await getGitHubContextForMap(mapId) : null;
     if (!ctx) {
-      w.error = 'map has no issue tracker connected — comment not posted';
+      w.error = mapId ? 'map has no issue tracker connected — comment not posted' : 'fleet-level ask names no project — comment not posted';
     } else {
       try {
         await commentOnGitHubIssue(ctx.owner, ctx.repo, plan.github.ticket, plan.github.body, ctx.forge);
@@ -152,7 +162,8 @@ export async function answerAsk(mapId: string, askId: string, input: AskAnswerIn
       };
       writes.push(w);
       try {
-        const workflow = (await mapDb.getStatusWorkflow(mapId)) ?? [];
+        // nodeState only finds a node on the ask's own map — node.mapId is that map.
+        const workflow = (await mapDb.getStatusWorkflow(node.mapId)) ?? [];
         const unblock = planUnblock(node, workflow);
         const patch: nodeDb.UpdateNodeInput = {
           blockedReason: null,
@@ -169,7 +180,7 @@ export async function answerAsk(mapId: string, askId: string, input: AskAnswerIn
         }
         updated = await nodeDb.updateNode(node.id, patch);
         if (!updated) throw new Error('node vanished during update');
-        await recordFieldChanges(mapId, node.id, userId, node, updated);
+        await recordFieldChanges(node.mapId, node.id, userId, node, updated);
         w.done = true;
       } catch (err) {
         w.error = err instanceof Error ? err.message : String(err);
@@ -188,7 +199,7 @@ export async function answerAsk(mapId: string, askId: string, input: AskAnswerIn
     });
   }
 
-  const saved = await asksDb.setAnswer(mapId, askId, { status: 'answered', answer, answeredBy: by, answeredAt, writes, workerPending });
+  const saved = await asksDb.setAnswer(key, { status: 'answered', answer, answeredBy: by, answeredAt, writes, workerPending });
   const ok = writes.every((w) => w.done || w.kind === 'worker-note');
   return { row: saved ?? row, plan, ok, node: updated, changedFields };
 }

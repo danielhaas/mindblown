@@ -9,6 +9,10 @@ import { MediaUploadButton } from './MediaUploadButton.js';
 import * as api from './api.js';
 import type { EstimateResult } from './api.js';
 import { useAiCapabilities } from './aiCapabilities.js';
+import { useTicketPhases } from './useTicketPhases.js';
+import { StopTicketButton } from './StopTicketButton.js';
+import { AgentOutputSection } from './AgentOutputSection.js';
+import { NeedsYouSection } from './NeedsYouSection.js';
 
 // ── Styles ───────────────────────────────────────────────────────
 
@@ -258,6 +262,8 @@ function PropertyPanelInner({
   // the three manual markers — the fleet's park path writes all of them.
   const unblockNode = useMindmapStore((s) => s.unblockNode);
   const [unblocking, setUnblocking] = useState(false);
+  // A fleet agent working this ticket gets a Stop beside the blocker field (#549).
+  const ticketPhases = useTicketPhases();
   const isManuallyBlocked =
     (node.blockedReason ?? '').trim() !== '' ||
     node.tags.includes(BLOCKED_TAG) ||
@@ -273,6 +279,11 @@ function PropertyPanelInner({
   const predecessorTitles = (computedValues?.blockedBy?.predecessorIds ?? [])
     .map((pid) => allNodes[pid]?.text ?? pid);
 
+  const workflow = useMindmapStore((s) => s.currentMap?.statusWorkflow);
+  const nodeMap = useMemo(() => new Map(Object.entries(allNodes)), [allNodes]);
+  const selectNode = useMindmapStore((s) => s.selectNode);
+  const setActiveView = useMindmapStore((s) => s.setActiveView);
+
   const health = computedValues?.healthSignal ?? 'on_track';
   const healthInfo = HEALTH_LABELS[health];
 
@@ -280,9 +291,9 @@ function PropertyPanelInner({
     <div
       style={{
         width: PANEL_WIDTH,
-        // Das Property-Panel steht seit App.tsx:2184 daneben statt in derselben
-        // else-Kette, also können zwei Panels nebeneinander liegen. Ohne dies
-        // schrumpfen beide, sobald der Platz knapp wird.
+        // The property panel sits beside the work panel rather than in the
+        // same else-chain (see App.tsx), so two panels can be side by side.
+        // Without this, both shrink as soon as space runs short.
         flexShrink: 0,
         height: '100%',
         borderLeft: '1px solid #e2e8f0',
@@ -363,6 +374,27 @@ function PropertyPanelInner({
           gap: 14,
         }}
       >
+        {/* What the ticket waits on, with the action that resolves it (#610). */}
+        <NeedsYouSection
+          mapId={node.mapId}
+          node={node}
+          nodes={nodeMap}
+          workflow={workflow ?? []}
+          onUnblock={async () => {
+            debouncedUpdate.cancelField('blockedReason');
+            const ok = await unblockNode(nodeId);
+            if (ok) setBlockedReason('');
+            return ok;
+          }}
+          onSaveBrief={async (text) => {
+            setDescription(text);
+            directUpdate(nodeId, { description: text });
+            return true;
+          }}
+          onOpenNode={selectNode}
+          onOpenFleet={() => setActiveView('fleet')}
+        />
+
         {/* Computed values (read-only) */}
         <div style={{ display: 'flex', gap: 8 }}>
           {/* Health badge */}
@@ -447,8 +479,11 @@ function PropertyPanelInner({
 
         {/* Blocked reason */}
         <Field label="Blocked reason">
-          <div style={{ display: 'flex', gap: 6 }}>
-            <input
+          <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+            {/* A textarea that grows with the text: worker blockers run to two or three sentences. */}
+            <textarea
+              data-testid="property-blocked-reason"
+              rows={Math.min(8, Math.max(1, Math.ceil(blockedReason.length / 38)))}
               value={blockedReason}
               onChange={(e) => {
                 setBlockedReason(e.target.value);
@@ -462,9 +497,10 @@ function PropertyPanelInner({
                 }
               }}
               onKeyDown={(e) => e.stopPropagation()}
-              style={{ ...inputStyle, flex: 1, minWidth: 0 }}
+              style={{ ...inputStyle, flex: 1, minWidth: 0, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.4 }}
               placeholder="Why is this blocked? (leave empty if not blocked)"
             />
+            <StopTicketButton nodeId={nodeId} phase={ticketPhases.get(nodeId)} style={{ alignSelf: 'center' }} />
             {isManuallyBlocked && (
               <button
                 type="button"
@@ -559,9 +595,9 @@ function PropertyPanelInner({
               style={selectStyle}
             >
               <option value="">None</option>
-              <option value="must">Must (Muss)</option>
-              <option value="should">Should (Soll)</option>
-              <option value="could">Could (Kann)</option>
+              <option value="must">Must</option>
+              <option value="should">Should</option>
+              <option value="could">Could</option>
             </select>
           </Field>
         )}
@@ -897,6 +933,9 @@ function PropertyPanelInner({
             Reads the claim events, not claimedBySession: that field is
             nulled on done, so the node alone can't say who delivered it. */}
         <FleetTrailSection node={node} />
+
+        {/* The running agent's last lines (#585) — the card clicked on the Kanban opens here. */}
+        <AgentOutputSection mapId={node.mapId} nodeId={nodeId} phase={ticketPhases.get(nodeId)} />
 
         {/* GitHub section */}
         <GitHubNodeSection mapId={node.mapId} node={node} />

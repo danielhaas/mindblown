@@ -12,13 +12,17 @@
  * (HTTP status codes for the routes, propagated to the LLM for the chat).
  */
 
-import { eq, and, asc, isNull, isNotNull, sql } from 'drizzle-orm';
+import { eq, and, asc, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { nodes, maps, cycles, fleets } from '../db/schema.js';
+import { nodes, maps, cycles, fleets, users } from '../db/schema.js';
 import { dbNodeToCore } from '../db/helpers.js';
 import { notDeleted } from '../db/nodes.js';
+import { holdsCapSlotSql } from '../db/capSlot.js';
 import { broadcast } from '../ws.js';
 import * as events from '../db/events.js';
+import { getForgeRepoForMap } from '../lib/githubContext.js';
+import { noteQueueState } from './webhooks.js';
+import { currentReviews } from './approvalReview.js';
 import {
   buildClaimedEvent,
   buildReleasedEvent,
@@ -34,10 +38,14 @@ import {
   matchesDispatchGate,
   pullableNodes,
   dispatchHold,
+  approvalHold,
+  holdsCapSlot,
   parseMixBugs,
   DEFAULT_DISPATCH_POLICY,
   MIX_BUGS_REGEX,
   NEEDS_BRIEF_TAG,
+  FLEET_CHECK_TAG,
+  BLOCKED_TAG,
   orderFleetPull,
   advanceFleetPull,
 } from '@mindblown/core';
@@ -138,12 +146,18 @@ export async function readyNodes(
   // Leaves only (#323): a node with live children is a container — its work
   // is its children, so listing it as pickable handed out whole epics.
   const hasLiveChild = new Set(allNodes.map((n) => n.parentId).filter((p): p is string => p !== null));
-  // Tickets held for a person (#266 skip tag, or a manual blocker — on the
-  // ticket or an open ancestor) are not dev work for anyone pulling from a queue — same rule as get_next_ticket.
-  const candidates = allNodes.filter(
-    (n) => isTodo(n.status) && n.claimedBySession === null && !hasLiveChild.has(n.id) && dispatchHold(n, { nodeMap, isDone }) === null,
+  // Tickets held for a person (#266 skip tag, a manual blocker, or no
+  // approval yet (#492) — on the ticket or an open ancestor) are not dev
+  // work for anyone pulling from a queue — same rule as get_next_ticket.
+  const open = allNodes.filter(
+    (n) => isTodo(n.status) && n.claimedBySession === null && !hasLiveChild.has(n.id) && n.parentId !== null && isReady(n, nodeMap, isDone),
   );
-  const ready = candidates.filter((n) => isReady(n, nodeMap, isDone));
+  const holds = new Map(open.map((n) => [n.id, dispatchHold(n, { nodeMap, isDone })]));
+  const ready = open.filter((n) => holds.get(n.id) === null);
+  const awaitingApproval = open.flatMap((n) => {
+    const hold = holds.get(n.id);
+    return hold?.approval ? [{ id: n.id, text: n.text, approval: hold.approval, heldBy: hold.heldBy }] : [];
+  });
 
   const filtered = scopeFilter
     ? ready.filter((n) => scopeOverlap(n.scopes, scopeFilter).length > 0)
@@ -220,6 +234,7 @@ export async function readyNodes(
     total: sorted.length,
     returned: page.length,
     sprintScope,
+    awaitingApproval,
   };
 }
 
@@ -274,19 +289,19 @@ export async function claimNode(
   // only refreshes claimedAt and is not a hand-over — no row for it, or a
   // worker's restart loop would flood the node's history.
   if (previousClaim !== sessionId) {
-    if (warned) {
-      events
-        .recordReleased(
-          mapId,
-          nodeId,
-          null,
-          buildReleasedEvent(previousClaim as string, previousClaimedAt, 'transfer', `transferred to ${sessionId}`),
-        )
-        .catch(() => {});
-    }
-    events
-      .recordClaimed(mapId, nodeId, null, buildClaimedEvent(sessionId, 'claim', previousClaim))
-      .catch(() => {});
+    // Still fire-and-forget, but in order: each write looks the fleet up
+    // first (#481), so two unchained writes could land claimed-before-released.
+    const released = warned
+      ? events
+          .recordReleased(
+            mapId,
+            nodeId,
+            null,
+            buildReleasedEvent(previousClaim as string, previousClaimedAt, 'transfer', `transferred to ${sessionId}`),
+          )
+          .catch(() => {})
+      : Promise.resolve();
+    void released.then(() => events.recordClaimed(mapId, nodeId, null, buildClaimedEvent(sessionId, 'claim', previousClaim))).catch(() => {});
   }
 
   return {
@@ -622,7 +637,7 @@ export function selectPullCandidates(
     fleetFull?: boolean;
   },
 ): PullDecision {
-  const active = allNodes.filter((n) => n.claimedBySession !== null).length;
+  const active = allNodes.filter(holdsCapSlot).length;
   const cap = Math.max(0, Math.floor(opts.cap));
   if (cap === 0) return { active, cap, reason: 'hold', ranked: [], skipped: [], humanOnly: [] };
   if (active >= cap) return { active, cap, reason: 'cap', ranked: [], skipped: [], humanOnly: [] };
@@ -664,10 +679,27 @@ export function selectPullCandidates(
   const policy = opts.policy.length > 0 ? opts.policy : DEFAULT_DISPATCH_POLICY;
   const rankedAll = sortByDispatchPolicy(eligible, policy, opts.mixAcc ?? 0);
 
+  // "Fleet can fix it" on a blocker (FLEET_CHECK_TAG): a person sent it, so
+  // it goes first — past the gate, the blocker and the status rule; the
+  // grant clears blocker and tag and hands the reason over (claimFromMap).
+  const isDone = buildIsDonePredicate(opts.workflow);
+  // Past everything but the approval gate (#492): a check on work nobody
+  // trusted approved would hand an untrusted brief to the fleet.
+  const checks = allNodes.filter(
+    (n) =>
+      n.tags.includes(FLEET_CHECK_TAG) &&
+      n.claimedBySession === null &&
+      n.childrenIds.length === 0 &&
+      n.parentId !== null &&
+      !isDone(n.status) &&
+      approvalHold(n, ancestors) === null,
+  );
+  const checkIds = new Set(checks.map((n) => n.id));
+
   return {
     active,
     cap,
-    ranked: rankedAll.filter(hasBrief),
+    ranked: [...checks, ...rankedAll.filter((n) => hasBrief(n) && !checkIds.has(n.id))],
     skipped: rankedAll.filter((n) => !hasBrief(n)),
     humanOnly,
   };
@@ -744,7 +776,7 @@ export async function getNextTicket(
   });
 
   announcePull(outcome, sessionId);
-  return outcome.result;
+  return withRepo(outcome.result);
 }
 
 /**
@@ -853,7 +885,22 @@ export async function pullFleetTicket(
   });
 
   announcePull(outcome, sessionId);
-  return outcome.result;
+  return withRepo(outcome.result);
+}
+
+/**
+ * A granted ticket carries where its code lives (#507), so a worker needs
+ * no per-project config. After the claim's transaction: a forge lookup
+ * failing never costs the claim — the worker then sees `repo: null`.
+ */
+async function withRepo(result: GetNextTicketResult): Promise<GetNextTicketResult> {
+  if (!result.granted || !result.mapId) return result;
+  try {
+    return { ...result, repo: await getForgeRepoForMap(result.mapId) };
+  } catch (err) {
+    console.warn(`[pull] repo lookup for map ${result.mapId} failed:`, err instanceof Error ? err.message : err);
+    return { ...result, repo: null };
+  }
 }
 
 // ── Pull internals ──────────────────────────────────────────────
@@ -909,13 +956,13 @@ function isFleetFull(cap: number, active: number): boolean {
   return cap > 0 && active >= cap;
 }
 
-/** Claims across every map of the fleet — what the fleet cap limits. */
+/** Claims across every map of the fleet — what the fleet cap limits (core holdsCapSlot). */
 async function countFleetClaims(tx: PullTx, fleetId: string): Promise<number> {
   const [row] = await tx
     .select({ n: sql<number>`count(*)::int` })
     .from(nodes)
     .innerJoin(maps, eq(nodes.mapId, maps.id))
-    .where(and(eq(maps.fleetId, fleetId), notDeleted, isNotNull(nodes.claimedBySession)));
+    .where(and(eq(maps.fleetId, fleetId), notDeleted, holdsCapSlotSql()));
   return Number(row?.n ?? 0);
 }
 
@@ -966,12 +1013,13 @@ async function evaluateMapPull(
 
   const skipped: SkippedTicket[] = [
     ...decision.skipped.map((n) => ({ id: n.id, text: n.text, reason: 'needs-brief' as const })),
-    ...decision.humanOnly.map(({ node: n, tag, blockedReason, heldBy }) => ({
+    ...decision.humanOnly.map(({ node: n, tag, blockedReason, approval, heldBy }) => ({
       id: n.id,
       text: n.text,
-      reason: 'human-only' as const,
+      reason: approval !== null ? ('awaiting-approval' as const) : ('human-only' as const),
       ...(tag !== null ? { tag } : {}),
       ...(blockedReason !== null ? { blockedReason } : {}),
+      ...(approval !== null ? { approval } : {}),
       ...(heldBy !== null ? { heldBy } : {}),
     })),
   ];
@@ -991,9 +1039,16 @@ async function claimFromMap(
   const mix = parseMixBugs((ev.mapRow.dispatchPolicy as string[]) ?? []);
 
   for (const candidate of ev.decision.ranked) {
+    // A check run (FLEET_CHECK_TAG): the claim takes over from the blocker.
+    const check = candidate.tags.includes(FLEET_CHECK_TAG) ? { blockedReason: candidate.blockedReason ?? '' } : null;
     const [row] = await tx
       .update(nodes)
-      .set({ claimedBySession: sessionId, claimedAt: now, updatedAt: now })
+      .set({
+        claimedBySession: sessionId,
+        claimedAt: now,
+        updatedAt: now,
+        ...(check ? { blockedReason: null, tags: candidate.tags.filter((t) => t !== FLEET_CHECK_TAG && t !== BLOCKED_TAG) } : {}),
+      })
       .where(and(eq(nodes.id, candidate.id), notDeleted, isNull(nodes.claimedBySession)))
       .returning();
     if (!row) continue; // claimed out from under us via claim_node — next
@@ -1018,7 +1073,10 @@ async function claimFromMap(
       id: winner.id,
       mapId,
       text: winner.text,
-      description: proseMirrorToPlainText(winner.description),
+      // A ticket granted on its title alone (TITLE_BRIEF_MIN_WORDS) carries
+      // the title as its brief: the worker prompt reads this field and would
+      // otherwise send the agent to a linked issue that does not exist.
+      description: proseMirrorToPlainText(winner.description).trim() || (winner.externalLinks.some((l) => isForgeLink(l)) ? '' : winner.text),
       priority: winner.priority,
       priorityRank: winner.priorityRank,
       tags: winner.tags,
@@ -1029,10 +1087,48 @@ async function claimFromMap(
         .filter((l) => isForgeLink(l))
         .map((l) => ({ externalId: l.externalId, url: l.url })),
       claimedAt: winner.claimedAt,
+      ...(check ? { check } : {}),
+      ...(winner.approval?.merge === 'pr-only' ? { approval: await prOnlyApproval(tx, winner) } : {}),
+      ...(await openQuestionsOf(winner)),
     };
     return { winner, ticket };
   }
   return null;
+}
+
+/**
+ * The questions a trusted person posted on the issue (Approve & ask, or
+ * Ask the reporter before approving), as posted — never the AI's draft:
+ * the worker settles each with a default and names it in the PR. Only for
+ * a person's approval, and only while the text is the one that was asked
+ * about. Optional: a failed lookup never fails the pull.
+ */
+async function openQuestionsOf(node: CoreNode): Promise<Pick<TicketBrief, 'openQuestions'>> {
+  if (node.approval?.state !== 'approved' || !node.approval.by) return {};
+  try {
+    const review = (await currentReviews([node])).get(node.id);
+    if (!review?.askedAt || !review.askedQuestions?.length) return {};
+    return { openQuestions: { questions: review.askedQuestions, askedAt: review.askedAt } };
+  } catch (err) {
+    console.warn(`[pull] open questions of ${node.id} not loaded:`, err);
+    return {};
+  }
+}
+
+/** The names a pr-only worker writes on its PR (claude-fleet#70): who asked, who let it through. */
+async function prOnlyApproval(tx: PullTx, node: CoreNode): Promise<NonNullable<TicketBrief['approval']>> {
+  const r = node.reportedBy;
+  const ids = [r?.kind === 'user' ? r.userId : null, node.approval?.by ?? null].filter((x): x is string => x !== null);
+  const names = new Map(
+    ids.length === 0
+      ? []
+      : (await tx.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, ids))).map((u) => [u.id, u.name]),
+  );
+  return {
+    merge: 'pr-only',
+    reportedBy: !r ? null : r.kind === 'forge' ? r.login : (names.get(r.userId) ?? null),
+    approvedBy: node.approval?.by ? (names.get(node.approval.by) ?? null) : null,
+  };
 }
 
 /** Broadcasts and the claim trail, after commit — mirroring claimNode. */
@@ -1040,12 +1136,13 @@ function announcePull(outcome: PullOutcome, sessionId: string): void {
   for (const { mapId, nodes: tagged } of outcome.tagged) {
     for (const n of tagged) broadcast(mapId, { type: 'node:updated', nodeId: n.id, fields: ['tags'], node: n });
   }
+  noteQueueStates(outcome.result);
   const w = outcome.winner;
   if (!w) return;
   broadcast(w.mapId, {
     type: 'node:updated',
     nodeId: w.node.id,
-    fields: ['claimedBySession', 'claimedAt'],
+    fields: ['claimedBySession', 'claimedAt', 'blockedReason', 'tags'],
     node: w.node,
   });
   // The conditional UPDATE in claimFromMap only succeeds on an unclaimed
@@ -1053,6 +1150,17 @@ function announcePull(outcome: PullOutcome, sessionId: string): void {
   events
     .recordClaimed(w.mapId, w.node.id, null, buildClaimedEvent(sessionId, 'pull', null))
     .catch(() => {});
+}
+
+/** queue.empty webhooks: which maps this pull found dry, and which gave a ticket. */
+function noteQueueStates(r: GetNextTicketResult): void {
+  if (r.granted && r.mapId) noteQueueState(r.mapId, false);
+  const skipped = (mapId: string) => r.skipped.filter((s) => (s.mapId ?? r.mapId) === mapId).length;
+  if (r.maps) {
+    for (const m of r.maps) if (m.reason === 'empty') noteQueueState(m.mapId, true, { mapName: m.name, skipped: skipped(m.mapId) });
+  } else if (!r.granted && r.reason === 'empty' && r.mapId) {
+    noteQueueState(r.mapId, true, { mapName: r.mapName ?? null, active: r.active, cap: r.cap, skipped: r.skipped.length });
+  }
 }
 
 // ── conflictScan ────────────────────────────────────────────────

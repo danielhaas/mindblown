@@ -3,9 +3,12 @@ import { useMindmapStore } from '../store.js';
 import { AuthScreen } from '../AuthScreen.js';
 import { MobileMapList } from './MobileMapList.js';
 import { MobileViewer } from './MobileViewer.js';
+import { FleetPage } from '../FleetView.js';
+import { ApprovalsBadge, ApprovalsPage, isApprovalsPage } from '../ApprovalsView.js';
 import * as api from '../api.js';
 import type { MapSummary } from '../api.js';
 import { parseUrlState, serializeUrlState } from '../urlState.js';
+import { useHomeWidgetSync } from '../homeWidget.js';
 import './mobile.css';
 
 /**
@@ -31,6 +34,7 @@ function writeMapParam(mapId: string | null, replace: boolean): void {
 export function MobileApp() {
   const user = useMindmapStore((s) => s.user);
   const checkAuth = useMindmapStore((s) => s.checkAuth);
+  useHomeWidgetSync(user?.id ?? null);
 
   const [selectedMap, setSelectedMap] = useState<MapSummary | null>(null);
   const hydrateStarted = useRef(false);
@@ -111,11 +115,23 @@ export function MobileApp() {
     );
   }
 
+  // The fleet page (?fleet=, #480) — the same view as on desktop; its
+  // sections are plain cards that read fine on a narrow screen.
+  const fleetPageId = !selectedMap ? new URLSearchParams(window.location.search).get('fleet') : null;
+  if (fleetPageId) {
+    return <FleetPage fleetId={fleetPageId} />;
+  }
+  if (!selectedMap && isApprovalsPage(window.location.search)) {
+    return <ApprovalsPage mobile />;
+  }
+
   if (!selectedMap) {
     return (
       <div className="mb-mobile">
         <div className="mb-topbar">
-          <span style={{ width: 60 }} />
+          <span style={{ minWidth: 60 }}>
+            <ApprovalsBadge mobile />
+          </span>
           <div className="mb-topbar-title">MindBlown</div>
           <button
             className="mb-topbar-btn"
@@ -139,7 +155,9 @@ export function MobileApp() {
           ← Maps
         </button>
         <div className="mb-topbar-title">{selectedMap.name}</div>
-        <span style={{ width: 60 }} />
+        <span style={{ minWidth: 60, textAlign: 'right' }}>
+          <ApprovalsBadge mobile />
+        </span>
       </div>
       <MobileViewer map={selectedMap} />
     </div>

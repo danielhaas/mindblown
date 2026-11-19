@@ -6,20 +6,61 @@
  * pending-notes / GitHub). Nothing here is derived from the map's own
  * blocked nodes: the collector is the truth, this is the inbox. Answering
  * writes exactly what `leidang-asks-apply` writes (server side): the
- * «Entscheid (Dan, Datum): …» comment on the ticket, the decision at the
- * top of the node, blocked → todo. "Later" and "delegate to Rita/Susi/Dana"
- * only record. No answer is written without a click.
+ * «Decision (Dan, date): …» comment on the ticket, the decision at the
+ * top of the node, blocked → todo. "Later" and "delegate" (to a person on
+ * the ask's map, or a name typed in) only record. No answer is written without a click.
  *
- * The comment line on the ticket stays German on purpose: it is the fleet's
- * contract — the collector recognises «Entscheid (…)» as a taken decision.
+ * The comment line on the ticket is the fleet's contract: the collector
+ * recognises «Decision (…)» (and the older German «Entscheid (…)») as a
+ * taken decision.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ASK_ANSWERERS, isNoQuestion, isVersionOnly, planAskWrites, proseMirrorToPlainText, sortAsks } from '@mindblown/core';
-import type { Ask, AskAnswerInput, AskRow, AskWritePlan, Node } from '@mindblown/core';
+import {
+  ASK_ANSWERERS,
+  derivedAnswerPreview,
+  blockerAskNodeId,
+  briefAskNodeId,
+  isDerivedAsk,
+  isNoQuestion,
+  isPersonStepAsk,
+  isStepOption,
+  isVersionOnly,
+  planAskWrites,
+  proseMirrorToPlainText,
+  questionParts,
+  sortAsks,
+  STEP_FOLLOW_UPS,
+  stepAskNodeId,
+  stepParts,
+} from '@mindblown/core';
+import type { Ask, AskAnswerInput, AskRow, AskWritePlan, Node, StepFollowUp } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { AsksResponse } from './api.js';
 import { Card, Muted } from './DigestView.js';
+import { answerRoute, projectLabel, scopeTarget, useFleetScope } from './fleetScope.js';
+import type { FleetScope } from './fleetScope.js';
+import { projectTag } from './FleetTelemetry.js';
+
+/**
+ * Who an answer is from. First name only — «Decision (Dan, …)» is what the
+ * terminal round writes and what the collector recognises as an
+ * already-taken decision. Dan's account says «Daniel»; he asked for «Dan»
+ * (2026-09-03), same as the skill.
+ */
+const BY_ALIAS: Record<string, string> = { Daniel: 'Dan' };
+export function answererName(user: { name?: string | null } | null | undefined): string {
+  const firstName = user?.name?.trim().split(/\s+/)[0] || 'Dan';
+  return BY_ALIAS[firstName] ?? firstName;
+}
+
+/** A row's key: two projects of one fleet may carry the same ask id (#480). */
+export const rowKey = (r: { mapId?: string | null; ask: { id: string } }) => `${r.mapId ?? ''}|${r.ask.id}`;
+
+function ProjectTag({ scope, mapId }: { scope: FleetScope | null; mapId: string | null | undefined }) {
+  const label = projectLabel(scope, mapId);
+  return label ? <span style={projectTag}>{label}</span> : null;
+}
 
 const POLL_MS = 60_000;
 
@@ -38,6 +79,8 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 function ref(a: Ask): string {
+  // MindBlown's own rows (stalled-<uuid>, step-<uuid>) have no reference worth printing.
+  if (a.ticket == null && !a.requirement && isDerivedAsk(a)) return '';
   return a.ticket != null ? `#${a.ticket}` : (a.requirement ?? a.id);
 }
 
@@ -45,10 +88,10 @@ function title(a: Ask): string {
   const t = (a.title ?? '').trim();
   const r = ref(a);
   // The ref is shown in front of the title; don't print it twice.
-  return t.startsWith(r + ' ') ? t.slice(r.length + 1) : t;
+  return r && t.startsWith(r + ' ') ? t.slice(r.length + 1) : t;
 }
 
-type AnswerResult = { ok: boolean; lines: string[] };
+export type AnswerResult = { ok: boolean; lines: string[] };
 
 function fmtTime(iso: string | null): string {
   if (!iso) return '—';
@@ -68,9 +111,15 @@ export function AsksSection() {
   const asksRev = useMindmapStore((s) => s.asksRev);
   const viewRole = useMindmapStore((s) => s.viewRole);
   const user = useMindmapStore((s) => s.user);
+  // This project or the whole fleet (#480); without a provider, this map.
+  const scope = useFleetScope();
+  const target = scopeTarget(scope, currentMapId);
+  const targetKey = target ? JSON.stringify(target) : '';
   const [data, setData] = useState<AsksResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [poll, setPoll] = useState(0);
+  const [checking, setChecking] = useState(false);
+  const [checkNote, setCheckNote] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>({ answerer: null, hint: null });
   const [showDone, setShowDone] = useState(false);
   const [showNoQuestion, setShowNoQuestion] = useState(false);
@@ -92,13 +141,13 @@ export function AsksSection() {
   }, []);
 
   useEffect(() => {
-    if (!currentMapId) return;
+    if (!target) return;
     let cancelled = false;
     api
-      .fetchAsks(currentMapId, { status: 'all' })
+      .fetchAsks(target, { status: 'all' })
       .then((r) => {
         if (cancelled) return;
-        const now = new Map(r.items.map((x) => [x.ask.id, x.ask] as const));
+        const now = new Map(r.items.map((x) => [rowKey(x), x.ask] as const));
         const prev = lastOpen.current;
         if (prev && prev.size > 0) {
           const missing = [...prev].filter(([id]) => !now.has(id));
@@ -107,7 +156,7 @@ export function AsksSection() {
             setGone((g) => ({ ...g, ...Object.fromEntries(missing.map(([id, ask]) => [id, { ask, at }])) }));
           }
         }
-        lastOpen.current = new Map(r.items.filter((x) => x.status === 'open').map((x) => [x.ask.id, x.ask] as const));
+        lastOpen.current = new Map(r.items.filter((x) => x.status === 'open').map((x) => [rowKey(x), x.ask] as const));
         setData(r);
         setError(null);
       })
@@ -115,21 +164,27 @@ export function AsksSection() {
     return () => {
       cancelled = true;
     };
-  }, [currentMapId, asksRev, poll]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- targetKey is `target` by value
+  }, [targetKey, asksRev, poll]);
+  // A different scope is a different list: what vanished from the old one did not "go away".
+  // Nor does the old list stay on screen under the new switch position until the fetch lands.
+  useEffect(() => {
+    lastOpen.current = null;
+    setGone({});
+    setData(null);
+  }, [targetKey]);
 
   // Only the stakeholder lens is read-only; PM, developer and All answer.
   const readOnly = viewRole === 'stakeholder';
-  // First name only — «Entscheid (Dan, …)» is what the terminal round writes
-  // and what the collector recognises as an already-taken decision. Dan's
-  // account says «Daniel»; he asked for «Dan» (2026-09-03), same as the skill.
-  const BY_ALIAS: Record<string, string> = { Daniel: 'Dan' };
-  const firstName = user?.name?.trim().split(/\s+/)[0] || 'Dan';
-  const by = BY_ALIAS[firstName] ?? firstName;
+  const by = answererName(user);
 
   const groups = useMemo(() => {
     const rows = sortAsks(data?.items ?? []);
-    const open = rows.filter((r) => r.status === 'open' || results[r.ask.id]);
-    const done = rows.filter((r) => r.status !== 'open' && !results[r.ask.id]);
+    const allOpen = rows.filter((r) => r.status === 'open' || results[rowKey(r)]);
+    const done = rows.filter((r) => r.status !== 'open' && !results[rowKey(r)]);
+    // A person's steps (needs-human tickets, manual blockers) get their own card below.
+    const steps = allOpen.filter((r) => isPersonStepAsk(r.ask));
+    const open = allOpen.filter((r) => !isPersonStepAsk(r.ask));
     const questions = open.filter((r) => !isNoQuestion(r.ask) && !isVersionOnly(r.ask));
     const noQuestion = open.filter((r) => isNoQuestion(r.ask));
     const versionOnly = open.filter((r) => isVersionOnly(r.ask) && !isNoQuestion(r.ask));
@@ -142,18 +197,19 @@ export function AsksSection() {
     const visible = questions.filter(
       (r) => (!filter.answerer || r.ask.answerer === filter.answerer) && (!filter.hint || r.ask.hint === filter.hint),
     );
-    return { questions, visible, noQuestion, versionOnly, done, byAnswerer, byHint };
+    return { questions, visible, noQuestion, versionOnly, done, steps, byAnswerer, byHint };
   }, [data, filter, results]);
 
   const onResult = (id: string, r: AnswerResult) => setResults((m) => ({ ...m, [id]: r }));
 
-  const cardTitle = `Questions — what the fleet needs decided${data?.pushedAt ? ` (${groups.questions.length})` : ''}`;
+  const cardTitle = `Questions — what the fleet needs decided${data ? ` (${groups.questions.length})` : ''}`;
 
-  if (!currentMapId) return <Card title={cardTitle}><Muted>Loading…</Muted></Card>;
+  if (!target) return <Card title={cardTitle}><Muted>Loading…</Muted></Card>;
   if (error) return <Card title={cardTitle}><Muted>Questions unavailable: {error}</Muted></Card>;
   if (!data) return <Card title={cardTitle}><Muted>Loading…</Muted></Card>;
 
-  if (!data.pushedAt) {
+  // MindBlown's own rows (stalled work, steps) need no push — only an empty card does.
+  if (!data.pushedAt && data.items.length === 0) {
     return (
       <Card title={cardTitle}>
         <Muted>
@@ -166,7 +222,48 @@ export function AsksSection() {
   const answerers = (ASK_ANSWERERS as readonly string[]).filter((a) => groups.byAnswerer[a]);
   const hints = Object.keys(groups.byHint);
 
+  const blockerCount = groups.steps.filter((r) => blockerAskNodeId(r.ask.id) !== null).length;
+  const checkAll = async () => {
+    if (!scope?.fleetId) return;
+    if (!window.confirm(`Hand all ${blockerCount} blocked tickets to the fleet?\n\nA worker's own PR with red CI or a conflict: the worker reworks it. Any other blocker: the fleet takes the ticket next, with the blocker in its brief — it gets past it, or writes down what you must do.`)) return;
+    setChecking(true);
+    try {
+      const r = await api.fleetCheckBlockers(scope.fleetId, by);
+      setCheckNote(`${r.sent.length} handed to the fleet${r.failed.length ? `, ${r.failed.length} failed: ${r.failed.map((f) => f.error).join('; ')}` : ''}`);
+      setPoll((t) => t + 1);
+    } catch (e) {
+      setCheckNote(e instanceof Error ? e.message : 'failed');
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const stepsCard = (
+    <Card title={`Your steps — what only a person can do (${groups.steps.length})`}>
+      <Muted>
+        Tickets tagged needs-human (or kira-skip …): the fleet never takes them. Done when you did it; Fleet can do it puts it back in the queue; any text
+        becomes the new next step. Blocked tickets: Fleet can fix it hands one back to the fleet; Unblocked clears the blocker once you fixed it.
+        Tickets with no brief: what you write becomes the description, and the fleet takes the ticket on its next pull.
+      </Muted>
+      {scope?.fleetId && blockerCount > 0 && !readOnly && (
+        <div style={{ marginTop: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button data-testid="fleet-check-all" disabled={checking} onClick={checkAll} style={btn('fleet', checking)}>
+            {checking ? 'Handing over…' : `Let the fleet check all ${blockerCount} blockers`}
+          </button>
+          {checkNote && <span style={{ fontSize: 12, color: '#475569' }}>{checkNote}</span>}
+        </div>
+      )}
+      <div style={{ marginTop: 12 }} data-testid="your-steps">
+        {groups.steps.length === 0 && <Muted>Nothing waiting on a person. 🎉</Muted>}
+        {groups.steps.map((r) => (
+          <AskCard key={rowKey(r)} row={r} mapId={currentMapId} scope={scope} by={by} readOnly={readOnly} result={results[rowKey(r)] ?? null} onResult={onResult} />
+        ))}
+      </div>
+    </Card>
+  );
+
   return (
+    <>
     <Card title={cardTitle}>
       <Muted>
         As of {fmtTime(data.pushedAt)}
@@ -200,7 +297,7 @@ export function AsksSection() {
       {groups.visible.length === 0 && <Muted>No open question{filter.answerer || filter.hint ? ' in this filter' : ''}. 🎉</Muted>}
 
       {groups.visible.map((r) => (
-        <AskCard key={r.ask.id} row={r} mapId={currentMapId} by={by} readOnly={readOnly} result={results[r.ask.id] ?? null} onResult={onResult} />
+        <AskCard key={rowKey(r)} row={r} mapId={currentMapId} scope={scope} by={by} readOnly={readOnly} result={results[rowKey(r)] ?? null} onResult={onResult} />
       ))}
 
       {groups.versionOnly.length > 0 && (
@@ -210,7 +307,7 @@ export function AsksSection() {
           onToggle={() => setShowVersionOnly((v) => !v)}
         >
           {groups.versionOnly.map((r) => (
-            <AskCard key={r.ask.id} row={r} mapId={currentMapId} by={by} readOnly={readOnly} result={results[r.ask.id] ?? null} onResult={onResult} />
+            <AskCard key={rowKey(r)} row={r} mapId={currentMapId} scope={scope} by={by} readOnly={readOnly} result={results[rowKey(r)] ?? null} onResult={onResult} />
           ))}
         </Fold>
       )}
@@ -222,7 +319,8 @@ export function AsksSection() {
           onToggle={() => setShowNoQuestion((v) => !v)}
         >
           {groups.noQuestion.map((r) => (
-            <div key={r.ask.id} style={{ fontSize: 13, padding: '4px 0', color: '#475569' }}>
+            <div key={rowKey(r)} style={{ fontSize: 13, padding: '4px 0', color: '#475569' }}>
+              <ProjectTag scope={scope} mapId={r.mapId} />
               <b>{ref(r.ask)}</b> [{HINT_LABEL[r.ask.hint] ?? r.ask.hint}] {title(r.ask)}
               {r.ask.idle_hours != null ? ` · idle ${r.ask.idle_hours}h` : ''}
             </div>
@@ -233,11 +331,13 @@ export function AsksSection() {
       {groups.done.length > 0 && (
         <Fold label={`Answered / deferred / delegated (${groups.done.length})`} open={showDone} onToggle={() => setShowDone((v) => !v)}>
           {groups.done.map((r) => (
-            <DoneRow key={r.ask.id} row={r} />
+            <DoneRow key={rowKey(r)} row={r} scope={scope} />
           ))}
         </Fold>
       )}
     </Card>
+    {stepsCard}
+    </>
   );
 }
 
@@ -274,11 +374,12 @@ function Fold({ label, open, onToggle, children }: { label: string; open: boolea
   );
 }
 
-function DoneRow({ row }: { row: AskRow }) {
+function DoneRow({ row, scope }: { row: AskRow; scope: FleetScope | null }) {
   const a = row.ask;
   const failed = row.writes.filter((w) => w.error);
   return (
     <div style={{ fontSize: 13, padding: '6px 0', borderBottom: '1px solid #f1f5f9', color: '#475569' }}>
+      <ProjectTag scope={scope} mapId={row.mapId} />
       <b>{ref(a)}</b> {title(a)} · {STATUS_LABEL[row.status] ?? row.status}
       {row.answeredBy ? ` (${row.answeredBy}, ${fmtTime(row.answeredAt)})` : ''}
       {row.answer?.decision ? <div style={{ color: '#0f172a' }}>Decision: {row.answer.decision}</div> : null}
@@ -293,27 +394,32 @@ function DoneRow({ row }: { row: AskRow }) {
   );
 }
 
-const btn = (kind: 'primary' | 'plain', disabled: boolean): React.CSSProperties => ({
+// 'fleet': hands the ticket back to the fleet — indigo, like the board's fleet colours.
+const btn = (kind: 'primary' | 'plain' | 'fleet', disabled: boolean): React.CSSProperties => ({
   fontSize: 13,
   padding: '6px 12px',
   borderRadius: 6,
-  border: `1px solid ${kind === 'primary' ? '#2563eb' : '#cbd5e1'}`,
-  background: kind === 'primary' ? '#2563eb' : '#fff',
-  color: kind === 'primary' ? '#fff' : '#334155',
+  border: `1px solid ${kind === 'primary' ? '#2563eb' : kind === 'fleet' ? '#6366f1' : '#cbd5e1'}`,
+  background: kind === 'primary' ? '#2563eb' : kind === 'fleet' ? '#eef2ff' : '#fff',
+  color: kind === 'primary' ? '#fff' : kind === 'fleet' ? '#3730a3' : '#334155',
   cursor: disabled ? 'not-allowed' : 'pointer',
   opacity: disabled ? 0.5 : 1,
 });
 
-function AskCard({
+/** One question with its answer box — also the Kanban detail view's (#610). */
+export function AskCard({
   row,
   mapId,
+  scope,
   by,
   readOnly,
   result,
   onResult,
 }: {
   row: AskRow;
-  mapId: string;
+  /** The map the tab is on; null on the fleet page. */
+  mapId: string | null;
+  scope: FleetScope | null;
   by: string;
   readOnly: boolean;
   result: AnswerResult | null;
@@ -325,26 +431,39 @@ function AskCard({
   const [decision, setDecision] = useState('');
   const [milestone, setMilestone] = useState('');
   const [noRequeue, setNoRequeue] = useState(false);
-  const [delegateTo, setDelegateTo] = useState<'Rita' | 'Susi' | 'Dana'>('Rita');
+  // A step row's free text is a decision (#619); then the ticket goes to the fleet unless Dan says otherwise.
+  const [next, setNext] = useState<StepFollowUp>('fleet');
+  const [delegateTo, setDelegateTo] = useState('');
+  const [delegateOther, setDelegateOther] = useState('');
   const [busy, setBusy] = useState(false);
-  const setResult = (r: AnswerResult) => onResult(a.id, r);
+  const setResult = (r: AnswerResult) => onResult(rowKey(row), r);
+  // The ask's own map (#480): its node lives there, and an answer for another
+  // project — or a fleet-level one — goes through the fleet.
+  const askMapId = row.mapId === undefined ? mapId : row.mapId;
+  const route = answerRoute(scope, mapId, row.mapId);
   // "More": everything the collector folded into this record plus the node
   // itself (blockedReason, description) — fetched on first open only.
   const [more, setMore] = useState(false);
   const [node, setNode] = useState<Node | null | 'loading' | 'error'>(null);
   useEffect(() => {
-    if (!more || node !== null || !a.unblocks.node_id) return;
+    if (!more || node !== null || !a.unblocks.node_id || !askMapId) return;
     setNode('loading');
     api
-      .fetchNode(mapId, a.unblocks.node_id)
+      .fetchNode(askMapId, a.unblocks.node_id)
       .then((n) => setNode(n))
       .catch(() => setNode('error'));
-  }, [more, node, a.unblocks.node_id, mapId]);
+  }, [more, node, a.unblocks.node_id, askMapId]);
 
-  const options = a.options.length > 0 ? a.options : ['Yes', 'No'];
+  // The answer that hands the ticket back to the fleet is a button next to Answer, not a chip.
+  const fleetOption = a.options.find((o) => FLEET_OPTIONS.includes(o)) ?? null;
+  const options = a.options.length > 0 ? a.options.filter((o) => o !== fleetOption) : ['Yes', 'No'];
   const canAnswer = !readOnly && !busy && decision.trim().length > 0 && !(a.needs_version && isVersionOnly(a) && !milestone.trim());
 
   const today = new Date().toISOString().slice(0, 10);
+  // MindBlown's own rows write through a fix, not the collector's plan.
+  const derived = isDerivedAsk(a);
+  const stepDecision = stepAskNodeId(a.id) !== null && decision.trim() !== '' && !isStepOption(decision);
+  const derivedPreview = derived ? derivedAnswerPreview(a, decision, next) : null;
   const preview: AskWritePlan = planAskWrites(
     a,
     { action: 'answered', decision: decision || '…', by, milestone: milestone || undefined, noRequeue },
@@ -355,7 +474,8 @@ function AskCard({
   async function submit(input: AskAnswerInput) {
     setBusy(true);
     try {
-      const r = await api.answerAsk(mapId, a.id, input);
+      if (!route) throw new Error('This question names no map and no fleet to answer through.');
+      const r = route.kind === 'fleet' ? await api.answerFleetAsk(route.fleetId, a.id, input, route.askMapId) : await api.answerAsk(route.mapId, a.id, input);
       const head = `${STATUS_LABEL[r.ask.status] ?? r.ask.status}${r.ask.answeredBy ? ` (${r.ask.answeredBy})` : ''}`;
       setResult({
         ok: r.ok,
@@ -380,7 +500,23 @@ function AskCard({
 
   const dim = a.moot || a.stale;
   const unb: React.ReactNode[] = [];
-  if (a.unblocks.node_id) {
+  if (a.unblocks.node_id && askMapId && askMapId !== mapId) {
+    // Another project's node (#480): open that map at the node.
+    const nid = a.unblocks.node_id;
+    unb.push(
+      <a key="node" href={`/?map=${encodeURIComponent(askMapId)}&node=${encodeURIComponent(nid)}`} style={{ color: '#2563eb', fontSize: 12 }}>
+        Node {a.unblocks.node_title ? `“${a.unblocks.node_title.slice(0, 40)}”` : nid.slice(0, 8)}
+        {a.unblocks.node_status ? ` (${a.unblocks.node_status})` : ''}
+      </a>,
+    );
+  } else if (a.unblocks.node_id && !askMapId) {
+    // A fleet-level ask names a node but no map: nowhere to select it — show it, unlinked.
+    unb.push(
+      <span key="node" style={{ fontSize: 12, color: '#64748b' }}>
+        Node {a.unblocks.node_title ? `“${a.unblocks.node_title.slice(0, 40)}”` : a.unblocks.node_id.slice(0, 8)}
+      </span>,
+    );
+  } else if (a.unblocks.node_id) {
     const nid = a.unblocks.node_id;
     unb.push(
       <button
@@ -412,6 +548,7 @@ function AskCard({
       }}
     >
       <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 13 }}>
+        <ProjectTag scope={scope} mapId={row.mapId} />
         {a.url ? (
           <a href={a.url} target="_blank" rel="noreferrer" style={{ fontWeight: 700, color: '#1d4ed8' }}>{ref(a)}</a>
         ) : (
@@ -428,10 +565,7 @@ function AskCard({
         {a.stale && <Tag color="#64748b">ticket closed</Tag>}
         {a.needs_version && <Tag color="#b45309">NEEDS-VERSION</Tag>}
       </div>
-      <div style={{ marginTop: 6, fontSize: 14, whiteSpace: 'pre-wrap' }}>
-        <span style={{ color: '#64748b', fontSize: 12 }}>Question ({a.question_author ?? '?'}): </span>
-        {a.question}
-      </div>
+      <QuestionText ask={a} />
       <div style={{ marginTop: 4, fontSize: 12, color: '#64748b', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'baseline' }}>
         {unb.length > 0 && <span>holds up:</span>}
         {unb}
@@ -460,10 +594,28 @@ function AskCard({
           <textarea
             value={decision}
             onChange={(e) => setDecision(e.target.value)}
-            placeholder="Decision (free text, or pick an option above)…"
+            placeholder={
+              briefAskNodeId(a.id)
+                ? 'Write the brief — what is to be done…'
+                : stepAskNodeId(a.id)
+                  ? 'Pick an option above, or write your answer (a decision)…'
+                  : isPersonStepAsk(a)
+                    ? 'Pick an option above, or write the next step…'
+                    : 'Decision (free text, or pick an option above)…'
+            }
             rows={2}
             style={{ width: '100%', boxSizing: 'border-box', fontSize: 13, padding: 6, border: '1px solid #cbd5e1', borderRadius: 6 }}
           />
+          {stepDecision && (
+            <div data-testid="step-next" style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, fontSize: 12, color: '#475569' }}>
+              <span>Then:</span>
+              {STEP_FOLLOW_UPS.map((f) => (
+                <Chip key={f.id} active={next === f.id} onClick={() => setNext(f.id)}>
+                  {f.label}
+                </Chip>
+              ))}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, fontSize: 12, color: '#475569' }}>
             {a.needs_version && (
               <label>
@@ -476,7 +628,7 @@ function AskCard({
                 />
               </label>
             )}
-            {a.unblocks.node_id && (
+            {a.unblocks.node_id && !derived && (
               <label>
                 <input type="checkbox" checked={noRequeue} onChange={(e) => setNoRequeue(e.target.checked)} /> no requeue (status stays)
               </label>
@@ -485,10 +637,14 @@ function AskCard({
           <div style={{ marginTop: 8, fontSize: 12, color: '#64748b' }}>
             <b>This answer writes:</b>
             <ul style={{ margin: '2px 0 0', paddingLeft: 18 }}>
+              {derivedPreview ? (
+                derivedPreview.map((l) => <li key={l}>{l}</li>)
+              ) : (
+                <>
               {preview.skip && <li>{preview.skip}</li>}
               {preview.github && (
                 <li>
-                  Comment on #{preview.github.ticket}: «Entscheid ({by}, {today}): {decision || '…'}»
+                  Comment on #{preview.github.ticket}: «Decision ({by}, {today}): {decision || '…'}»
                   {preview.github.milestone ? ` · milestone ${preview.github.milestone}, NEEDS-VERSION label removed` : ''}
                 </li>
               )}
@@ -499,26 +655,41 @@ function AskCard({
               )}
               {preview.worker && <li>Note to worker {preview.worker.worker} — delivered by the next tick</li>}
               {!preview.skip && !preview.github && !preview.node && !preview.worker && <li>only the ledger row (no ticket, no node, no worker)</li>}
+                </>
+              )}
             </ul>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <button
               disabled={!canAnswer}
               style={btn('primary', !canAnswer)}
-              onClick={() => submit({ action: 'answered', decision: decision.trim(), by, milestone: milestone.trim() || undefined, noRequeue })}
+              onClick={() =>
+                submit({ action: 'answered', decision: decision.trim(), by, milestone: milestone.trim() || undefined, noRequeue, ...(stepDecision ? { next } : {}) })
+              }
             >
               Answer
             </button>
+            {fleetOption && (
+              <button
+                data-testid="ask-fleet"
+                disabled={busy}
+                style={btn('fleet', busy)}
+                title={derivedAnswerPreview(a, fleetOption)?.join(' ') ?? undefined}
+                onClick={() => submit({ action: 'answered', decision: fleetOption, by })}
+              >
+                {fleetOption}
+              </button>
+            )}
             <button disabled={busy} style={btn('plain', busy)} onClick={() => submit({ action: 'later', by })}>
               Later
             </button>
             <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-              <select value={delegateTo} onChange={(e) => setDelegateTo(e.target.value as 'Rita' | 'Susi' | 'Dana')} style={{ fontSize: 12 }}>
-                <option>Rita</option>
-                <option>Susi</option>
-                <option>Dana</option>
-              </select>
-              <button disabled={busy} style={btn('plain', busy)} onClick={() => submit({ action: 'delegate', by, delegateTo })}>
+              <DelegatePicker mapId={askMapId} value={delegateTo} onChange={setDelegateTo} other={delegateOther} onOther={setDelegateOther} />
+              <button
+                disabled={busy || !delegateName(delegateTo, delegateOther)}
+                style={btn('plain', busy || !delegateName(delegateTo, delegateOther))}
+                onClick={() => submit({ action: 'delegate', by, delegateTo: delegateName(delegateTo, delegateOther) })}
+              >
                 Delegate
               </button>
             </span>
@@ -526,6 +697,98 @@ function AskCard({
         </div>
       )}
     </section>
+  );
+}
+
+const FLEET_OPTIONS = ['Fleet can fix it', 'Fleet can do it'];
+const OTHER = '__other__';
+const delegateName = (picked: string, other: string) => (picked === OTHER ? other.trim() : picked);
+
+// One members request per map, shared by every card on the page.
+const membersByMap = new Map<string, Promise<api.MapMember[]>>();
+function mapMembers(mapId: string): Promise<api.MapMember[]> {
+  let p = membersByMap.get(mapId);
+  if (!p) {
+    p = api.fetchMapMembers(mapId).then((r) => r.members, () => []);
+    membersByMap.set(mapId, p);
+  }
+  return p;
+}
+
+/**
+ * Who a question can be handed to: the people on the ask's map, or a name
+ * typed in. It used to be Rita / Susi / Dana — Fulcrum's agents, which no
+ * other project has.
+ */
+function DelegatePicker({ mapId, value, onChange, other, onOther }: { mapId: string | null; value: string; onChange: (v: string) => void; other: string; onOther: (v: string) => void }) {
+  const me = useMindmapStore((s) => s.user?.id);
+  const [members, setMembers] = useState<api.MapMember[]>([]);
+  useEffect(() => {
+    if (!mapId) return;
+    let live = true;
+    mapMembers(mapId).then((m) => live && setMembers(m.filter((x) => x.userId !== me && x.kind !== 'fleet')));
+    return () => {
+      live = false;
+    };
+  }, [mapId, me]);
+  return (
+    <>
+      <select value={value} onChange={(e) => onChange(e.target.value)} style={{ fontSize: 12, maxWidth: 220 }} data-testid="ask-delegate-to">
+        <option value="">Delegate to…</option>
+        {members.map((m) => (
+          <option key={m.userId} value={m.name || m.email} title={m.email}>
+            {m.name ? `${m.name} — ${m.email}` : m.email}
+          </option>
+        ))}
+        <option value={OTHER}>Someone else…</option>
+      </select>
+      {value === OTHER && (
+        <input value={other} onChange={(e) => onOther(e.target.value)} placeholder="Name" style={{ fontSize: 12, width: 120 }} onKeyDown={(e) => e.stopPropagation()} />
+      )}
+    </>
+  );
+}
+
+/** The step's own label: its "Next step" line, the description's gist, or none for the bare tag note. */
+function stepLabel(question: string): { label: string | null; text: string } {
+  if (question.startsWith(NEXT_STEP)) return { label: 'Next step', text: question.slice(NEXT_STEP.length) };
+  if (question.startsWith(BLOCKED)) return { label: 'Blocked', text: question.slice(BLOCKED.length) };
+  if (question.startsWith(NEEDS_BRIEF)) return { label: 'Needs a brief', text: question.slice(NEEDS_BRIEF.length) };
+  if (question.startsWith('Tagged ')) return { label: null, text: question };
+  return { label: "What's left", text: question };
+}
+const NEXT_STEP = 'Next step: ';
+const BLOCKED = 'Blocked: ';
+const NEEDS_BRIEF = 'Needs a brief: ';
+
+/**
+ * The question as lead + numbered sub-questions + tail (core questionParts), not one block.
+ * A person's step splits by core stepParts — runs numbered, a finding's points bulleted.
+ */
+function QuestionText({ ask: a }: { ask: Ask }) {
+  const step = isPersonStepAsk(a);
+  const s = step ? stepLabel(a.question) : null;
+  const { lead, items, tail, ordered } = s ? stepParts(s.text) : { ...questionParts(a.question), ordered: true };
+  const labelText = s ? (s.label ? `${s.label}: ` : '') : `Question (${a.question_author ?? '?'}): `;
+  const label = labelText && <span style={{ color: '#64748b', fontSize: 12 }}>{labelText}</span>;
+  const List = ordered ? 'ol' : 'ul';
+  return (
+    <div style={{ marginTop: 6, fontSize: 14, lineHeight: 1.45 }} data-testid={step ? 'step-text' : 'ask-question'}>
+      <div style={{ whiteSpace: 'pre-wrap' }}>
+        {label}
+        {lead}
+      </div>
+      {items.length > 0 && (
+        <List style={{ margin: '6px 0 0', paddingLeft: 22 }}>
+          {items.map((it, i) => (
+            <li key={i} style={{ marginBottom: 4, whiteSpace: 'pre-wrap' }}>
+              {it}
+            </li>
+          ))}
+        </List>
+      )}
+      {tail && <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{tail}</div>}
+    </div>
   );
 }
 
@@ -554,8 +817,9 @@ const SOURCE_LABEL: Record<string, string> = {
   'mindblown:live': 'Node (blockedReason)',
   'rollup:prompt': 'Worker dialog (PROMPT-BLOCKED)',
   'pending-notes': 'Heartbeat backlog',
-  // The section heading the collector scans for on the ticket — a literal.
-  'github:human': 'GitHub («Warum nicht jetzt gefixt» section)',
+  // Tickets whose «Warum nicht jetzt gefixt» section (the CRM ticket-gate's
+  // literal heading) names a human — the collector's GitHub sweep.
+  'github:human': 'GitHub ticket (needs a human)',
   'github:needs-version': 'GitHub NEEDS-VERSION',
 };
 

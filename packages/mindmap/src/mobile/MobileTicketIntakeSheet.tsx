@@ -18,6 +18,7 @@ import {
   existingStateLine,
   type DraftEdits,
 } from '../intakeDraft.js';
+import { showToast } from '../toast.js';
 
 interface Props {
   map: MindMap;
@@ -116,6 +117,15 @@ export function MobileTicketIntakeSheet({ map, nodes, versions, onClose, onCreat
         existing: first ? { nodeId: first.nodeId, issueNumber: first.issueNumber } : null,
       });
       onCreated(r.node);
+      // A clean accept ends the intake; only a warning keeps the sheet open, showing just that result.
+      if (!r.issueError && !r.dependencyErrors?.length && !r.issue?.author?.fallbackReason) {
+        showToast(
+          r.issue ? `Created «${r.node.text}» — filed issue #${r.issue.number}` : `Created «${r.node.text}»`,
+          r.issue?.html_url,
+        );
+        onClose();
+        return;
+      }
       setAcceptedCount((n) => n + 1);
       const parts = [`Created «${r.node.text}»`];
       if (r.issue) {
@@ -124,7 +134,8 @@ export function MobileTicketIntakeSheet({ map, nodes, versions, onClose, onCreat
         if (a?.fallbackReason) parts.push(a.fallbackReason);
       }
       if (r.issueError) parts.push(r.issueError);
-      setLog((l) => [...l, { role: 'system', text: parts.join(' — ') }]);
+      if (r.dependencyErrors?.length) parts.push(`dependency errors: ${r.dependencyErrors.join('; ')}`);
+      setLog([{ role: 'system', text: parts.join(' — ') }]);
       setDraft(null);
       setEdits(null);
       setQuestions([]);
@@ -134,7 +145,7 @@ export function MobileTicketIntakeSheet({ map, nodes, versions, onClose, onCreat
     } finally {
       setAccepting(false);
     }
-  }, [draft, edits, accepting, tagsRaw, map.id, intakeId, createIssue, onCreated]);
+  }, [draft, edits, accepting, tagsRaw, map.id, intakeId, createIssue, onCreated, onClose]);
 
   const [existingBusy, setExistingBusy] = useState<string | null>(null);
   const existingAction = useCallback(

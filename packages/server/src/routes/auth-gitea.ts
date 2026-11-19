@@ -27,13 +27,15 @@ import {
   giteaEndpoint,
   giteaUserForge,
   listGiteaUserRepos,
+  createGiteaUserRepo,
 } from '@mindblown/integrations';
 import { db } from '../db/connection.js';
 import { integrations, mapPermissions, maps, userGithubIdentities, workspaces } from '../db/schema.js';
 import { encrypt } from '../crypto.js';
 import { requireAdmin, OAUTH_STATE_TYP } from '../auth.js';
-import { bindMapToForgeRepo, FORGE_PROVIDERS, mapBindableToWorkspaceForge, type ForgeIntegrationConfig } from '../lib/forge.js';
+import { bindMapToForgeRepo, FORGE_PROVIDERS, mapBindableToWorkspaceForge, pickForgeRow, type ForgeIntegrationConfig } from '../lib/forge.js';
 import { requireMapAccess } from '../lib/mapAccess.js';
+import { repoDescription } from '../lib/repoDescription.js';
 import { setUpWebhookAfterBind } from '../lib/forgeWebhook.js';
 import {
   findGiteaIdentity,
@@ -242,6 +244,38 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  // ── POST /api/integrations/gitea/repositories ────────────────────
+  // Create a repository in the signed-in user's Gitea account; the caller
+  // binds it afterwards like a picked repo (/api/integrations/gitea/bind).
+  app.post('/api/integrations/gitea/repositories', async (req, reply) => {
+    const userId = (req as { userId?: string }).userId;
+    if (!userId) return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
+    const body = (req.body ?? {}) as { name?: unknown; private?: unknown; description?: unknown };
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
+      return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'A repository name (letters, digits, ".", "-", "_") is required' } });
+    }
+    const oauth = giteaOAuthApp();
+    if (!oauth) return reply.status(503).send({ error: { code: 'GITEA_NOT_CONFIGURED', message: 'Gitea OAuth is not configured' } });
+    const identity = await findGiteaIdentity(userId);
+    if (!identity) return reply.status(404).send({ error: { code: 'NO_IDENTITY', message: 'Sign in with Gitea first.' } });
+    try {
+      const token = await giteaAccessTokenFor(identity);
+      const repo = await createGiteaUserRepo(giteaUserForge(oauth.instanceUrl, token), {
+        name,
+        private: typeof body.private === 'boolean' ? body.private : true,
+        description: repoDescription(body.description),
+      });
+      return reply.status(201).send({ fullName: repo.full_name, owner: repo.owner.login, name: repo.name, private: repo.private, htmlUrl: repo.html_url });
+    } catch (err) {
+      if ((err as { status?: number }).status === 409) {
+        return reply.status(409).send({ error: { code: 'REPO_EXISTS', message: `${identity.githubLogin}/${name} already exists` } });
+      }
+      console.error('[gitea-oauth] create repo failed:', err instanceof Error ? err.message : err);
+      return reply.status(502).send({ error: { code: 'GITEA_ERROR', message: 'Creating the repository on Gitea failed' } });
+    }
+  });
+
   // ── POST /api/integrations/gitea/bind ────────────────────────────
   // Bind a workspace to one of the signed-in user's repositories. Upserts
   // the workspace's forge row (one forge per workspace, like `connect`).
@@ -278,11 +312,14 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const [existing] = await db
-      .select({ id: integrations.id, config: integrations.config })
-      .from(integrations)
-      .where(and(eq(integrations.workspaceId, body.workspaceId), inArray(integrations.provider, FORGE_PROVIDERS)))
-      .limit(1);
+    // This repo's row only: a second repo gets its own row (pickForgeRow).
+    const existing = pickForgeRow(
+      await db
+        .select({ id: integrations.id, config: integrations.config, enabled: integrations.enabled, updatedAt: integrations.updatedAt })
+        .from(integrations)
+        .where(and(eq(integrations.workspaceId, body.workspaceId), inArray(integrations.provider, FORGE_PROVIDERS))),
+      { owner: body.owner, repo: body.repo, includeDisabled: true },
+    );
     // A re-bind without a secret keeps the stored one (the repo's webhook signs with it).
     const webhookSecret = body.webhookSecret || (existing?.config as ForgeIntegrationConfig | undefined)?.webhookSecret;
     const endpoint = giteaEndpoint(oauth.instanceUrl);

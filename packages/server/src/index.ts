@@ -7,6 +7,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import { runMigrations } from './db/migrate.js';
+import { backfillApprovals } from './services/approvalBackfill.js';
 import { seedIfEmpty } from './db/seed.js';
 import { snapshotAllMaps } from './lib/releaseSnapshots.js';
 import { runAllCatchups, getLastHealthyTickAt } from './sync/githubCatchup.js';
@@ -26,6 +27,7 @@ import { registerAuthMiddleware } from './middleware/auth.js';
 import { registerArchiveGuard } from './middleware/archiveGuard.js';
 import { mapRoutes } from './routes/maps.js';
 import { lintRoutes } from './routes/lint.js';
+import { boardRoutes } from './routes/board.js';
 import { nodeRoutes } from './routes/nodes.js';
 import { cycleRoutes } from './routes/cycles.js';
 import { versionRoutes } from './routes/versions.js';
@@ -43,13 +45,29 @@ import { apiKeyRoutes } from './routes/api-keys.js';
 import { mcpRoutes } from './routes/mcp.js';
 import { mediaRoutes } from './routes/media.js';
 import { orchestrationRoutes } from './routes/orchestration.js';
-import { fleetRoutes } from './routes/fleet.js';
+import { fleetRoutes, fleetTelemetryRoutes } from './routes/fleet.js';
 import { fleetEntityRoutes } from './routes/fleets.js';
+import { fleetPairingRoutes } from './routes/fleetPairings.js';
 import { asksRoutes } from './routes/asks.js';
-import { fleetJournalRoutes } from './routes/fleetJournal.js';
+import { approvalsRoutes } from './routes/approvals.js';
+import { reporterChecksRoutes } from './routes/reporterChecks.js';
+import { prMergeRoutes } from './routes/prMerge.js';
+import { digestMailRoutes } from './routes/digestMail.js';
+import { fleetJournalRoutes, fleetJournalByFleetRoutes } from './routes/fleetJournal.js';
+import { repoDocsRoutes } from './routes/repoDocs.js';
 import { prRoutes } from './routes/prs.js';
 import { runStaleClaimSweep } from './sync/staleClaimSweeper.js';
-import { registerWebSocket } from './ws.js';
+import { runAutoCheck } from './services/asksInbox.js';
+import { runApprovalNotifications } from './services/approvalNotifications.js';
+import { runApprovalReviews } from './services/approvalReview.js';
+import { runReporterChecks } from './services/reporterCheck.js';
+import { pinnedGit, signalSelfDeploy } from './services/selfDeploy.js';
+import { digestConfig, runDigestMails } from './services/digestMail.js';
+import { pushoverConfigured } from './lib/pushover.js';
+import { onBroadcast, registerWebSocket } from './ws.js';
+import { webhookRoutes } from './routes/webhooks.js';
+import { wikiRoutes } from './routes/wiki.js';
+import { handleBroadcast, startWebhooks } from './services/webhooks.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 
@@ -112,6 +130,7 @@ async function main(): Promise<void> {
   // ── Protected Routes ───────────────────────────────────────────
   await app.register(mapRoutes);
   await app.register(lintRoutes);
+  await app.register(boardRoutes);
   await app.register(nodeRoutes);
   await app.register(cycleRoutes);
   await app.register(versionRoutes);
@@ -130,17 +149,29 @@ async function main(): Promise<void> {
   await app.register(mediaRoutes);
   await app.register(orchestrationRoutes);
   await app.register(fleetRoutes);
+  await app.register(fleetTelemetryRoutes);
   await app.register(fleetEntityRoutes);
+  await app.register(fleetPairingRoutes);
   await app.register(asksRoutes);
+  await app.register(approvalsRoutes);
+  await app.register(reporterChecksRoutes);
+  await app.register(prMergeRoutes);
+  await app.register(digestMailRoutes);
   await app.register(fleetJournalRoutes);
+  await app.register(fleetJournalByFleetRoutes);
+  await app.register(repoDocsRoutes);
   await app.register(prRoutes);
+  await app.register(webhookRoutes);
+  await app.register(wikiRoutes);
   await app.register(systemRoutes);
   await registerWebSocket(app);
 
   // ── Database setup ─────────────────────────────────────────────
   try {
     await runMigrations();
+    // Seed first: the seed inserts raw rows, and the one-shot backfill must stamp them.
     await seedIfEmpty();
+    await backfillApprovals();
   } catch (err) {
     console.error('[db] Failed to initialize database:', err);
     process.exit(1);
@@ -151,6 +182,9 @@ async function main(): Promise<void> {
     await app.listen({ port: PORT, host: '0.0.0.0' });
     console.log(`[server] MindBlown API listening on http://localhost:${PORT}`);
     console.log(`[server] WebSocket available at ws://localhost:${PORT}/ws/maps/:id`);
+    // Outgoing webhooks: every broadcast is a possible event; delivery on from here.
+    onBroadcast((mapId, message) => void handleBroadcast(mapId, message));
+    startWebhooks();
   } catch (err) {
     app.log.error(err);
     process.exit(1);
@@ -406,6 +440,135 @@ async function main(): Promise<void> {
   // Startup run: clear any stale claims from before the last restart.
   staleClaimTick();
   setInterval(staleClaimTick, STALE_CLAIM_SWEEP_MS);
+
+  // ── Auto-check blockers ───────────────────────────────────────
+  // Fleets with autoCheckBlockers on: a blocker that has sat 30 min goes
+  // to the fleet once, as if its owner pressed "Fleet can fix it"
+  // (services/derivedAsks autoCheckBlockers). Ten minutes is fine-grained
+  // enough against a 30-minute grace.
+  const AUTO_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+  const autoCheckTick = async (): Promise<void> => {
+    try {
+      const result = await runAutoCheck();
+      if (result.sent > 0) console.log(`[auto-check] fleets=${result.fleets} sent=${result.sent} errors=${result.errors.length}`);
+      for (const err of result.errors.slice(0, 5)) console.warn(`[auto-check] ${err}`);
+    } catch (err) {
+      console.error('[auto-check] tick caught unexpected error:', err);
+    }
+  };
+  setInterval(autoCheckTick, AUTO_CHECK_INTERVAL_MS);
+
+  // ── Approval pushes (#493) ───────────────────────────────────
+  // Every 5 min: a map whose proposed tickets wait gets one batched
+  // Pushover push (at most hourly), plus one reminder per ticket after
+  // 24 h. No-op without PUSHOVER_APP_TOKEN / PUSHOVER_USER_KEY.
+  if (pushoverConfigured()) console.log('[approval-push] Pushover configured');
+  const APPROVAL_PUSH_INTERVAL_MS = 5 * 60 * 1000;
+  const approvalPushTick = async (): Promise<void> => {
+    try {
+      const r = await runApprovalNotifications();
+      if (r.pushed > 0) console.log(`[approval-push] pushed=${r.pushed}`);
+      for (const err of r.errors.slice(0, 5)) console.warn(`[approval-push] ${err}`);
+    } catch (err) {
+      console.error('[approval-push] tick caught unexpected error:', err);
+    }
+  };
+  setInterval(approvalPushTick, APPROVAL_PUSH_INTERVAL_MS);
+
+  // ── AI read of proposed tickets ──────────────────────────────
+  // Every 2 min: up to 3 proposed tickets without a current verdict get
+  // one (ready / needs-info / doubtful + questions for the reporter), shown
+  // on the approval card. Advice only. No-op without an LLM; a slow model
+  // never runs two ticks at once.
+  const APPROVAL_REVIEW_INTERVAL_MS = 2 * 60 * 1000;
+  let approvalReviewRunning = false;
+  const approvalReviewTick = async (): Promise<void> => {
+    if (approvalReviewRunning) return;
+    approvalReviewRunning = true;
+    try {
+      const r = await runApprovalReviews();
+      if (r.reviewed > 0) console.log(`[approval-review] reviewed=${r.reviewed}`);
+      for (const err of r.errors.slice(0, 5)) console.warn(`[approval-review] ${err}`);
+    } catch (err) {
+      console.error('[approval-review] tick caught unexpected error:', err);
+    } finally {
+      approvalReviewRunning = false;
+    }
+  };
+  setInterval(approvalReviewTick, APPROVAL_REVIEW_INTERVAL_MS);
+
+  // ── The reporter's check ─────────────────────────────────────
+  // Every 10 min: start checks for finished outside tickets, and read the
+  // asked issues — closed by the reporter, a reply, a reminder due, the
+  // timeout. Asking itself waits for a deploy signal (POST /deployed).
+  const REPORTER_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+
+  // Our own deploy is a deploy signal: a start on a new commit asks the
+  // reporters on the maps bound to this checkout's own repo. HEAD is read
+  // now, so a later git pull isn't taken for the code that runs. The first
+  // try is a minute in (forge contexts warm); one with a failed ask is
+  // retried every tick, at most 6 times (~1 h). Prod only: a dev server in a worktree must never
+  // ask real reporters.
+  const selfGit = process.env.NODE_ENV === 'production' ? pinnedGit() : null;
+  let selfDeploySettled = selfGit === null;
+  let selfDeployTries = 0;
+  const selfDeployTick = async (): Promise<void> => {
+    if (selfDeploySettled || !selfGit) return;
+    if (++selfDeployTries >= 6) selfDeploySettled = true; // the last try
+    try {
+      const r = await signalSelfDeploy(selfGit);
+      if (!r) {
+        selfDeploySettled = true;
+        return;
+      }
+      const asked = r.maps.reduce((n, m) => n + m.result.asked.length, 0);
+      const notLanded = r.maps.reduce((n, m) => n + m.result.notLanded.length, 0);
+      console.log(`[self-deploy] ${r.repo} @ ${r.sha.slice(0, 8)}: maps=${r.maps.length} asked=${asked} notLanded=${notLanded}`);
+      const failed = r.maps.flatMap((m) => m.result.failed);
+      for (const f of failed.slice(0, 5)) console.warn(`[self-deploy] ${f.issue}: ${f.error}`);
+      if (failed.length === 0) selfDeploySettled = true;
+    } catch (err) {
+      console.error('[self-deploy] signal failed:', err);
+    }
+  };
+
+  let reporterCheckRunning = false;
+  const reporterCheckTick = async (): Promise<void> => {
+    if (reporterCheckRunning) return;
+    reporterCheckRunning = true;
+    try {
+      await selfDeployTick();
+      const r = await runReporterChecks();
+      const moved = r.started + r.confirmed + r.closed + r.replied + r.reminded + r.timedOut + r.expired;
+      if (moved > 0) {
+        console.log(`[reporter-check] started=${r.started} confirmed=${r.confirmed} closed=${r.closed} replied=${r.replied} reminded=${r.reminded} timedOut=${r.timedOut} expired=${r.expired}`);
+      }
+      for (const err of r.errors.slice(0, 5)) console.warn(`[reporter-check] ${err}`);
+    } catch (err) {
+      console.error('[reporter-check] tick caught unexpected error:', err);
+    } finally {
+      reporterCheckRunning = false;
+    }
+  };
+  setTimeout(reporterCheckTick, 60 * 1000);
+  setInterval(reporterCheckTick, REPORTER_CHECK_INTERVAL_MS);
+
+  // ── Daily mail with open questions (#597) ─────────────────────
+  // Every 10 min: from DIGEST_MAIL_HOUR (default 08:00 in DIGEST_MAIL_TZ,
+  // default Europe/Zurich) each person gets the day's mail once
+  // (digest_mails). No-op without SMTP_HOST.
+  const DIGEST_MAIL_INTERVAL_MS = 10 * 60 * 1000;
+  const digestCfg = digestConfig();
+  const digestMailTick = async (): Promise<void> => {
+    try {
+      const r = await runDigestMails(new Date(), digestCfg);
+      if (r.checked > 0) console.log(`[digest-mail] checked=${r.checked} sent=${r.sent} errors=${r.errors.length}`);
+      for (const err of r.errors.slice(0, 5)) console.warn(`[digest-mail] ${err}`);
+    } catch (err) {
+      console.error('[digest-mail] tick caught unexpected error:', err);
+    }
+  };
+  setInterval(digestMailTick, DIGEST_MAIL_INTERVAL_MS);
 
   // ── Trash garbage collection (#107) ────────────────────────────
   // Soft-deleted nodes get hard-deleted after the retention window. Also

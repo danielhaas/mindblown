@@ -9,7 +9,7 @@ import { GanttView } from './GanttView.js';
 import { ListView } from './ListView.js';
 import { CalendarView } from './CalendarView.js';
 import { SprintPanel } from './SprintPanel.js';
-import { BlockedPanel } from './BlockedPanel.js';
+import { BlockedPanel, useBlockedLeaves } from './BlockedPanel.js';
 import { TriagePanel } from './TriagePanel.js';
 import { PlanHealthPanel } from './PlanHealthPanel.js';
 import { listTriageDecisions } from './api.js';
@@ -21,6 +21,7 @@ import { ReleasesView } from './ReleasesView.js';
 import { RequirementsView } from './RequirementsView.js';
 import { GuideView } from './GuideView.js';
 import { FilesView } from './FilesView.js';
+import { DocsView } from './DocsView.js';
 import { ImportExport } from './ImportExport.js';
 import { AuthScreen } from './AuthScreen.js';
 import { downloadWithSession } from './mediaDownload.js';
@@ -29,7 +30,8 @@ import { GitHubSettingsDialog } from './GitHubPanel.js';
 import { AIChatPanel } from './AIChatPanel.js';
 import { TicketIntakeModal } from './TicketIntakeModal.js';
 import { useAiCapabilities } from './aiCapabilities.js';
-import { NewMapDialog } from './NewMapDialog.js';
+import { ProjectSetupWizard, takeSetupResume, type SetupWizardStep } from './ProjectSetupWizard.js';
+import { ProjectSetupCard } from './ProjectSetupCard.js';
 import { MapChatPanel } from './MapChatPanel.js';
 import { useMapChatUnread } from './useMapChatUnread.js';
 import { useUrlState } from './useUrlState.js';
@@ -45,8 +47,10 @@ import { ROLE_CONFIG, ROLE_ORDER, isTabVisible, isPanelVisible } from './roles.j
 import { DigestView } from './DigestView.js';
 import { CockpitView } from './CockpitView.js';
 import { PaceStrip } from './PaceStrip.js';
-import { FleetView } from './FleetView.js';
+import { FleetPage, FleetView } from './FleetView.js';
+import { ApprovalsBadge, ApprovalsPage, isApprovalsPage } from './ApprovalsView.js';
 import type { ViewRole, PanelKey } from './roles.js';
+import { useHomeWidgetSync } from './homeWidget.js';
 
 // ── Health badge colors ────────────────────────────────────────
 
@@ -586,6 +590,7 @@ function MapList({
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <ApprovalsBadge />
             <button
               onClick={onHelp}
               title="Help / User Guide"
@@ -923,6 +928,8 @@ const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
   // The shared shelf: every file and link hung anywhere in the map, plus
   // a place to drop what belongs to the map rather than to one node.
   { id: 'files', label: 'Files', enabled: true },
+  // The repo's markdown — specs, ADRs, READMEs — read in place (#550).
+  { id: 'docs', label: 'Docs', enabled: true },
   { id: 'list', label: 'List', enabled: true },
   { id: 'calendar', label: 'Calendar', enabled: true },
   { id: 'hill', label: 'Hill Chart', enabled: true },
@@ -1351,7 +1358,7 @@ function BlockedIndicator({
   return (
     <button
       onClick={onOpenPanel}
-      title={hasBlocked ? `${count} blocked node(s)` : 'No blocked nodes'}
+      title={hasBlocked ? `${count} blocked or stalled node(s)` : 'No blocked nodes'}
       style={{
         padding: '3px 10px',
         borderRadius: 4,
@@ -1527,6 +1534,7 @@ function MinimisedChip({
 
 export function App() {
   const user = useMindmapStore((s) => s.user);
+  useHomeWidgetSync(user?.id ?? null);
   // A document link opened without a session (a Word export, a mail) is
   // redirected here as ?download=<path> (#292); once signed in, fetch it
   // with the session and drop the parameter.
@@ -1577,13 +1585,13 @@ export function App() {
 
   const loadMaps = useMindmapStore((s) => s.loadMaps);
   const loadMap = useMindmapStore((s) => s.loadMap);
-  const createMap = useMindmapStore((s) => s.createMap);
   const closeMap = useMindmapStore((s) => s.closeMap);
   const updateMapName = useMindmapStore((s) => s.updateMapName);
   const setActiveView = useMindmapStore((s) => s.setActiveView);
 
   const [sprintPanelOpen, setSprintPanelOpen] = useState(false);
   const [blockedPanelOpen, setBlockedPanelOpen] = useState(false);
+  const blocked = useBlockedLeaves();
   const [triagePanelOpen, setTriagePanelOpen] = useState(false);
   const [planHealthPanelOpen, setPlanHealthPanelOpen] = useState(false);
   const [triagePendingCount, setTriagePendingCount] = useState(0);
@@ -1649,6 +1657,15 @@ export function App() {
       window.clearInterval(interval);
     };
   }, [currentMapId, triagePanelOpen]);
+
+  // ?settings=account (the daily mail's footer, #597) opens the workspace settings.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('settings') !== 'account') return;
+    url.searchParams.delete('settings');
+    window.history.replaceState({}, '', url.pathname + url.search);
+    setWorkspaceSettingsOpen(true);
+  }, []);
 
   // Handle GitHub OAuth callback redirect (?gh=connected or ?gh=error)
   useEffect(() => {
@@ -1748,12 +1765,21 @@ export function App() {
   // that logic lives in one place instead of racing effects here.
   const restoringMap = useUrlState();
 
-  // New-map dialog: name + AI policy (#375), asked up front instead of a
-  // bare prompt() so a private project starts with the right policy.
-  const [newMapOpen, setNewMapOpen] = useState(false);
+  // Guided onboarding: "New map" opens the setup wizard ('new' = the
+  // describe step before the map exists); the card on a new map reopens it.
+  const [setupStep, setSetupStep] = useState<SetupWizardStep | null>(null);
   const handleCreateMap = useCallback(() => {
-    setNewMapOpen(true);
+    setSetupStep('new');
   }, []);
+  // Back from a GitHub / Gitea sign-in the wizard sent us to: reopen it there.
+  useEffect(() => {
+    if (!user) return;
+    const mapId = takeSetupResume();
+    if (!mapId) return;
+    void loadMap(mapId).then(() => {
+      if (useMindmapStore.getState().currentMapId === mapId) setSetupStep('repo');
+    });
+  }, [user, loadMap]);
 
   // ── Auth check loading ───────────────────────────────────────
 
@@ -1778,6 +1804,18 @@ export function App() {
         <Spinner size={32} />
       </div>
     );
+  }
+
+  // ── Fleet page (#480) ────────────────────────────────────────
+  // ?fleet=<id> without a map: the fleet's workers, Questions and journal
+  // across every project the reader can view. Reached from a map's Fleet tab.
+  const fleetPageId = !currentMapId ? new URLSearchParams(window.location.search).get('fleet') : null;
+  if (fleetPageId) {
+    return <FleetPage fleetId={fleetPageId} />;
+  }
+  // ?approvals without a map: every proposed ticket waiting for a yes, across projects.
+  if (!currentMapId && isApprovalsPage(window.location.search)) {
+    return <ApprovalsPage />;
   }
 
   // ── Map list view ────────────────────────────────────────────
@@ -1825,14 +1863,8 @@ export function App() {
           <WorkspaceSettings onClose={() => setWorkspaceSettingsOpen(false)} />
         )}
         {helpOpen && <HelpOverlay onClose={() => setHelpOpen(false)} />}
-        {newMapOpen && (
-          <NewMapDialog
-            onClose={() => setNewMapOpen(false)}
-            onCreate={(name, aiPolicy) => {
-              setNewMapOpen(false);
-              createMap(name, aiPolicy);
-            }}
-          />
+        {setupStep && (
+          <ProjectSetupWizard step={setupStep} onStep={setSetupStep} onClose={() => setSetupStep(null)} />
         )}
         <TicketButton />
       </div>
@@ -1846,11 +1878,6 @@ export function App() {
   const effort = rootComputed?.computedEffort ?? 0;
   const health = rootComputed?.healthSignal ?? 'on_track';
   const nodeCount = Object.keys(nodes).length;
-  let blockedLeafCount = 0;
-  for (const n of Object.values(nodes)) {
-    if (n.childrenIds.length > 0) continue;
-    if (computed.get(n.id)?.isBlocked) blockedLeafCount += 1;
-  }
 
   // Loading overlay for map load
   if (loading && nodeCount === 0) {
@@ -2104,7 +2131,7 @@ export function App() {
           {/* Blocked indicator */}
           {showPanel('blocked') && (<>
           <BlockedIndicator
-            count={blockedLeafCount}
+            count={blocked.total}
             panelOpen={blockedPanelOpen}
             onOpenPanel={() => {
               setBlockedPanelOpen(!blockedPanelOpen);
@@ -2276,6 +2303,8 @@ export function App() {
           </button>
           )}
 
+          <ApprovalsBadge />
+
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
           {/* User avatar dropdown — absorbs Share, Import/Export, Trash, GitHub, Settings, Sign out */}
@@ -2409,24 +2438,25 @@ export function App() {
           {activeView === 'requirements' && <RequirementsView />}
           {activeView === 'guide' && <GuideView />}
           {activeView === 'files' && <FilesView />}
+          {activeView === 'docs' && <DocsView />}
           {activeView === 'list' && (<div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}><PaceStrip /><div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}><ListView /></div></div>)}
           {activeView === 'calendar' && <CalendarView />}
           {activeView === 'hill' && <HillChart />}
           {activeView === 'workload' && <WorkloadView />}
         </div>
-        {/* Die vier Arbeits-Panels bleiben untereinander exklusiv — jeweils
-            eines rechts. Das Property-Panel steht daneben statt in derselben
-            else-Kette: es hing vorher am Ende der Kette und war damit
-            unsichtbar, solange eines der anderen offen war. Genau aus dem
-            Blocked- und dem Sprint-Panel heraus klickt man aber Knoten an
-            (BlockedPanel.tsx:39, SprintPanel.tsx:258) — die Auswahl passierte,
-            die Eigenschaften dazu blieben verborgen, bis man das Panel schloss.
+        {/* The four work panels stay mutually exclusive — one at a time on
+            the right. The property panel sits beside them instead of in the
+            same else-chain: it used to hang at the end of the chain and was
+            invisible while any of the others was open. Yet the Blocked and
+            Sprint panels are exactly where you click nodes
+            (BlockedPanel.tsx:39, SprintPanel.tsx:258) — the selection
+            happened, but its properties stayed hidden until you closed the
+            panel.
 
-            Reihenfolge: das Arbeits-Panel innen, das Property-Panel aussen am
-            Rand. Damit sitzt es immer an derselben Stelle, egal was sonst
-            offen ist. */}
+            Order: work panel inside, property panel on the outer edge. That
+            way it always sits in the same place, whatever else is open. */}
         {blockedPanelOpen && showPanel('blocked') ? (
-          <BlockedPanel onClose={() => setBlockedPanelOpen(false)} />
+          <BlockedPanel onClose={() => setBlockedPanelOpen(false)} blocked={blocked} />
         ) : sprintPanelOpen && showPanel('sprint') ? (
           <SprintPanel onClose={() => setSprintPanelOpen(false)} />
         ) : triagePanelOpen && currentMapId && showPanel('triage') ? (
@@ -2524,14 +2554,10 @@ export function App() {
         />
       )}
 
-      {newMapOpen && (
-        <NewMapDialog
-          onClose={() => setNewMapOpen(false)}
-          onCreate={(name, aiPolicy) => {
-            setNewMapOpen(false);
-            createMap(name, aiPolicy);
-          }}
-        />
+      {setupStep ? (
+        <ProjectSetupWizard step={setupStep} onStep={setSetupStep} onClose={() => setSetupStep(null)} />
+      ) : (
+        <ProjectSetupCard onContinue={setSetupStep} />
       )}
 
       {/* AI Chat Panel — full panel when open & !minimised, chip when minimised */}

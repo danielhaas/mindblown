@@ -28,7 +28,8 @@ import type { RequirementStage } from '@mindblown/core';
 import { isForgeLink, forgeLabel, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
-import { stalledSectionLines, wipClaimMarker } from './stalled.js';
+import { stalledSectionLines, wipClaimMarker, wipPhaseTexts } from './stalled.js';
+import { blockedBelowCounts } from './blockedSubtrees.js';
 import { formatAttachmentList } from './attachments.js';
 import { descendantVersionIds } from './requirementScope.js';
 import { httpBackend } from './backend.js';
@@ -121,7 +122,7 @@ const server = new McpServer(
 **Updating progress:** set_progress on leaf nodes you've worked on. Parents update automatically.
 
 **Working on a task — always update progress as you go:**
-When you start working on a leaf node (writing code, drafting content, investigating a bug — anything the node represents), call set_progress with a non-zero value (10–25% is a reasonable "just started"). When you finish the work, call set_progress(100). The node's status is auto-derived from progress: 0 → todo, 1–99 → in_progress, 100 → done. This keeps the Kanban and sprint board accurate without you having to call set_status separately. If a node is blocked or in a special state, call set_status explicitly — that override is preserved.
+When you start working on a leaf node (writing code, drafting content, investigating a bug — anything the node represents), call set_progress with a non-zero value (10–25% is a reasonable "just started") and etaMinutes — your honest guess of when you will be done. When you finish the work, call set_progress(100). The node's status is auto-derived from progress: 0 → todo, 1–99 → in_progress, 100 → done. This keeps the Kanban and sprint board accurate without you having to call set_status separately. If a node is blocked or in a special state, call set_status explicitly — that override is preserved.
 
 **Release planning (versions):**
 1. create_version to define a release (e.g. "V1", "V2")
@@ -547,7 +548,7 @@ server.tool(
       .enum(['it', 'business'])
       .optional()
       .describe(
-        "Which gate to sign: 'it' = verified it works (dev/QA side), 'business' = accepted as delivered (the Abnahme). Defaults to 'business'.",
+        "Which gate to sign: 'it' = verified it works (dev/QA side), 'business' = accepted as delivered (the business sign-off). Defaults to 'business'.",
       ),
   },
   async ({ mapId, requirementId, nodeId, gate }) => {
@@ -644,7 +645,7 @@ server.tool(
 
 server.tool(
   'requirements_export',
-  'Export the requirements register as a Markdown Anforderungsdokument: chapter per Bereich, one table row per requirement (ID, business text, Muss/Soll/Kann, derived status, Aufwand/Rest in S/M/L/XL buckets). Optional filters scope the document (a filtered export is labeled "Gefilterter Auszug" in the header). Returns the full Markdown document — save it to a file or convert with pandoc for docx/pdf.',
+  'Export the requirements register as a Markdown requirements document: chapter per area, one table row per requirement (ID, business text, Must/Should/Could priority, derived status, effort/remaining in S/M/L/XL buckets). Optional filters scope the document (a filtered export is labeled "Filtered extract" in the header). Returns the full Markdown document — save it to a file or convert with pandoc for docx/pdf.',
   {
     mapId: z.string().describe('The map ID'),
     status: z
@@ -734,7 +735,7 @@ server.tool(
         );
       }
 
-      // Chapter = the requirement's parent node (the Bereich in a
+      // Chapter = the requirement's parent node (the area in a
       // doc-shaped map). Chapters are ordered by depth-first tree order.
       const chapterOf = (id: string): string => {
         const parentId = nodeById.get(id)?.parentId;
@@ -914,7 +915,7 @@ server.tool(
               const why = a.decision === 'rejected' && a.comment ? ` («${a.comment}»)` : '';
               return `${a.gate ?? 'business'}/${a.userName}${mark}${why}${stale ? ' ⚠stale' : ''}`;
             });
-            parts.push(`· Abnahme: ${fmt.join(', ')}`);
+            parts.push(`· acceptance: ${fmt.join(', ')}`);
           }
           lines.push(`  ${parts.join(' ')}`);
         }
@@ -1488,14 +1489,14 @@ const LINT_RULES = LINT_RULE_IDS;
 
 server.tool(
   'plan_lint',
-  'Check plan QUALITY (hygiene) and SYNC, not execution risk — the coaching counterpart to risk_scan. Runs 18 deterministic checks ordered basics-first: unestimated leaves, oversized leaves, stale progress, overdue-but-never-replanned, calibration drift, missing done-criteria, stale plan, dates without dependencies, sprint state vs dates (ended or started while still planned, overlapping sprints — the Sprint panel\'s signals); a requirements pack (must-requirements with no estimated work, acceptances gone stale since sign-off, must-requirements with no target version); and a sync pack that cross-checks the map against itself, its linked issues and its repository (status vs % complete, done parents with open children, node vs issue open/closed state, done tickets with no pull request on the forge, blocker text on finished nodes, tickets bouncing through the claim queue). Every finding explains why it matters (one teaching sentence) and names the fix. Scope with nodeId (subtree), versionId, or cycleId (sprint). UNSCOPED calls default to the map\'s ACTIVE release lane (the work being dispatched right now) — pass scope:"all" to lint the whole map; map-level checks (calibration-drift, stale-plan, dates-without-dependencies, sprint-state, the requirements pack) always evaluate the whole map. Use this as the clean-up starting point when issues, code and map have drifted apart. See docs/plan-linter.md for the rule rationale.',
+  'Check plan QUALITY (hygiene) and SYNC, not execution risk — the coaching counterpart to risk_scan. Runs 22 deterministic checks ordered basics-first: unestimated leaves, oversized leaves, stale progress, overdue-but-never-replanned, calibration drift, missing done-criteria, stale plan, dates without dependencies, sprint state vs dates (ended or started while still planned, overlapping sprints — the Sprint panel\'s signals); a requirements pack (must-requirements with no estimated work, acceptances gone stale since sign-off, must-requirements with no target version); and a sync pack that cross-checks the map against itself, its linked issues and its repository (status vs % complete, done parents with open children, node vs issue open/closed state, done tickets with no pull request on the forge, blocker text on finished nodes, tickets bouncing through the claim queue, in-progress tickets nobody works on, two nodes tracking one issue, and a repo the map names but can no longer reach — no connection binds it, or the forge refuses its token, which silently stops sync, triage and the fleet). Every finding explains why it matters (one teaching sentence) and names the fix. Scope with nodeId (subtree), versionId, or cycleId (sprint). UNSCOPED calls default to the map\'s ACTIVE release lane (the work being dispatched right now) — pass scope:"all" to lint the whole map; map-level checks (calibration-drift, stale-plan, dates-without-dependencies, sprint-state, broken-repo-connection, the requirements pack) always evaluate the whole map. Use this as the clean-up starting point when issues, code and map have drifted apart. See docs/plan-linter.md for the rule rationale.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
     versionId: z.string().optional().describe('Scope to leaves tagged with this version (directly or via an ancestor)'),
     cycleId: z.string().optional().describe('Scope to leaves assigned to this sprint/cycle (directly or via an ancestor) — lint a sprint before committing to it'),
     stalledDays: z.number().int().min(1).default(7).describe('Days without a progress update before in-progress work counts as stale (default 7)'),
-    rule: z.enum(LINT_RULES).optional().describe('Run only this one rule instead of all seventeen'),
+    rule: z.enum(LINT_RULES).optional().describe('Run only this one rule instead of all of them'),
     limit: z.number().int().min(1).max(1000).default(20).describe('Max findings listed per rule (default 20)'),
     scope: z.enum(['all']).optional().describe('Pass "all" to lint the whole map instead of the active-lane default (only relevant when no other scope is given)'),
   },
@@ -1573,13 +1574,13 @@ server.tool(
 
 server.tool(
   'plan_fix',
-  'Apply one of the fixes a plan_lint finding offers (the [fix: …] ids in its output). The write goes through the normal node path — change history, live update, outbound issue sync — exactly like an edit by hand; issue-side fixes write to the forge and stamp the link state. Actions: mark-done (status to the done state + 100 %), reopen (status to todo, 0 %, the linked issue reopens via sync), close-issue / reopen-issue (on the forge directly), clear-blocker (blockedReason + blocked tag, status back to todo if it was blocked), park (status blocked + tag, claim released — for a ticket a broken worker keeps bouncing). The server refuses an action the rule does not offer. Nothing is applied without this explicit call; run plan_lint first and pick per finding.',
+  'Apply one of the fixes a plan_lint finding offers (the [fix: …] ids in its output). The write goes through the normal node path — change history, live update, outbound issue sync — exactly like an edit by hand; issue-side fixes write to the forge and stamp the link state. Actions: mark-done (status to the done state + 100 %), reopen (status to todo, 0 %, the linked issue reopens via sync), close-issue / reopen-issue (on the forge directly), clear-blocker (blockedReason + blocked tag, status back to todo if it was blocked), park (status blocked + tag, claim released — for a ticket a broken worker keeps bouncing), requeue (back to the pull queue: todo, progress kept, claim released), needs-human (the next step is for a person: needs-human tag, the blocker text — and the note — go to the top of the description as "Next step (a person)", blocker cleared). The server refuses an action the rule does not offer. Nothing is applied without this explicit call; run plan_lint first and pick per finding.',
   {
     mapId: z.string().describe('The map ID'),
     ruleId: z.enum(LINT_RULES).describe('The rule the finding belongs to (validates that the action fits)'),
     nodeId: z.string().describe('The node the finding points at'),
     action: z.enum(LINT_ACTION_IDS).describe("One of the ids listed in the finding's [fix: …]"),
-    note: z.string().optional().describe('For park: appended to the blocker reason when the node has none yet'),
+    note: z.string().optional().describe('For park: appended to the blocker reason when the node has none yet. For needs-human: the person\'s next step, written at the top of the description'),
   },
   async ({ mapId, ruleId, nodeId, action, note }) => {
     try {
@@ -2036,12 +2037,11 @@ server.tool(
         return bits.join(' ');
       };
 
-      // Parents with blocked descendants (scoped the same way as leaves)
+      // Parents with blocked descendants, counted from `blocked` so done leaves stay out
+      const blockedBelow = blockedBelowCounts(blocked, data.nodes);
       const blockedSubtrees = data.nodes.filter((n) => {
-        if ((n.childrenIds?.length ?? 0) === 0) return false;
         if (scopeNodeId && !allowedIds.has(n.id)) return false;
-        const count = n.blockedBy?.blockedDescendantCount ?? 0;
-        return count > 0;
+        return blockedBelow.has(n.id);
       });
 
       const lines: string[] = [];
@@ -2114,7 +2114,7 @@ server.tool(
       if (blockedSubtrees.length > 0) {
         lines.push(`## Blocked subtrees (${blockedSubtrees.length})`);
         for (const n of blockedSubtrees.slice(0, 15)) {
-          lines.push(`- 📁 **${n.text}** — ${n.blockedBy?.blockedDescendantCount ?? 0} blocked leaf(s) below`);
+          lines.push(`- 📁 **${n.text}** — ${blockedBelow.get(n.id)} blocked leaf(s) below`);
         }
         if (blockedSubtrees.length > 15) lines.push(`- _… and ${blockedSubtrees.length - 15} more_`);
       }
@@ -2508,18 +2508,32 @@ server.tool(
 
 server.tool(
   'set_progress',
-  'Set percent complete on a leaf node',
+  'Set percent complete on a leaf node. When you start a ticket, pass etaMinutes too — your ETA, shown on the Kanban card.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node ID'),
     percent: z.number().min(0).max(100).describe('Percent complete (0-100)'),
+    etaMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(60 * 24 * 30)
+      .optional()
+      .describe('Your ETA: minutes from now until you expect to be done. Pass it when you start and again whenever the estimate changes; stored as the node\'s expectedDoneAt.'),
   },
-  async ({ mapId, nodeId, percent }) => {
+  async ({ mapId, nodeId, percent, etaMinutes }) => {
     try {
       const err = await assertLeafNode(mapId, nodeId, 'set progress');
       if (err) return toolResult(err);
-      await api.updateNode(mapId, nodeId, { percentComplete: percent });
-      return toolResult(`Set progress on ${nodeId} to ${percent}%.`);
+      const expectedDoneAt =
+        etaMinutes !== undefined ? new Date(Date.now() + etaMinutes * 60_000).toISOString() : undefined;
+      await api.updateNode(mapId, nodeId, {
+        percentComplete: percent,
+        ...(expectedDoneAt !== undefined && { expectedDoneAt }),
+      });
+      return toolResult(
+        `Set progress on ${nodeId} to ${percent}%.${expectedDoneAt ? ` ETA ${expectedDoneAt}.` : ''}`,
+      );
     } catch (err) {
       return toolError(err);
     }
@@ -2590,9 +2604,19 @@ server.tool(
   },
 );
 
+/** The fleet's phase per ticket (#546) for get_wip_status; empty without a fleet or when the read fails. */
+async function fleetPhaseTexts(mapId: string): Promise<Map<string, string>> {
+  try {
+    const read = await api.getFleetStatus(mapId);
+    return wipPhaseTexts(read.hosts, new Date(read.now));
+  } catch {
+    return new Map();
+  }
+}
+
 server.tool(
   'get_wip_status',
-  'Report how many leaf nodes are currently in an in_progress status, list them, and compare against the map\'s wipLimit (set via update_map). Each entry says who holds its claim, or "(unclaimed)" — and "stalled" when nobody has touched it for 2+ hours (see blocked_digest).',
+  'Report how many leaf nodes are currently in an in_progress status, list them, and compare against the map\'s wipLimit (set via update_map). Each entry says who holds its claim, or "(unclaimed)" — and "stalled" when nobody has touched it for 2+ hours (see blocked_digest). A fleet ticket also says where the fleet is with it (Setting up / Agent working / Waiting for CI / CI red / Merge conflict / No CI / Needs a human merge / Fixing) and for how long.',
   {
     mapId: z.string().describe('The map ID'),
   },
@@ -2625,9 +2649,10 @@ server.tool(
         lines.push('No tasks currently in progress.');
       } else {
         const stalledById = new Map((data.stalled ?? []).map((s) => [s.nodeId, s]));
+        const phases = await fleetPhaseTexts(mapId);
         lines.push('In progress:');
         for (const n of inProgressNodes) {
-          lines.push(`  - ${n.id} ${n.text}${wipClaimMarker(n, stalledById)}`);
+          lines.push(`  - ${n.id} ${n.text}${wipClaimMarker(n, stalledById, new Date(), phases.get(n.id))}`);
         }
       }
       return toolResult(lines.join('\n'));
@@ -3020,6 +3045,92 @@ server.tool(
 
 // ── Forge integration tools (GitHub or Gitea) ─────────────────
 
+/** The repo exists now — say so, or the agent retries and hits "already exists". */
+function createdNotConnected(fullName: string, url: string, err: unknown) {
+  const why = err instanceof Error ? err.message : String(err);
+  return toolResult(`Created ${fullName} (${url}) but could NOT connect it to the map: ${why}. Do not create it again; connect the existing repo once the cause is fixed.`);
+}
+
+server.tool(
+  'create_forge_repo',
+  'Create a NEW repository for a project and connect it to the map, using the caller\'s own GitHub or Gitea sign-in (no token needed). GitHub: created in the caller\'s account or one of their organizations that has the MindBlown GitHub App installed; seeded with a README so it has a main branch. Use connect_forge_repo instead for an existing repo. Needs map admin. New issues on the repo then come into the map by themselves.',
+  {
+    mapId: z.string().describe('The map that plans this repo'),
+    name: z.string().describe('Repository name (letters, digits, ".", "-", "_")'),
+    owner: z.string().optional().describe('GitHub account or organization login to create it in; default: the caller\'s own account. Ignored for Gitea (always the caller\'s account).'),
+    kind: z.enum(['github', 'gitea']).optional().describe('Forge; default "github" when the caller has GitHub connected, else "gitea"'),
+    private: z.boolean().optional().describe('Private repository; default true'),
+    description: z.string().optional().describe('Repository description; default: none'),
+    fleetCanEditCi: z.boolean().optional().describe("GitHub: let the map's fleet change CI workflows (.github/workflows/*) in the new repo; default true, since a new repo has no secrets yet. Only the map's creator can turn it on; for anyone else the repo is connected with CI left closed. Same as update_map(fleetCanEditCi). Ignored for Gitea."),
+  },
+  async ({ mapId, name, owner, kind, private: isPrivate, description, fleetCanEditCi }) => {
+    try {
+      const priv = isPrivate ?? true;
+      // Connecting needs map admin; check before anything is created on the forge.
+      if (!(await api.isMapAdmin(mapId))) {
+        return toolResult(`Not created: connecting a repository needs admin permission on map ${mapId}.`);
+      }
+      const gh = await api.getGitHubInstallStatus().catch(() => null);
+      const forge = kind ?? (gh?.connected && gh.installations.length > 0 ? 'github' : 'gitea');
+      if (forge === 'gitea') {
+        const { map } = await api.getMap(mapId);
+        const repo = await api.createGiteaRepository({ name, private: priv, description });
+        try {
+          await api.bindGiteaRepo(map.workspaceId, repo.owner, repo.name, mapId);
+          await api.updateMap(mapId, { autoImportNewIssues: true });
+        } catch (err) {
+          return createdNotConnected(repo.fullName, repo.htmlUrl, err);
+        }
+        return toolResult(`Created Gitea repo ${repo.fullName} (${repo.htmlUrl}) and connected it to map ${mapId}.`);
+      }
+      if (!gh?.connected || !gh.identity) {
+        return toolResult('GitHub is not connected for this account. Connect GitHub in MindBlown (map settings or the new-project wizard) first.');
+      }
+      const target = (owner ?? gh.identity.githubLogin).toLowerCase();
+      const inst = gh.installations.find((i) => i.accountLogin.toLowerCase() === target);
+      if (!inst) {
+        const known = gh.installations.map((i) => i.accountLogin).join(', ') || 'none';
+        return toolResult(`The MindBlown GitHub App is not installed on ${owner ?? gh.identity.githubLogin}. Installed on: ${known}.`);
+      }
+      const repo = await api.createGitHubRepository({ installationId: inst.installationId, name, private: priv, description });
+      if (!repo.reachable) {
+        return toolResult(
+          `Created GitHub repo ${repo.fullName} (${repo.htmlUrl}), but the GitHub App only sees selected repositories, so it is NOT connected yet. ` +
+            `Add it to the App at ${repo.addAccessUrl}, then pick it in the map's repository settings (or the setup wizard's Repository step)` +
+            ((fleetCanEditCi ?? true) ? ', and run update_map(fleetCanEditCi: true) so the fleet can set up its CI.' : '.'),
+        );
+      }
+      try {
+        await api.updateMap(mapId, {
+          githubInstallationId: inst.installationId,
+          githubRepoOwner: repo.owner,
+          githubRepoName: repo.name,
+          autoImportNewIssues: true,
+        });
+      } catch (err) {
+        return createdNotConnected(repo.fullName, repo.htmlUrl, err);
+      }
+      // A call of its own: only the map's creator may open CI, and a refusal
+      // must not undo the connection.
+      let ci = '';
+      if (fleetCanEditCi ?? true) {
+        try {
+          await api.updateMap(mapId, { fleetCanEditCi: true });
+          ci = ' The fleet may set up its CI workflows.';
+        } catch (err) {
+          // The repo is connected already: report, never throw, or the agent retries the create.
+          ci = err instanceof api.ApiError && err.status === 403
+            ? " CI stays closed to the fleet: only the map's creator can open it (update_map(fleetCanEditCi: true))."
+            : ` CI access could not be set (${err instanceof Error ? err.message : String(err)}); run update_map(fleetCanEditCi: true) to retry.`;
+        }
+      }
+      return toolResult(`Created GitHub repo ${repo.fullName} (${repo.htmlUrl}, ${repo.private ? 'private' : 'public'}) and connected it to map ${mapId}.${ci}`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
 toolWithAlias(
   'connect_forge_repo',
   'Connect a GitHub or Gitea/Forgejo repository to a workspace and bind it to a map. Required before importing issues. Stores the forge kind, base URL, owner, repo, and token for API access. Pass mapId: only maps bound to the repo sync with it (a map planning another repo, or none, stays untouched). A self-hosted forge (kind "gitea" or a custom apiBaseUrl) needs an admin web session — API-key auth gets 403 for that; github.com works with any authenticated caller.',
@@ -3405,6 +3516,24 @@ server.tool(
 );
 
 server.tool(
+  'ai_plan_questions',
+  'Before drafting a plan with ai_braindump: the (up to three) questions whose answers would change the plan the most — who uses it, what the first version must do, constraints. Returns none when the description already covers what matters. Ask the person, then pass their answers to ai_braindump as `answers`.',
+  {
+    mapId: z.string().describe('The map ID'),
+    prose: z.string().describe('The project description / brain dump the plan will be drafted from'),
+  },
+  async ({ mapId, prose }) => {
+    try {
+      const { questions } = await api.aiPlanQuestions(mapId, prose);
+      if (questions.length === 0) return toolResult('No questions — the description covers what the plan needs. Draft with ai_braindump.');
+      return toolResult(`Ask the person, then pass the answers to ai_braindump as answers:\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'ai_braindump',
   'Convert a freeform brain-dump of prose into a nested tree of tasks and (by default) attach it under an existing parent node. Useful for capturing meeting notes or stream-of-consciousness planning. The LLM groups related ideas, strips numbering, and writes imperative task labels.',
   {
@@ -3413,10 +3542,15 @@ server.tool(
     prose: z.string().describe('Freeform prose to structure into tasks'),
     maxDepth: z.number().int().min(1).max(3).optional().describe('Maximum nesting depth (1-3, default 3)'),
     apply: z.boolean().optional().describe('If true (default), create the tree; if false, only return the preview'),
+    answers: z
+      .array(z.object({ question: z.string(), answer: z.string() }))
+      .max(3)
+      .optional()
+      .describe("The person's answers to ai_plan_questions; added to the prose the tree is drafted from"),
   },
-  async ({ mapId, parentId, prose, maxDepth, apply }) => {
+  async ({ mapId, parentId, prose, maxDepth, apply, answers }) => {
     try {
-      const { tree } = await api.aiBraindump(mapId, parentId, prose, maxDepth);
+      const { tree } = await api.aiBraindump(mapId, parentId, prose, maxDepth, answers);
       if (tree.length === 0) {
         return toolResult('Model returned no usable tasks.');
       }

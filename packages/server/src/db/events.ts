@@ -1,6 +1,6 @@
 import { eq, and, desc, gte, inArray, sql } from 'drizzle-orm';
 import { db } from './connection.js';
-import { changeEvents } from './schema.js';
+import { changeEvents, maps } from './schema.js';
 import { buildClaimedEvent, buildReleasedEvent } from '@mindblown/core';
 import type {
   Node as CoreNode,
@@ -64,7 +64,7 @@ export const TRACKED_FIELDS = new Set<keyof CoreNode>([
   'cycleId',
   'assigneeIds',
   'phaseId',
-  // The Abnahme surface. The Prüfanleitung is the text a customer's
+  // The acceptance surface. The how-to-verify text is the text a customer's
   // signature refers to at a sign-off, and the two URLs are where he was
   // told to look — so an edit after the fact has to leave a trace. The
   // verdicts themselves are already append-only; without these three the
@@ -160,6 +160,8 @@ export const AUDITED_MAP_FIELDS = [
   // Which fleet works the map, and its weight there (#477).
   'fleetId',
   'fleetShare',
+  // Lets fleet code change CI, which can read the repo's secrets.
+  'fleetCanEditCi',
   // Archive flips are the loudest setting of all: every automation goes
   // quiet on the map. Journal who did it and when.
   'archivedAt',
@@ -194,7 +196,21 @@ export async function recordMapFieldChanges(
 
 // ── Claim trail ─────────────────────────────────────────────────
 
-export function recordClaimed(
+/**
+ * The map's fleet right now — stamped on claim / release rows (#481) so the
+ * trail says which fleet did the work even after the map moves. Never
+ * throws: the trail is fire-and-forget, a lookup failure records null.
+ */
+async function fleetOfMap(mapId: string): Promise<string | null> {
+  try {
+    const [row] = await db.select({ fleetId: maps.fleetId }).from(maps).where(eq(maps.id, mapId));
+    return row?.fleetId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function recordClaimed(
   mapId: string,
   nodeId: string,
   userId: string | null,
@@ -207,11 +223,11 @@ export function recordClaimed(
     eventType: 'node.claimed',
     fieldName: 'claimedBySession',
     oldValue: payload.previousSession,
-    newValue: payload,
+    newValue: { ...payload, fleetId: payload.fleetId ?? (await fleetOfMap(mapId)) },
   });
 }
 
-export function recordReleased(
+export async function recordReleased(
   mapId: string,
   nodeId: string,
   userId: string | null,
@@ -224,7 +240,7 @@ export function recordReleased(
     eventType: 'node.released',
     fieldName: 'claimedBySession',
     oldValue: payload.session,
-    newValue: payload,
+    newValue: { ...payload, fleetId: payload.fleetId ?? (await fleetOfMap(mapId)) },
   });
 }
 
@@ -369,6 +385,19 @@ export async function getLastActorByNode(
     userId: r.user_id,
     userName: r.user_name,
   }));
+}
+
+/** Newest change_event per node, across maps — the stale-claim sweeper's activity clock. */
+export async function lastChangeAtByNode(nodeIds: string[]): Promise<Map<string, Date>> {
+  const out = new Map<string, Date>();
+  if (nodeIds.length === 0) return out;
+  const rows = await db
+    .select({ nodeId: changeEvents.nodeId, at: sql<Date>`max(${changeEvents.createdAt})` })
+    .from(changeEvents)
+    .where(inArray(changeEvents.nodeId, nodeIds))
+    .groupBy(changeEvents.nodeId);
+  for (const r of rows) if (r.nodeId) out.set(r.nodeId, new Date(r.at));
+  return out;
 }
 
 /**

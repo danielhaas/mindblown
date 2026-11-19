@@ -1,10 +1,10 @@
 /**
  * Asks tools — the MCP surface of /leidang-asks. Round-trips the args to
  * the backend and pins the rendering an agent reads: grouped by answerer,
- * the "keine Frage" fold, the write report after an answer, the digest.
+ * the "no question" fold, the write report after an answer, the digest.
  */
 import { describe, it, expect } from 'vitest';
-import { listAsksTool, answerAskTool, asksDigestTool } from '../asks.js';
+import { listAsksTool, answerAskTool, asksDigestTool, fleetCheckBlockersTool } from '../asks.js';
 import type { ToolBackend, AskListResult, AskAnswerResult } from '../../backend.js';
 import type { Ask, AskRow } from '@mindblown/core';
 
@@ -45,12 +45,12 @@ describe('list_asks', () => {
     expect(out).toContain('Asks: 4');
     expect(out.indexOf('## Dan')).toBeLessThan(out.indexOf('## Rita'));
     expect(out).toContain('#6823 Avione Migrationsskript · P1 · idle 30h · [decision]');
-    expect(out).toContain('Optionen: skip | keep');
-    expect(out).toContain('entblockt: node n1n1n1n1 (blocked)');
-    expect(out).toContain('## Keine Frage');
-    expect(out).toContain('#8 · #8 [parked-plan] Wochenplan');
-    expect(out).toContain('## Nur Version fehlt');
-    expect(out).toContain('#9 · #9 Version?');
+    expect(out).toContain('Options: skip | keep');
+    expect(out).toContain('unblocks: node n1n1n1n1-0000 (blocked)');
+    expect(out).toContain('## No question');
+    expect(out).toContain('- #8 [parked-plan] Wochenplan');
+    expect(out).toContain('## Only the version is missing');
+    expect(out).toContain('- #9 Version?');
   });
 });
 
@@ -61,7 +61,7 @@ describe('answer_ask', () => {
       ask: row(ask(), {
         status: 'answered', answeredBy: 'Dan',
         writes: [
-          { kind: 'gh-comment', target: '#6823', detail: 'Entscheid (Dan, 2026-09-03): skip', done: true },
+          { kind: 'gh-comment', target: '#6823', detail: 'Decision (Dan, 2026-09-03): skip', done: true },
           { kind: 'mb-put', target: 'n1n1n1n1', detail: 'status → todo', done: false, error: 'boom' },
         ],
       }),
@@ -76,6 +76,40 @@ describe('answer_ask', () => {
     expect(out).toContain('wrote: gh-comment #6823');
     expect(out).toContain('FAILED: mb-put n1n1n1n1 — status → todo (boom)');
   });
+
+  it('a step row\'s free-text decision forwards its follow-up (#619)', async () => {
+    const calls: unknown[][] = [];
+    const result: AskAnswerResult = { ask: row(ask({ id: 'step-n1' }), { status: 'answered', answeredBy: 'Dan' }), plan: { github: null, node: null, worker: null, skip: null }, ok: true, node: null };
+    const backend = { answerAsk: async (...a: unknown[]) => { calls.push(a); return result; } } as unknown as ToolBackend;
+    await answerAskTool.handler(backend, { mapId: 'm1', askId: 'step-n1', action: 'answered', decision: 'yes', next: 'mine' } as never);
+    expect(calls[0][2]).toMatchObject({ decision: 'yes', next: 'mine' });
+    expect(answerAskTool.schema.next.safeParse('fleet').success).toBe(true);
+    expect(answerAskTool.schema.next.safeParse('later').success).toBe(false);
+  });
+
+  it('with fleetId answers through the fleet, passing askMapId (#479)', async () => {
+    const calls: unknown[][] = [];
+    const result: AskAnswerResult = { ask: row(ask(), { status: 'later' }), plan: { github: null, node: null, worker: null, skip: null }, ok: true, node: null };
+    const backend = { answerAskForFleet: async (...a: unknown[]) => { calls.push(a); return result; } } as unknown as ToolBackend;
+    await answerAskTool.handler(backend, { fleetId: 'f1', askMapId: 'm2', askId: '#6823', action: 'later' } as never);
+    expect(calls[0][0]).toBe('f1');
+    expect(calls[0][1]).toBe('#6823');
+    expect(calls[0][3]).toBe('m2');
+    await expect(answerAskTool.handler(backend, { askId: '#6823', action: 'later' } as never)).rejects.toThrow(/exactly one/);
+  });
+});
+
+describe('list_asks across a fleet (#479)', () => {
+  it('prefixes every row with its map, [fleet] for a fleet-level ask', async () => {
+    const res: AskListResult = {
+      ...listResult([row(ask({ id: '#1' }), { mapId: 'm1' }), row(ask({ id: 'fleet:hosts', ticket: null, title: 'More hosts' }), { mapId: null })]),
+      maps: [{ id: 'm1', name: 'Alpha' }],
+    };
+    const backend = { listAsksForFleet: async () => res } as unknown as ToolBackend;
+    const out = await listAsksTool.handler(backend, { fleetId: 'f1' } as never);
+    expect(out).toContain('- [Alpha] #1 · #6823');
+    expect(out).toContain('- [fleet] fleet:hosts');
+  });
 });
 
 describe('asks_digest', () => {
@@ -88,6 +122,27 @@ describe('asks_digest', () => {
     const backend = { listAsks: async (...a: unknown[]) => { calls.push(a); return listResult(items); } } as unknown as ToolBackend;
     const out = await asksDigestTool.handler(backend, { mapId: 'm1', since: '2026-09-03T00:00:00Z' } as never);
     expect(calls).toEqual([['m1', { status: 'all', since: '2026-09-03T00:00:00Z' }]]);
-    expect(out).toBe('/leidang-asks 2026-09-03: 1 beantwortet, 1 vertagt, 0 delegiert · Tickets #6823 · wieder pullbar: n1n1n1n1');
+    expect(out).toBe('/leidang-asks 2026-09-03: 1 answered, 1 deferred, 0 delegated · tickets #6823 · requeued: n1n1n1n1');
+  });
+});
+
+describe('fleet_check_blockers', () => {
+  it('passes fleet and by through and reports fix runs, check runs and failures', async () => {
+    const calls: unknown[][] = [];
+    const backend = {
+      fleetCheckBlockers: async (...a: unknown[]) => {
+        calls.push(a);
+        return {
+          sent: [{ askId: 'blocker-a', mapId: 'm1', action: 'fleet-fix' }, { askId: 'blocker-b', mapId: 'm1', action: 'fleet-check' }],
+          failed: [{ askId: 'blocker-c', mapId: 'm1', error: 'gone' }],
+        };
+      },
+    } as unknown as ToolBackend;
+    const out = await fleetCheckBlockersTool.handler(backend, { fleetId: 'f1', by: 'Dan' } as never);
+    expect(calls[0]).toEqual(['f1', 'Dan']);
+    expect(out).toContain('2 blocker(s) handed to the fleet, 1 failed');
+    expect(out).toContain('fix its PR: blocker-a');
+    expect(out).toContain('check run: blocker-b');
+    expect(out).toContain('FAILED blocker-c: gone');
   });
 });

@@ -202,6 +202,7 @@ Once connected, the AI can fully manage your projects through natural conversati
 | `create_map` | Create a new map/project | `name`, `description?` |
 | `update_map` | Update name, description, WIP limit, or Gantt anchors | `mapId`, `name?`, `description?`, `wipLimit?`, `projectStartDate?`, `hoursPerDay?` |
 | `delete_map` | Permanently delete a map and its nodes | `mapId` |
+| `project_setup_status` | The new-project checklist (describe → repo → plan → fleet → start) with the tool that finishes each open step; `update_map(setupCompleted: true)` closes it | `mapId` |
 
 ### Node Tools
 
@@ -310,6 +311,7 @@ Files and links hung on nodes. `get_map` shows them on each node's line (`files:
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
+| `create_forge_repo` | Create a new repo with the caller's own GitHub/Gitea sign-in (README-seeded, private by default) and connect it to the map | `mapId`, `name`, `owner?`, `kind?`, `private?`, `description?` |
 | `connect_forge_repo` | Connect a GitHub or Gitea repo to a workspace | `workspaceId`, `owner`, `repo`, `token`, `webhookSecret?`, `kind?`, `apiBaseUrl?`, `webBaseUrl?` |
 | `import_issues` | Import issues into a functional tree; auto-creates versions/milestones | `mapId`, `parentNodeId?`, `includeAll?`, `owner?`, `repo?` |
 | `link_issue` | Link a node to an existing issue | `mapId`, `nodeId`, `owner`, `repo`, `issueNumber` |
@@ -324,6 +326,7 @@ The pre-Gitea names (`connect_github_repo`, `import_github_issues`, `link_github
 | Tool | Description | Parameters |
 |------|-------------|------------|
 | `ai_breakdown` | Break a node into suggested child tasks via the LLM; creates them by default | `mapId`, `nodeId`, `count?`, `hint?`, `apply?` |
+| `ai_plan_questions` | Up to three questions to ask before drafting a plan (none when the description covers it); answers go to `ai_braindump` | `mapId`, `prose` |
 | `ai_braindump` | Turn freeform prose into a nested tree under a parent node | `mapId`, `parentId`, `prose`, `maxDepth?`, `apply?` |
 | `ai_estimate` | Calibrated effort estimate using past velocity + sample leaves | `mapId`, `text?`, `nodeId?`, `hint?` |
 | `semantic_search` | Embedding-based search ranked by cosine similarity | `mapId`, `q`, `limit?` |

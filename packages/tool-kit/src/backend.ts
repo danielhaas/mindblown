@@ -9,11 +9,17 @@
  */
 
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps } from '@mindblown/core';
+import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookSubscription } from '@mindblown/core';
 
-/** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet). */
+/** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
 export interface FleetStatusResult {
-  hosts: { host: string; generatedAt: string; receivedAt: string; rollup: FleetRollup }[];
+  /** The fleet the telemetry belongs to (#479); null = the map has no fleet. Absent from pre-#479 servers. */
+  fleetId?: string | null;
+  /**
+   * `mapIds` = the maps the host serves that the reader can view (#479). Claims
+   * on maps the reader can't view come as `claim: { redacted: true }`.
+   */
+  hosts: { host: string; generatedAt: string; receivedAt: string; mapIds?: string[]; rollup: FleetRollup }[];
   ticks: { id: string; tickAt: string; receivedAt: string; payload: FleetTickPayload }[];
   /** Server clock at read time — staleness is judged against this, not the caller's clock. */
   now: string;
@@ -36,6 +42,8 @@ export interface FleetJournalOptions {
 /** GET /api/maps/:id/fleet-journal — what the fleet did in the window, assembled by core `buildFleetJournal`. */
 export interface FleetJournalResult {
   journal: FleetJournal;
+  /** Fleet-wide read (#479): the maps covered — entries name theirs by `mapId`. */
+  maps?: { id: string; name: string }[];
   now: string;
 }
 
@@ -51,17 +59,27 @@ export interface AskListOptions {
   limit?: number;
 }
 
-/** GET /api/maps/:id/asks */
+/** GET /api/maps/:id/asks, /api/fleets/:id/asks */
 export interface AskListResult {
   items: AskRow[];
   counts: AskCounts;
   /** When the collector last pushed — null until the first push. */
   pushedAt: string | null;
   meta: AskDocumentMeta | null;
+  /** #479: which map's push `meta` is from (its counts are that project's); null = fleet-wide push. */
+  pushedFor?: string | null;
   now: string;
+  /** Fleet read (#479): the maps covered — rows name theirs by `mapId` (null = fleet-level). */
+  maps?: { id: string; name: string }[];
 }
 
 /** POST /api/maps/:id/asks/:askId/answer */
+/** fleet_check_blockers: which blocker rows went to the fleet, and which could not. */
+export interface FleetCheckResult {
+  sent: Array<{ askId: string; mapId: string; action: 'fleet-fix' | 'fleet-check' }>;
+  failed: Array<{ askId: string; mapId: string; error: string }>;
+}
+
 export interface AskAnswerResult {
   ask: AskRow;
   plan: AskWritePlan;
@@ -211,6 +229,12 @@ export interface ReadyNodesResult {
   total: number;
   returned: number;
   sprintScope?: ReadySprintScope;
+  /**
+   * Ready leaves held by a missing approval (#492), on the ticket or an
+   * open ancestor — work a trusted person still has to let through. Not
+   * counted in `total`.
+   */
+  awaitingApproval: Array<{ id: string; text: string; approval: 'proposed' | 'rejected'; heldBy: { id: string; text: string } | null }>;
 }
 
 export interface ClaimNodeResult {
@@ -241,6 +265,11 @@ export interface UnblockNodeResult {
    * claimed by a session, or already in todo.
    */
   statusReset: boolean;
+  /**
+   * Set when the `blocked` label could not be taken off the linked issue
+   * (#622). The node is unblocked regardless.
+   */
+  labelError?: string;
 }
 
 export interface ConflictEntry {
@@ -284,18 +313,45 @@ export interface TicketBrief {
   effortEstimate: number | null;
   githubLinks: Array<{ externalId: string; url: string }>;
   claimedAt: string | null;
+  /**
+   * A check run ("Fleet can fix it" on a blocker): the blocker it was
+   * handed out past. The worker gets past it, or writes down what a person
+   * must do.
+   */
+  check?: { blockedReason: string };
+  /**
+   * Approved work that stops at an open PR (#492, claude-fleet#70): the
+   * worker opens the PR, marks the node done and leaves the merge to a
+   * person. Absent = trusted work, merged and deployed as before. Names
+   * are display names (a forge login for a forge author); approvedBy null =
+   * approved by the map's trust policy.
+   */
+  approval?: { merge: 'pr-only'; reportedBy: string | null; approvedBy: string | null };
+  /**
+   * Questions a trusted person posted on the linked issue (approve & ask)
+   * and approved without waiting for: the worker picks a sensible default
+   * for each and lists what it assumed in the PR description. Comments on
+   * the issue are not approved text — the worker does not act on them.
+   */
+  openQuestions?: { questions: string[]; askedAt: string };
 }
 
 export interface SkippedTicket {
   id: string;
   text: string;
-  /** needs-brief: no description and no linked issue; human-only: tagged for a person (#266) or flagged with a blocker. */
-  reason: 'needs-brief' | 'human-only';
+  /**
+   * needs-brief: no description and no linked issue; human-only: tagged for
+   * a person (#266) or flagged with a blocker; awaiting-approval: not
+   * approved yet (#492), on the ticket or an open ancestor.
+   */
+  reason: 'needs-brief' | 'human-only' | 'awaiting-approval';
   /** The skip tag, for human-only. */
   tag?: string;
   /** The manual blocker text, for human-only. */
   blockedReason?: string;
-  /** The open ancestor carrying the tag/blocker, when the hold is inherited. */
+  /** The stamp's state, for awaiting-approval. */
+  approval?: 'proposed' | 'rejected';
+  /** The open ancestor carrying the tag/blocker/stamp, when the hold is inherited. */
   heldBy?: { id: string; text: string };
   /** The node's map — set on fleet pulls, which look at several maps. */
   mapId?: string;
@@ -333,6 +389,24 @@ export interface GetNextTicketResult {
   fleet?: { id: string; name: string; active: number; cap: number };
   /** Fleet pulls only: maps that gave nothing, and why. */
   maps?: FleetPullMapOutcome[];
+  /**
+   * Granted: where the ticket's code lives — the map's forge binding (#507).
+   * null = the map has no repo connected. No credential here; a fleet key
+   * fetches those per ticket (POST /api/fleets/:id/repo-credentials).
+   */
+  repo?: TicketRepo | null;
+}
+
+/** A map's repo, without credentials (#507). */
+export interface TicketRepo {
+  forge: 'github' | 'gitea';
+  owner: string;
+  name: string;
+  /** The repo's page, e.g. https://gitea.example/dan/crm2. */
+  webUrl: string;
+  /** HTTPS clone URL. */
+  cloneUrl: string;
+  apiBaseUrl: string;
 }
 
 export interface ConflictScanResult {
@@ -346,6 +420,25 @@ export interface ConflictScanResult {
    * candidateNodeId) report every duplicated link in the map.
    */
   duplicateLinks: DuplicateLinkGroup[];
+}
+
+/** Options of the Markdown timeline export (#637). */
+export interface ExportMarkdownOptions {
+  /** Render this subtree instead of the whole map. */
+  rootNodeId?: string;
+  /** 'summary' (default) leaves out node ids and effort; 'full' adds them. */
+  detail?: 'summary' | 'full';
+  /** IANA zone for the "generated" stamp; default UTC. */
+  timeZone?: string;
+}
+
+/** What publish_to_wiki did (#637). */
+export interface WikiPublishResult {
+  documentId: string;
+  documentUrl: string;
+  /** true = the first publish created the page; false = it updated the same one. */
+  created: boolean;
+  publishedAt: string;
 }
 
 export interface FrozenBaseline {
@@ -382,6 +475,7 @@ export interface ToolBackend {
       profilePolicy?: ProfilePolicy | null;
       fleetId?: string | null;
       fleetShare?: number;
+      fleetCanEditCi?: boolean;
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
       aiEstimateDrafts?: boolean;
@@ -389,15 +483,23 @@ export interface ToolBackend {
       holidayOverrides?: { add: string[]; remove: string[] };
       phases?: PhaseDef[];
       archived?: boolean;
+      /** Guided onboarding: finish (true) or reopen (false) the setup checklist. */
+      setupCompleted?: boolean;
+      /** #491 — admin only; null = back to the defaults. */
+      trustPolicy?: TrustPolicy | null;
     },
   ): Promise<MapSummary>;
   deleteMap(mapId: string): Promise<void>;
   // ── Fleets (#477) — not map-scoped: the server scopes them to the caller ──
   listFleets(): Promise<FleetWithMaps[]>;
   createFleet(name: string, maxActiveClaims?: number): Promise<FleetWithMaps>;
-  updateFleet(fleetId: string, fields: { name?: string; maxActiveClaims?: number }): Promise<FleetWithMaps>;
+  updateFleet(fleetId: string, fields: { name?: string; maxActiveClaims?: number; autoCheckBlockers?: boolean }): Promise<FleetWithMaps>;
   /** Freeze the current projected schedule as a named baseline (#113). */
   freezeBaseline(mapId: string, name?: string): Promise<FrozenBaseline>;
+  /** The map (or a subtree) as a Markdown timeline for readers outside the project (#637). */
+  exportMarkdown(mapId: string, opts?: ExportMarkdownOptions): Promise<string>;
+  /** Push the timeline to the workspace's wiki: create the page once, update it after (#637). */
+  publishToWiki(mapId: string): Promise<WikiPublishResult>;
 
   createNode(
     mapId: string,
@@ -485,16 +587,53 @@ export interface ToolBackend {
    */
   unblockNode(mapId: string, nodeId: string): Promise<UnblockNodeResult>;
   conflictScan(mapId: string, candidateNodeId?: string): Promise<ConflictScanResult>;
-  /** Last-known satellite rollups + recent orchestrator ticks (read-only); `since` widens the ticks to a history window. */
+  /**
+   * Last-known satellite rollups + recent orchestrator ticks (read-only); `since` widens the ticks to a history window.
+   * Through a map: that map's fleet, hosts narrowed to the ones serving the map.
+   */
   getFleetStatus(mapId: string, opts?: FleetStatusOptions): Promise<FleetStatusResult>;
+  /** The same for a whole fleet (#479): every host, claims on maps the caller can't view redacted. */
+  getFleetStatusForFleet(fleetId: string, opts?: FleetStatusOptions): Promise<FleetStatusResult>;
   /** What the fleet did in a window — ticks, claims, delivered nodes with PR/effort, follow-ups, knob writes (read-only). */
   getFleetJournal(mapId: string, opts?: FleetJournalOptions): Promise<FleetJournalResult>;
+  /** The journal across a fleet's maps the caller can view (#479); every entry names its map. */
+  getFleetJournalForFleet(fleetId: string, opts?: FleetJournalOptions): Promise<FleetJournalResult>;
 
   // ── Asks inbox (/leidang-asks) ──────────────────────────────────
-  /** The fleet's open human questions as the collector pushed them (read-only). */
+  /** The fleet's open human questions as the collector pushed them (read-only) — through a map: that map's. */
   listAsks(mapId: string, opts?: AskListOptions): Promise<AskListResult>;
+  /** The whole fleet's asks the caller may see (#479): every viewable map, fleet-level ones for a reader of all maps. */
+  listAsksForFleet(fleetId: string, opts?: AskListOptions): Promise<AskListResult>;
   /** Record an answer and write it like `leidang-asks-apply` (ticket comment, node, worker flag). */
   answerAsk(mapId: string, askId: string, input: AskAnswerInput): Promise<AskAnswerResult>;
+  /** The same through the fleet (#479); `mapId` picks between rows sharing an ask id ('' = fleet-level). */
+  answerAskForFleet(fleetId: string, askId: string, input: AskAnswerInput, mapId?: string): Promise<AskAnswerResult>;
+  /** "Fleet can fix it" on every blocker row of the fleet's maps the caller may edit. */
+  fleetCheckBlockers(fleetId: string, by?: string): Promise<FleetCheckResult>;
+
+  // ── Approvals (#494) ────────────────────────────────────────────
+  /** Proposed tickets: one map, a fleet's maps, or (neither) every map the caller can view. */
+  listPendingApprovals(scope: { mapId?: string; fleetId?: string }): Promise<PendingApprovalList>;
+
+  // ── Waiting on humans ───────────────────────────────────────────
+  /** Is the fleet idle, and what waits on whom — one fleet, or (none) every fleet the caller can see. */
+  waitingOnHumans(fleetId?: string): Promise<WaitingOnHumansResult>;
+  // No approve/reject (#606): deciding happens on the approval card only.
+
+  // ── The reporter's check ────────────────────────────────────────
+  /** Outside reporters checking a deployed fix: one map, a fleet's maps, or every map the caller can view. */
+  listReporterChecks(scope: { mapId?: string; fleetId?: string }): Promise<ReporterCheckList>;
+  /** The map was deployed: reopen each waiting issue and ask its reporter (edit on the map). */
+  markDeployed(mapId: string): Promise<DeployedResult>;
+  // No reopen/close: deciding a reply means reading the reporter's untrusted text — the card only.
+
+  // ── A person merges a fleet PR (Tracer's voice merges) ──────────
+  /** The node's PR, read live from the map's forge (view on the map). */
+  prSummary(mapId: string, nodeId: string): Promise<PrSummary>;
+  /** Merge it — only on a person's explicit decision; refusals come back as `merged: false`. */
+  mergePr(mapId: string, nodeId: string, input: { expectedHeadSha: string; method?: 'merge' | 'squash' | 'rebase' }): Promise<MergePrResult>;
+  /** Open PRs waiting on a person: one map, a fleet's maps, or every map the caller can view. */
+  prsWaiting(scope: { mapId?: string; fleetId?: string }): Promise<PrsWaitingList>;
 
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues(
@@ -515,6 +654,92 @@ export interface ToolBackend {
    * a type with no text in it; throws only for a missing node/attachment.
    */
   readAttachment(mapId: string, nodeId: string, attachmentId: string, opts?: ReadAttachmentOptions): Promise<AttachmentText>;
+
+  // ── Repo docs (#550) ────────────────────────────────────────────
+  /** The markdown files on the default branch of the map's repo — `GET /api/maps/:id/docs`. Throws when the map has no repo. */
+  listRepoDocs(mapId: string): Promise<RepoDocsList>;
+  /** One markdown file's text — `GET /api/maps/:id/docs/file?path=`. Throws for a path that is not a doc of the repo. */
+  readRepoDoc(mapId: string, path: string): Promise<RepoDocText>;
+  /** Branch + commit + pull request with the new text — `POST /api/maps/:id/docs/propose` (#552). Throws on a stale `baseSha`. */
+  proposeRepoDocEdit(mapId: string, input: ProposeDocEditInput): Promise<ProposeDocEditResult>;
+
+  // ── Outgoing webhooks ───────────────────────────────────────────
+  /** The map's subscriptions and its workspace's — `GET /api/maps/:id/webhooks`. Never the secret. */
+  listWebhooks(mapId: string): Promise<WebhookSubscription[]>;
+  /** Subscribe a URL — `POST /api/maps/:id/webhooks`. The answer carries the signing secret, this once. */
+  createWebhook(mapId: string, input: CreateWebhookInput): Promise<WebhookSubscription & { secret: string }>;
+  /** `PATCH /api/maps/:id/webhooks/:webhookId`. */
+  updateWebhook(mapId: string, webhookId: string, patch: UpdateWebhookInput): Promise<WebhookSubscription>;
+  /** `DELETE /api/maps/:id/webhooks/:webhookId`. */
+  deleteWebhook(mapId: string, webhookId: string): Promise<{ deleted: boolean; id: string }>;
+  /** One signed `ping` now, no retries — `POST …/webhooks/:webhookId/ping`. */
+  pingWebhook(mapId: string, webhookId: string): Promise<WebhookPingResult>;
+}
+
+// ── Outgoing webhooks ──────────────────────────────────────────────
+
+export interface CreateWebhookInput {
+  url: string;
+  /** Empty / absent = every event. */
+  events?: WebhookEvent[];
+  /** 'workspace' = every map of the map's workspace (workspace owner only). Default 'map'. */
+  scope?: 'map' | 'workspace';
+  description?: string;
+  /** Bring your own signing secret (≥ 16 chars); else the server generates one. */
+  secret?: string;
+}
+
+export interface UpdateWebhookInput {
+  url?: string;
+  events?: WebhookEvent[];
+  active?: boolean;
+  description?: string | null;
+}
+
+export interface WebhookPingResult {
+  delivered: boolean;
+  status: number | null;
+  error: string | null;
+}
+
+// ── Repo docs ──────────────────────────────────────────────────────
+
+export interface RepoDocsList {
+  repo: { owner: string; name: string; branch: string; webUrl: string };
+  /** The branch tree's sha: unchanged = no file changed. */
+  treeSha: string;
+  /** Sorted by path. `sha` is the blob's — it changes exactly when the file does. */
+  docs: { path: string; sha: string; size: number }[];
+  /** The forge cut a very large tree short; `docs` is incomplete. */
+  truncated: boolean;
+}
+
+export interface RepoDocText {
+  path: string;
+  sha: string;
+  size: number;
+  text: string;
+  /** False: the file is not valid UTF-8 (shown with U+FFFD) and propose_doc_edit refuses it. */
+  utf8: boolean;
+  /** The file on the forge's web UI. */
+  webUrl: string;
+}
+
+export interface ProposeDocEditInput {
+  path: string;
+  /** The whole new file text. */
+  text: string;
+  /** `sha` of the version the edit was made against (from read_doc / the list). */
+  baseSha: string;
+  /** Commit message and PR title; defaults to `docs: update <path>`. */
+  message?: string;
+}
+
+export interface ProposeDocEditResult {
+  path: string;
+  branch: string;
+  commitSha: string;
+  pullRequest: { number: number; url: string };
 }
 
 // ── Attachments ────────────────────────────────────────────────────

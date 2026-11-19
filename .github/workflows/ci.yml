@@ -1,0 +1,35 @@
+# The gate CLAUDE.md asks for before every PR: typecheck, tests, and the
+# build prod deploys with. Fleet workers merge a trusted PR once this is
+# green (claude-fleet#74); without CI they leave it for a person.
+# DB-backed tests skip themselves without a database URL, as they do locally.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20 # prod runs Node 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm turbo typecheck
+      - run: pnpm turbo test
+      - run: pnpm turbo build
+        env:
+          VITE_API_URL: ''

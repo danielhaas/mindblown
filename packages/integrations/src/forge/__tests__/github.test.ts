@@ -141,6 +141,75 @@ describe('GitHubForge wire format', () => {
     expect(forge.issueWebUrl('o', 'r', 42)).toBe('https://ghe.example/o/r/issues/42');
     expect(issueWebUrl(forge.endpoint, 'o/r', 42)).toBe('https://ghe.example/o/r/issues/42');
   });
+
+  it('getRepoTree: one recursive read, files only, truncated passed through', async () => {
+    const t = fakeTransport();
+    const forge = new GitHubForge({ token: 't', fetchImpl: t.fetchImpl });
+    t.respond({
+      status: 200,
+      body: {
+        sha: 'abc',
+        truncated: true,
+        tree: [
+          { path: 'docs', mode: '040000', type: 'tree', sha: 'd1' },
+          { path: 'docs/a.md', mode: '100644', type: 'blob', sha: 'b1', size: 12 },
+          { path: 'vendor/lib', mode: '160000', type: 'commit', sha: 'c1' },
+        ],
+      },
+    });
+    expect(await forge.getRepoTree('o', 'r', 'main')).toEqual({
+      sha: 'abc',
+      truncated: true,
+      files: [{ path: 'docs/a.md', sha: 'b1', size: 12 }],
+    });
+    expect(t.calls[0].url).toBe('https://api.github.com/repos/o/r/git/trees/main?recursive=1');
+  });
+
+  it('getBlob decodes line-wrapped base64 (UTF-8 text survives)', async () => {
+    const t = fakeTransport();
+    const forge = new GitHubForge({ token: 't', fetchImpl: t.fetchImpl });
+    const text = '# Überblick\n\nÄnderung → ✓\n';
+    const b64 = Buffer.from(text, 'utf8').toString('base64');
+    t.respond({ status: 200, body: { content: `${b64.slice(0, 10)}\n${b64.slice(10)}\n`, encoding: 'base64' } });
+    expect(new TextDecoder().decode(await forge.getBlob('o', 'r', 'b1'))).toBe(text);
+    expect(t.calls[0].url).toBe('https://api.github.com/repos/o/r/git/blobs/b1');
+  });
+
+  it('createBranch resolves the base head, then creates the ref; deleteBranch drops it', async () => {
+    const t = fakeTransport();
+    const forge = new GitHubForge({ token: 't', fetchImpl: t.fetchImpl });
+    t.respond({ status: 200, body: { ref: 'refs/heads/master', object: { sha: 'head1' } } }, { status: 201, body: {} }, { status: 204 });
+    await forge.createBranch('o', 'r', 'mindblown/x', 'master');
+    await forge.deleteBranch('o', 'r', 'mindblown/x');
+    expect(t.calls[0].url).toBe('https://api.github.com/repos/o/r/git/ref/heads/master');
+    expect(t.calls[1].method).toBe('POST');
+    expect(t.calls[1].url).toBe('https://api.github.com/repos/o/r/git/refs');
+    expect(JSON.parse(t.calls[1].body!)).toEqual({ ref: 'refs/heads/mindblown/x', sha: 'head1' });
+    expect(t.calls[2].method).toBe('DELETE');
+    expect(t.calls[2].url).toBe('https://api.github.com/repos/o/r/git/refs/heads/mindblown/x');
+  });
+
+  it('putFile: PUT contents with base sha + branch; a stale sha is the 409 it already is', async () => {
+    const t = fakeTransport();
+    const forge = new GitHubForge({ token: 't', fetchImpl: t.fetchImpl });
+    t.respond({ status: 200, body: { content: { sha: 'nb' }, commit: { sha: 'nc' } } }, { status: 409, body: { message: 'README.md does not match b1' } });
+    const input = { path: 'README.md', branch: 'mindblown/x', content: new TextEncoder().encode('hi'), blobSha: 'b1', message: 'docs: edit' };
+    expect(await forge.putFile('o', 'r', input)).toEqual({ blobSha: 'nb', commitSha: 'nc' });
+    expect(t.calls[0].method).toBe('PUT');
+    expect(t.calls[0].url).toBe('https://api.github.com/repos/o/r/contents/README.md');
+    expect(JSON.parse(t.calls[0].body!)).toEqual({ message: 'docs: edit', content: 'aGk=', sha: 'b1', branch: 'mindblown/x' });
+    await expect(forge.putFile('o', 'r', input)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('createPullRequest answers number + html_url', async () => {
+    const t = fakeTransport();
+    const forge = new GitHubForge({ token: 't', fetchImpl: t.fetchImpl });
+    t.respond({ status: 201, body: { number: 600, html_url: 'https://github.com/o/r/pull/600' } });
+    expect(await forge.createPullRequest('o', 'r', { title: 't', body: 'b', head: 'mindblown/x', base: 'master' })).toEqual({
+      number: 600,
+      url: 'https://github.com/o/r/pull/600',
+    });
+  });
 });
 
 // ── The sync layer's transport helpers ride on the client ────────

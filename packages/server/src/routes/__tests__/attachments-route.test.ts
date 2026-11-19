@@ -47,7 +47,7 @@ const addAttachmentMock = vi.fn(
     // turns the error into a 400; the rule itself lives in
     // db/__tests__/attachments.test.ts.
     if (input.url === REJECT_SENTINEL) {
-      throw new AttachmentValidationError('URL muss mit http:// oder https:// beginnen');
+      throw new AttachmentValidationError('URL must start with http:// or https://');
     }
     stored.push({ id: `att-${stored.length + 1}`, ...input, addedBy });
     return { id: NODE_ID, mapId: MAP_ID, attachments: [...stored] };

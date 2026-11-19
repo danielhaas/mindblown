@@ -33,6 +33,27 @@ export function formatClaim(session: string | null, at: string | null): string {
   return at ? `claim: ${session}@${at}` : `claim: ${session}`;
 }
 
+/**
+ * Who asked for a node (#490) as a compact token — `github:octocat` for a
+ * forge issue author, `user:<id>` for a MindBlown user. null when unknown,
+ * so callers can skip it.
+ */
+export function formatReporter(reporter: NodeWithComputed['reportedBy']): string | null {
+  if (!reporter) return null;
+  return reporter.kind === 'forge' ? `${reporter.provider}:${reporter.login}` : `user:${reporter.userId}`;
+}
+
+/**
+ * The approval stamp (#492) when it changes what the fleet does: `proposed`
+ * / `rejected`, or `approved (pr-only)`. null for plain approved work and
+ * for no stamp, so callers can skip it.
+ */
+export function formatApproval(approval: NodeWithComputed['approval']): string | null {
+  if (!approval) return null;
+  if (approval.state !== 'approved') return approval.state;
+  return approval.merge === 'pr-only' ? 'approved (pr-only)' : null;
+}
+
 function buildNodeLookup(nodes: NodeWithComputed[]): Map<string, NodeWithComputed> {
   const map = new Map<string, NodeWithComputed>();
   for (const n of nodes) map.set(n.id, n);
@@ -69,6 +90,10 @@ function renderTreeNode(
   }
   if (node.status) parts.push(`status: ${node.status}`);
   if (node.startedAt && node.computedProgress < 100) parts.push(`started: ${node.startedAt}`);
+  if (node.expectedDoneAt && node.computedProgress < 100) {
+    const overdue = Date.parse(node.expectedDoneAt) < Date.now() ? ' (overdue)' : '';
+    parts.push(`eta: ${node.expectedDoneAt}${overdue}`);
+  }
   if (node.priority) parts.push(node.priority);
   if (node.phaseId) parts.push(`phase: ${phaseNameById?.get(node.phaseId) ?? node.phaseId}`);
   if (node.dueDate) parts.push(`due: ${node.dueDate}`);
@@ -84,6 +109,10 @@ function renderTreeNode(
     parts.push(`files: ${node.attachments.map((a) => `${a.title} (att ${a.id})`).join(', ')}`);
   }
   parts.push(formatClaim(node.claimedBySession, node.claimedAt));
+  const reporter = formatReporter(node.reportedBy);
+  if (reporter) parts.push(`reported: ${reporter}`);
+  const approval = formatApproval(node.approval);
+  if (approval) parts.push(`approval: ${approval}`);
   if (node.dependencies.length > 0) {
     const depLabels = node.dependencies.map((d) => {
       const target = lookup.get(d.targetNodeId);
@@ -162,6 +191,7 @@ export function formatMapTree(data: MapDetail): string {
     const share = data.map.fleetShare != null && data.map.fleetShare !== 1 ? `, share ${data.map.fleetShare}` : '';
     lines.push(`Fleet: ${data.map.fleetName ?? 'unnamed'} (fleetId: ${data.map.fleetId}${share})`);
   }
+  if (data.map.fleetCanEditCi) lines.push('Fleet may change CI workflows (fleetCanEditCi)');
   const orderedPhases = [...(data.map.phases ?? [])].sort((a, b) => a.position - b.position);
   if (orderedPhases.length > 0) {
     lines.push(

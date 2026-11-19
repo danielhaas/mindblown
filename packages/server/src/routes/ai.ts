@@ -8,6 +8,7 @@ import { aiConfig } from '../ai/client.js';
 import {
   getChatToolSpecs,
   executeTool,
+  hasMiTools,
   renderTreeForPrompt,
   renderFocusContext,
 } from '../ai/tools.js';
@@ -33,6 +34,14 @@ import { getMapForgeKind } from '../lib/githubContext.js';
 import { guardMapIdInPayload } from '../lib/mapAccess.js';
 import * as versionDb from '../db/versions.js';
 import { resolveProvider, providerStatus } from '../ai/providers/index.js';
+import { withProviderFallback, providerAfterFailure, bothFailedError, claudeOutage } from '../ai/providers/fallback.js';
+import {
+  MAX_PLAN_QUESTIONS,
+  PLAN_QUESTIONS_SYSTEM_PROMPT,
+  planQuestionsUserPrompt,
+  proseWithAnswers,
+  sanitizePlanQuestions,
+} from '../ai/planQuestions.js';
 import { aiCapabilities, AI_DISABLED_MESSAGE } from '../ai/capabilities.js';
 import { aiHealth, type BackendHealth } from '../ai/health.js';
 import {
@@ -41,12 +50,13 @@ import {
   getMapAiPolicy,
   resolveProviderForMap,
 } from '../ai/policy.js';
-import type { NormalizedMessage, NormalizedToolCall } from '../ai/providers/types.js';
+import type { ChatProvider, NormalizedMessage, NormalizedToolCall } from '../ai/providers/types.js';
 import { semanticSearch, backfillMapEmbeddings, scheduleEmbedNode } from '../ai/embeddings.js';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { broadcast } from '../ws.js';
-import { computeTree, type Node as CoreNode } from '@mindblown/core';
+import { computeTree, userReporter, type Node as CoreNode } from '@mindblown/core';
+import { buildMcpInjector } from './mcp.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -172,6 +182,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       enabled: aiCapabilities().enabled,
       capabilities,
       health: { chat: view(health.chat), embeddings: view(health.embeddings) },
+      // Names the account's state (credit, key) — signed-in callers only.
+      claudeOutage: signedIn ? status.claudeOutage : null,
       ...(policy ? { policy } : {}),
     };
   });
@@ -230,14 +242,16 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
     if (!requireStructured(reply)) return;
     try {
       const t0 = Date.now();
-      const provider = await resolveProvider();
-      const result = await provider.complete({
-        systemPrompt: 'You are a connectivity check.',
-        parts: [{ text: 'Respond with exactly: pong' }],
-        format: 'text',
-        maxTokens: 16,
-        temperature: 0,
-      });
+      const { provider, result } = await withProviderFallback(resolveProvider, async (provider) => ({
+        provider,
+        result: await provider.complete({
+          systemPrompt: 'You are a connectivity check.',
+          parts: [{ text: 'Respond with exactly: pong' }],
+          format: 'text',
+          maxTokens: 16,
+          temperature: 0,
+        }),
+      }));
       return {
         status: 'ok',
         provider: provider.name,
@@ -338,14 +352,17 @@ Node to break down: "${targetNode.text}"`;
     }
 
     try {
-      const provider = await resolveProviderForMap(body.mapId);
-      const raw = await provider.complete({
-        systemPrompt,
-        parts: [{ text: userPrompt }],
-        format: 'json',
-        temperature: 0.5,
-        maxTokens: 2048,
-      });
+      const raw = await withProviderFallback(
+        () => resolveProviderForMap(body.mapId),
+        (provider) =>
+          provider.complete({
+          systemPrompt,
+          parts: [{ text: userPrompt }],
+          format: 'json',
+          temperature: 0.5,
+          maxTokens: 2048,
+          }),
+      );
 
       // Parse — handle models that wrap JSON in markdown fences
       const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
@@ -423,6 +440,7 @@ Node to break down: "${targetNode.text}"`;
           parentId,
           text: item.text,
           createdBy: userId,
+          reportedBy: userReporter((req as any).userId),
           effortEstimate: hasChildren ? undefined : (item.estimate ?? undefined),
         });
         created.push(node);
@@ -547,7 +565,8 @@ Node to break down: "${targetNode.text}"`;
     reply.raw.on('close', onClientClose);
 
     try {
-      const provider = await resolveProviderForMap(body.mapId);
+      const resolveChat = () => resolveProviderForMap(body.mapId);
+      let provider = await resolveChat();
 
       // Pre-load the map tree so the model already has all node IDs
       const mapDetail = await mapDb.getMap(body.mapId);
@@ -574,6 +593,9 @@ Node to break down: "${targetNode.text}"`;
         ? `When the user says "this" or "here", they mean the focused node above. Use its id as parentId for "add a child" requests unless told otherwise.`
         : `When the user says "add X" without a parent, use parentId "${rootId}".`;
 
+      // The prompt depends on the provider (pacing, tools, search hints) —
+      // rebuilt when a Claude outage moves the chat to the local model.
+      const promptFor = (provider: ChatProvider): string => {
       // Tell the model to recover from typos with whatever search tool it
       // has. Anthropic gets semantic_search; Ollama only sees search_nodes
       // (the local 14B model drifts when both are exposed at once).
@@ -609,6 +631,12 @@ Node to break down: "${targetNode.text}"`;
           ? `\n\nIMPORTANT: Earlier turns in this conversation followed a one-step-then-confirm pattern. That constraint has been lifted — do not imitate it. Chain all needed tool calls in this turn and only summarize once at the very end.`
           : '';
 
+      // Management questions are answered by the MI tools, not by eyeballing
+      // the tree dump above — the tree carries no dates, velocity or history.
+      const miRule = hasMiTools(provider)
+        ? `\n5. For management questions — "when will V1 / this milestone be done?", "how much is left?", "what is at risk / blocked / slipping?", "what changed?" — call the matching read-only tool (completion_forecast, remaining_work, risk_scan, blocked_digest, status_digest, burnup, change_history, …) and answer from its output. Use scope_simulate for "what if we cut / add X?".`
+        : '';
+
       const systemPrompt = `You manage a project mindmap. Reply ONLY in English.
 
 ${pacingRules}${historyOverride}
@@ -625,7 +653,10 @@ Rules:
 1. Only use IDs shown in [id:...] above. Never invent an ID.
 2. For move_node: "source" is the node being moved, "destination" is where it goes.
 3. You cannot delete nodes.
-4. ${typoRecoveryHint}`;
+4. ${typoRecoveryHint}${miRule}`;
+      return systemPrompt;
+      };
+      let systemPrompt = promptFor(provider);
 
       // Round-trip prior turns' tool calls + results so the model can see
       // what it actually did — without these blocks it second-guesses its
@@ -657,9 +688,16 @@ Rules:
       }
 
       let hitStepLimit = false;
+      let fellBack = false;
       for (let step = 0; step < MAX_STEPS; step++) {
         let assistantText = '';
         let firstToolCall: NormalizedToolCall | null = null;
+        // Claude went out since this request resolved it (an earlier turn,
+        // or another request): go straight to the local model.
+        if (provider.name === 'anthropic' && claudeOutage()) {
+          provider = await resolveChat();
+          systemPrompt = promptFor(provider);
+        }
 
         // Watchdog: trip if the provider goes silent for too long. Reset on
         // every event we receive. With Ollama's non-streaming runTurn the
@@ -695,6 +733,19 @@ Rules:
               if (!firstToolCall) firstToolCall = ev.toolCall;
             }
           }
+        } catch (err) {
+          // Claude refused before saying anything this turn: redo the turn on
+          // the local model. Once text has streamed, switching would garble it.
+          const next = assistantText || firstToolCall ? null : await providerAfterFailure(err, provider, resolveChat);
+          if (next) {
+            provider = next;
+            systemPrompt = promptFor(provider);
+            fellBack = true;
+            step--;
+            continue;
+          }
+          if (fellBack && err instanceof Error && err.constructor === Error) throw bothFailedError(err);
+          throw err;
         } finally {
           if (watchdog) clearTimeout(watchdog);
         }
@@ -728,6 +779,7 @@ Rules:
           result = await executeTool(firstToolCall.name, firstToolCall.args, {
             userId,
             mapId: body.mapId,
+            injector: buildMcpInjector(app),
           });
         } catch (err: any) {
       if (policyDenied(reply, err)) return;
@@ -825,9 +877,61 @@ Rules:
     }
   });
 
+  // ── POST /api/ai/braindump/questions — ask before drafting ─────
+  //
+  // Request:  { mapId, prose }
+  // Response: { questions: string[] }   (0–3; none when the prose covers it)
+  //
+  // The setup wizard asks these before "Draft the plan with AI"; the
+  // answers go back with /braindump as `answers`.
+
+  app.post('/api/ai/braindump/questions', async (req, reply) => {
+    if (!requireStructured(reply)) return;
+    const body = req.body as { mapId?: string; prose?: string };
+    if (!body.mapId || typeof body.prose !== 'string' || !body.prose.trim()) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'mapId and non-empty prose are required' },
+      });
+    }
+    const mapDetail = await mapDb.getMap(body.mapId);
+    if (!mapDetail) {
+      return reply.status(404).send({ error: { code: 'MAP_NOT_FOUND', message: `Map ${body.mapId} not found` } });
+    }
+    const root = mapDetail.nodes.find((n) => n.parentId === null);
+    const userPrompt = planQuestionsUserPrompt({
+      projectName: mapDetail.map.name,
+      prose: body.prose.slice(0, 8000),
+      existingAreas: root ? childrenTexts(root.id, mapDetail.nodes) : [],
+    });
+    try {
+      const raw = await withProviderFallback(
+        () => resolveProviderForMap(body.mapId!),
+        (provider) =>
+          provider.complete({
+            systemPrompt: PLAN_QUESTIONS_SYSTEM_PROMPT,
+            parts: [{ text: userPrompt }],
+            format: 'json',
+            temperature: 0.3,
+            // Thinking models spend reasoning tokens from the same budget.
+            maxTokens: 1500,
+          }),
+      );
+      const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
+      return { questions: sanitizePlanQuestions(JSON.parse(cleaned)) };
+    } catch (err: any) {
+      if (policyDenied(reply, err)) return;
+      if (err instanceof SyntaxError) {
+        return reply.status(502).send({ error: { code: 'AI_BAD_RESPONSE', message: 'Model returned invalid JSON' } });
+      }
+      return reply.status(502).send({ error: { code: 'AI_ERROR', message: err.message } });
+    }
+  });
+
   // ── POST /api/ai/braindump — prose → nested tree preview ───────
   //
-  // Request:  { mapId, parentId, prose, maxDepth? }
+  // Request:  { mapId, parentId, prose, maxDepth?, answers? }
+  //           answers: [{ question, answer }] from /braindump/questions,
+  //           appended to the prose
   // Response: { tree: BraindumpNode[] }
   //
   // The model receives a blob of freeform prose and the current ancestor
@@ -841,6 +945,7 @@ Rules:
       parentId: string;
       prose: string;
       maxDepth?: number;
+      answers?: Array<{ question?: unknown; answer?: unknown }>;
     };
 
     if (!body.mapId || !body.parentId || !body.prose?.trim()) {
@@ -889,17 +994,24 @@ Parent node: "${parentNode.text}"`;
     if (existingChildren.length > 0) {
       userPrompt += `\nExisting children (don't duplicate): ${existingChildren.join(', ')}`;
     }
-    userPrompt += `\n\nBrain dump:\n${body.prose.trim()}`;
+    const answers = (Array.isArray(body.answers) ? body.answers : [])
+      .filter((a) => typeof a?.question === 'string' && typeof a?.answer === 'string')
+      .slice(0, MAX_PLAN_QUESTIONS)
+      .map((a) => ({ question: (a.question as string).slice(0, 300), answer: (a.answer as string).slice(0, 2000) }));
+    userPrompt += `\n\nBrain dump:\n${proseWithAnswers(body.prose, answers)}`;
 
     try {
-      const provider = await resolveProviderForMap(body.mapId);
-      const raw = await provider.complete({
-        systemPrompt,
-        parts: [{ text: userPrompt }],
-        format: 'json',
-        temperature: 0.4,
-        maxTokens: 3072,
-      });
+      const raw = await withProviderFallback(
+        () => resolveProviderForMap(body.mapId),
+        (provider) =>
+          provider.complete({
+          systemPrompt,
+          parts: [{ text: userPrompt }],
+          format: 'json',
+          temperature: 0.4,
+          maxTokens: 3072,
+          }),
+      );
 
       const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
       const parsed = JSON.parse(cleaned) as { tree: unknown };
@@ -986,13 +1098,16 @@ Parent node: "${parentNode.text}"`;
     // The calibration prompt and the raw-planning-units rule live in
     // ai/estimate.ts, shared with ticket intake (#387).
     try {
-      const provider = await resolveProviderForMap(body.mapId);
-      return await estimateEffort(provider, mapDetail, {
-        text: targetText,
-        description: targetDescription || undefined,
-        path: targetContext || undefined,
-        hint: body.hint,
-      });
+      return await withProviderFallback(
+        () => resolveProviderForMap(body.mapId),
+        (provider) =>
+          estimateEffort(provider, mapDetail, {
+            text: targetText,
+            description: targetDescription || undefined,
+            path: targetContext || undefined,
+            hint: body.hint,
+          }),
+      );
     } catch (err: any) {
       if (policyDenied(reply, err)) return;
       if (err instanceof AiBadResponseError) {
@@ -1060,7 +1175,6 @@ Parent node: "${parentNode.text}"`;
     }
 
     try {
-      const provider = await resolveProviderForMap(body.mapId);
       // Claude runs the tool loop; a local model gets the JSON-mode path
       // (intakeModeFor) — same prompt context, one completion per turn.
       session ??= createIntakeSession(body.mapId, userId);
@@ -1071,7 +1185,17 @@ Parent node: "${parentNode.text}"`;
         parentHintId: body.parentHintId ?? null,
         accepted: session.accepted,
       };
-      const result = await runIntakeTurn({ provider, session, ctx, message: body.message });
+      // A Claude outage redoes the turn on the local model; the session is
+      // put back to where it was so the user message isn't recorded twice.
+      const mark = session.messages.length;
+      const intakeSession = session;
+      const { provider, result } = await withProviderFallback(
+        () => resolveProviderForMap(body.mapId),
+        async (provider) => {
+          intakeSession.messages.length = mark;
+          return { provider, result: await runIntakeTurn({ provider, session: intakeSession, ctx, message: body.message }) };
+        },
+      );
       const repoConnected = (await getMapForgeKind(body.mapId)) !== null;
       return {
         intakeId: session.id,
@@ -1208,6 +1332,8 @@ Parent node: "${parentNode.text}"`;
         parentId: d.parentId,
         text: d.title.trim(),
         createdBy: userId,
+        // The user who accepted the intake draft (#490).
+        reportedBy: userReporter((req as any).userId),
         description: description || undefined,
         priority: d.priority ?? undefined,
         versionId: d.versionId ?? undefined,
@@ -1306,6 +1432,7 @@ Parent node: "${parentNode.text}"`;
           parentId,
           text: item.text,
           createdBy: userId,
+          reportedBy: userReporter((req as any).userId),
           // Only set estimate on leaves — parents auto-compute from children
           effortEstimate: hasChildren ? undefined : (item.estimate ?? undefined),
         });
@@ -1451,14 +1578,17 @@ ${childrenList}
 Review the children and propose groupings.`;
 
     try {
-      const provider = await resolveProviderForMap(body.mapId);
-      const raw = await provider.complete({
-        systemPrompt,
-        parts: [{ text: userPrompt }],
-        format: 'json',
-        temperature: 0.2,
-        maxTokens: 1024,
-      });
+      const raw = await withProviderFallback(
+        () => resolveProviderForMap(body.mapId),
+        (provider) =>
+          provider.complete({
+          systemPrompt,
+          parts: [{ text: userPrompt }],
+          format: 'json',
+          temperature: 0.2,
+          maxTokens: 1024,
+          }),
+      );
 
       const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
       const parsed = JSON.parse(cleaned) as {
@@ -1561,6 +1691,7 @@ Review the children and propose groupings.`;
           parentId: body.parentId,
           text: proposal.suggestedLabel,
           createdBy: userId,
+          reportedBy: userReporter((req as any).userId),
         });
         createdCount++;
         broadcast(body.mapId, { type: 'node:created', node: category });
@@ -1661,14 +1792,17 @@ ${sections.join('\n')}
 Generate the standup.`;
 
     try {
-      const provider = await resolveProviderForMap(body.mapId);
-      const narrative = await provider.complete({
-        systemPrompt,
-        parts: [{ text: userPrompt }],
-        format: 'text',
-        temperature: 0.4,
-        maxTokens: 600,
-      });
+      const narrative = await withProviderFallback(
+        () => resolveProviderForMap(body.mapId),
+        (provider) =>
+          provider.complete({
+            systemPrompt,
+            parts: [{ text: userPrompt }],
+            format: 'text',
+            temperature: 0.4,
+            maxTokens: 600,
+          }),
+      );
 
       return {
         narrative: narrative.trim(),

@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { DATABASE_URL } from './connection.js';
 
@@ -41,7 +41,13 @@ export async function runMigrations(): Promise<void> {
   }
 }
 
-async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
+/** Anything that can run a raw statement — the node-postgres pool in
+ *  production, an in-process PGlite in tests (src/test/pgliteDb.ts). */
+export interface DdlExecutor {
+  execute(query: SQL): Promise<unknown>;
+}
+
+export async function runDdl(db: DdlExecutor): Promise<void> {
 
   // Create tables using raw SQL (matching the Drizzle schema)
   // This is the pragmatic approach for a dev setup — drizzle-kit push
@@ -424,6 +430,14 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
 
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_github_installations_user_id ON github_installations(user_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_github_installations_installation_id ON github_installations(installation_id)`);
+  // One row per (user, installation): the status refresh upserts on it, and
+  // two overlapping refreshes must not both insert. Drop old duplicates first.
+  await db.execute(sql`
+    DELETE FROM github_installations a USING github_installations b
+    WHERE a.user_id = b.user_id AND a.installation_id = b.installation_id
+      AND (a.updated_at, a.id) < (b.updated_at, b.id)
+  `);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_github_installations_user_installation ON github_installations(user_id, installation_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_user_github_identities_user_id ON user_github_identities(user_id)`);
   // #369: one identity per (user, forge kind). The original one-per-user
   // unique constraint gives way to a composite unique index.
@@ -634,6 +648,11 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
   await db.execute(sql`
     ALTER TABLE triage_decisions ADD COLUMN IF NOT EXISTS suggested_version_id UUID
   `);
+  // The issue author (#492): an operator placing the issue later stamps the
+  // node's approval from it. Older rows stay NULL — placed, they wait.
+  await db.execute(sql`
+    ALTER TABLE triage_decisions ADD COLUMN IF NOT EXISTS issue_reporter JSONB
+  `);
 
   // ── Triage cost opt (#142) — body-hash idempotency ────────────
   // SHA-256 of the canonical (title + body + sorted labels + state)
@@ -836,6 +855,21 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS linked_pr JSONB
   `);
 
+  // reported_by (#490): who asked for the node — a MindBlown user or the
+  // forge issue author. Set once on insert. No backfill: the issue
+  // author was never stored, so existing rows stay NULL (unknown).
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS reported_by JSONB
+  `);
+
+  // approval (#492): the approval stamp the pull queue gates on. The
+  // one-shot backfill needs the trust policy logic, so it runs in TS after
+  // the migrations (services/approvalBackfill.ts, data_migrations
+  // 'backfill_node_approval_v1').
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS approval JSONB
+  `);
+
   // ── Requirements register ──────────────────────────────────────
   // requirement_id: stable business requirement ID (e.g. 'MAN-01');
   // non-null marks the node as a requirement. requirement_priority:
@@ -861,7 +895,7 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
       ON nodes (map_id, requirement_id)
       WHERE requirement_id IS NOT NULL AND deleted_at IS NULL
   `);
-  // verification_text: how to verify (Prüfanleitung, markdown) rendered on
+  // verification_text: how to verify (markdown) rendered on
   // the review surface. verification_url: deep link (e.g. staging URL).
   // verification_video_url: short demo recording for reviewers who would
   // rather watch than read. All three business prose like requirement_text
@@ -890,7 +924,7 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'
   `);
 
-  // ── Requirement acceptances (Abnahme) ──────────────────────────
+  // ── Requirement acceptances (sign-off) ──────────────────────────
   // Append-only sign-off history per requirement node per user.
   // Active acceptance = revoked_at IS NULL; the partial unique index
   // guarantees at most one active acceptance per (node, user) even
@@ -1206,6 +1240,16 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
   await db.execute(sql`
     ALTER TABLE fleets ADD COLUMN IF NOT EXISTS pull_deficits JSONB NOT NULL DEFAULT '{}'::jsonb
   `);
+  // Auto-check: blocked tickets go to the fleet without a click. On by
+  // default for a new fleet since 12.11.2026 (gamora-loke was created with it
+  // off and an interrupted ticket sat blocked); existing rows keep their value,
+  // so the column is added as false and only the default moves to true.
+  await db.execute(sql`
+    ALTER TABLE fleets ADD COLUMN IF NOT EXISTS auto_check_blockers BOOLEAN NOT NULL DEFAULT false
+  `);
+  await db.execute(sql`
+    ALTER TABLE fleets ALTER COLUMN auto_check_blockers SET DEFAULT true
+  `);
   // One-shot: every map a fleet already works on gets a fleet of its own —
   // a pull cap above hold, or any telemetry row. Named after the map, owned
   // by the oldest admin (the operator who runs the satellites — a map's
@@ -1264,6 +1308,123 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     END $$;
   `);
 
+  // ── Fleet telemetry keyed by fleet (#479) ─────────────────────
+  // A host reports once for every project it serves, and one orchestrator
+  // judges the whole fleet: fleet_status moves to (fleet_id, host),
+  // fleet_ticks to fleet_id. map_id stays as "the map route it came in
+  // through" (nullable, SET NULL). Existing rows move onto their map's
+  // fleet (the backfill above gave every map with telemetry one); rows of
+  // a map without a fleet are snapshots nothing can read any more — gone.
+  // Two maps of one fleet reporting the same host keep the newest row.
+  await db.execute(sql`ALTER TABLE fleet_status ADD COLUMN IF NOT EXISTS fleet_id UUID REFERENCES fleets(id) ON DELETE CASCADE`);
+  await db.execute(sql`ALTER TABLE fleet_ticks ADD COLUMN IF NOT EXISTS fleet_id UUID REFERENCES fleets(id) ON DELETE CASCADE`);
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'fleet_telemetry_by_fleet_v1') THEN
+        UPDATE fleet_status s SET fleet_id = m.fleet_id FROM maps m WHERE m.id = s.map_id AND s.fleet_id IS NULL;
+        UPDATE fleet_ticks t SET fleet_id = m.fleet_id FROM maps m WHERE m.id = t.map_id AND t.fleet_id IS NULL;
+        DELETE FROM fleet_status WHERE fleet_id IS NULL;
+        DELETE FROM fleet_ticks WHERE fleet_id IS NULL;
+        DELETE FROM fleet_status a USING fleet_status b
+          WHERE a.fleet_id = b.fleet_id AND a.host = b.host
+            AND (a.received_at < b.received_at OR (a.received_at = b.received_at AND a.map_id < b.map_id));
+        ALTER TABLE fleet_status DROP CONSTRAINT IF EXISTS fleet_status_pkey;
+        ALTER TABLE fleet_status ALTER COLUMN fleet_id SET NOT NULL, ALTER COLUMN map_id DROP NOT NULL;
+        ALTER TABLE fleet_status ADD PRIMARY KEY (fleet_id, host);
+        ALTER TABLE fleet_status DROP CONSTRAINT IF EXISTS fleet_status_map_id_fkey;
+        ALTER TABLE fleet_status ADD CONSTRAINT fleet_status_map_id_fkey FOREIGN KEY (map_id) REFERENCES maps(id) ON DELETE SET NULL;
+        ALTER TABLE fleet_ticks ALTER COLUMN fleet_id SET NOT NULL, ALTER COLUMN map_id DROP NOT NULL;
+        ALTER TABLE fleet_ticks DROP CONSTRAINT IF EXISTS fleet_ticks_map_id_fkey;
+        ALTER TABLE fleet_ticks ADD CONSTRAINT fleet_ticks_map_id_fkey FOREIGN KEY (map_id) REFERENCES maps(id) ON DELETE SET NULL;
+        INSERT INTO data_migrations (id) VALUES ('fleet_telemetry_by_fleet_v1');
+      END IF;
+    END $$;
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS fleet_ticks_fleet_received_idx ON fleet_ticks (fleet_id, received_at DESC)
+  `);
+
+  // ── Asks keyed by fleet (#479) ────────────────────────────────
+  // One orchestrator collects the questions of the whole fleet. asks and
+  // asks_pushes gain fleet_id; map_id becomes nullable (a fleet-level ask
+  // concerns no project). Uniqueness moves to (fleet, ask, map) with NULLS
+  // NOT DISTINCT (PG 15): two projects' collectors may reuse an ask id.
+  // Rows move onto their map's fleet; a map without a fleet has no reader
+  // left for them — gone, like the telemetry above.
+  await db.execute(sql`ALTER TABLE asks ADD COLUMN IF NOT EXISTS fleet_id UUID REFERENCES fleets(id) ON DELETE CASCADE`);
+  await db.execute(sql`ALTER TABLE asks_pushes ADD COLUMN IF NOT EXISTS fleet_id UUID REFERENCES fleets(id) ON DELETE CASCADE`);
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'asks_by_fleet_v1') THEN
+        UPDATE asks a SET fleet_id = m.fleet_id FROM maps m WHERE m.id = a.map_id AND a.fleet_id IS NULL;
+        UPDATE asks_pushes p SET fleet_id = m.fleet_id FROM maps m WHERE m.id = p.map_id AND p.fleet_id IS NULL;
+        DELETE FROM asks WHERE fleet_id IS NULL;
+        DELETE FROM asks_pushes WHERE fleet_id IS NULL;
+        ALTER TABLE asks DROP CONSTRAINT IF EXISTS asks_pkey;
+        ALTER TABLE asks ALTER COLUMN fleet_id SET NOT NULL, ALTER COLUMN map_id DROP NOT NULL;
+        ALTER TABLE asks ADD CONSTRAINT asks_fleet_ask_map_uq UNIQUE NULLS NOT DISTINCT (fleet_id, ask_id, map_id);
+        ALTER TABLE asks_pushes DROP CONSTRAINT IF EXISTS asks_pushes_pkey;
+        ALTER TABLE asks_pushes ALTER COLUMN fleet_id SET NOT NULL, ALTER COLUMN map_id DROP NOT NULL;
+        ALTER TABLE asks_pushes ADD CONSTRAINT asks_pushes_fleet_map_uq UNIQUE NULLS NOT DISTINCT (fleet_id, map_id);
+        INSERT INTO data_migrations (id) VALUES ('asks_by_fleet_v1');
+      END IF;
+    END $$;
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS asks_fleet_status_idx ON asks (fleet_id, status)`);
+
+  // ── Fleet service users (#481) ────────────────────────────────
+  // Each fleet gets its own identity: a users row of kind 'fleet' (no
+  // password — it can't sign in), reached only through API keys its
+  // owner issues. Its grants follow the fleet's connections: edit on each
+  // connected map, never admin, nothing elsewhere (db/maps.ts keeps that
+  // in step on connect / disconnect / move).
+  // One-shot backfill for the fleets that exist: a fresh user each, with
+  // edit on its connected maps. The shared fleet@ user and its own grants
+  // are left alone (Dan's call, 19.10.2026) — its keys keep working, and
+  // clients move to per-fleet keys at their own pace.
+  await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'person'`);
+  await db.execute(sql`ALTER TABLE fleets ADD COLUMN IF NOT EXISTS service_user_id UUID REFERENCES users(id) ON DELETE SET NULL`);
+  await db.execute(sql`
+    DO $$
+    DECLARE f RECORD; uid UUID;
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'fleet_service_users_v1') THEN
+        FOR f IN SELECT id, name FROM fleets WHERE service_user_id IS NULL LOOP
+          INSERT INTO users (email, name, kind) VALUES ('fleet-' || f.id || '@fleets.invalid', 'Fleet: ' || f.name, 'fleet') RETURNING id INTO uid;
+          UPDATE fleets SET service_user_id = uid WHERE id = f.id;
+          INSERT INTO map_permissions (map_id, user_id, permission)
+            SELECT m.id, uid, 'edit' FROM maps m WHERE m.fleet_id = f.id
+            ON CONFLICT DO NOTHING;
+        END LOOP;
+        INSERT INTO data_migrations (id) VALUES ('fleet_service_users_v1');
+      END IF;
+    END $$;
+  `);
+
+  // ── Fleet pairings (#506) ──────────────────────────────────────
+  // A machine pairs itself with a short code its owner confirms; see
+  // services/fleetPairing.ts. Hashes only; rows are short-lived.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS fleet_pairings (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      code_hash TEXT NOT NULL UNIQUE,
+      secret_hash TEXT NOT NULL,
+      hostname TEXT NOT NULL,
+      agent TEXT,
+      model TEXT,
+      slots INTEGER NOT NULL DEFAULT 1,
+      expires_at TIMESTAMPTZ NOT NULL,
+      confirmed_at TIMESTAMPTZ,
+      confirmed_by UUID REFERENCES users(id) ON DELETE CASCADE,
+      fleet_id UUID REFERENCES fleets(id) ON DELETE CASCADE,
+      replace_keys BOOLEAN NOT NULL DEFAULT FALSE,
+      collected_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   // ── nodes.started_at ───────────────────────────────────────────
   // When work on a node started — stamped by updateNode on the first move
   // into an 'in_progress' category or percentComplete > 0. Kanban shows it
@@ -1307,6 +1468,170 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
         INSERT INTO data_migrations (id) VALUES ('backfill_started_at_v1');
       END IF;
     END $$;
+  `);
+
+  // ── Repo credential handouts (#507) ────────────────────────────
+  // Every time a fleet key fetched a project's repo credentials — which
+  // fleet, which map, which repo, when. No token. Kept 30 days.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS fleet_repo_handouts (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      fleet_id UUID NOT NULL REFERENCES fleets(id) ON DELETE CASCADE,
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      repo TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS fleet_repo_handouts_fleet_idx ON fleet_repo_handouts (fleet_id, created_at DESC)
+  `);
+
+  // ── Trust policy (#491) ─────────────────────────────────────────
+  // NULL = the map runs on the defaults (creator + binding login trusted,
+  // approval + pr-only for everyone else), computed on read.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS trust_policy JSONB
+  `);
+
+  // ── nodes.expected_done_at ─────────────────────────────────────
+  // The worker's own ETA (set_progress etaMinutes / update_node
+  // expectedDoneAt). Kanban shows it on In-Progress cards.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS expected_done_at TIMESTAMPTZ
+  `);
+
+  // ── maps.setup_completed_at (guided onboarding) ─────────────────
+  // NULL = a new project still showing its setup checklist. Every map from
+  // before the checklist counts as set up, once.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS setup_completed_at TIMESTAMPTZ
+  `);
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'backfill_setup_completed_at_v1') THEN
+        UPDATE maps SET setup_completed_at = NOW() WHERE setup_completed_at IS NULL;
+        INSERT INTO data_migrations (id) VALUES ('backfill_setup_completed_at_v1');
+      END IF;
+    END $$;
+  `);
+
+  // ── maps.fleet_can_edit_ci ──────────────────────────────────────
+  // The fleet's repo token may change CI workflows. Off for every existing
+  // map; the setup wizard turns it on for a repo it creates.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS fleet_can_edit_ci BOOLEAN NOT NULL DEFAULT FALSE
+  `);
+
+  // ── Approval pushes (#493) ──────────────────────────────────────
+  // Per-map last push and per-node 24 h reminder, so a restart does not
+  // re-send (services/approvalNotifications.ts).
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS approval_notifications (
+      map_id UUID PRIMARY KEY REFERENCES maps(id) ON DELETE CASCADE,
+      last_pushed_at TIMESTAMPTZ NOT NULL
+    )
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS approval_reminders (
+      node_id UUID PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+      reminded_at TIMESTAMPTZ NOT NULL
+    )
+  `);
+
+  // ── AI read of proposed tickets ─────────────────────────────────
+  // The verdict on the text with this hash (services/approvalReview.ts).
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS approval_reviews (
+      node_id UUID PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+      text_hash TEXT NOT NULL,
+      verdict TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      questions JSONB NOT NULL,
+      provider TEXT NOT NULL,
+      reviewed_at TIMESTAMPTZ NOT NULL
+    )
+  `);
+  // Ask the reporter: when the questions went on the issue.
+  await db.execute(sql`ALTER TABLE approval_reviews ADD COLUMN IF NOT EXISTS asked_at TIMESTAMPTZ`);
+  // The questions as posted; the worker gets these, not the AI's draft.
+  await db.execute(sql`ALTER TABLE approval_reviews ADD COLUMN IF NOT EXISTS asked_questions JSONB`);
+
+  // ── The reporter's check ────────────────────────────────────────
+  // An outside reporter checks the deployed fix before the issue closes
+  // (services/reporterCheck.ts).
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS reporter_checks (
+      node_id UUID PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      issue_ref TEXT NOT NULL,
+      issue_url TEXT NOT NULL,
+      reporter TEXT NOT NULL,
+      state TEXT NOT NULL,
+      outcome TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      asked_at TIMESTAMPTZ,
+      reminded_at TIMESTAMPTZ,
+      reply_at TIMESTAMPTZ,
+      reply_url TEXT,
+      reply_excerpt TEXT,
+      done_at TIMESTAMPTZ,
+      merge_sha TEXT
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS reporter_checks_open_idx ON reporter_checks (map_id) WHERE state <> 'done'`);
+
+  // ── Daily mail with open questions (#597) ───────────────────────
+  // The day of a person's last digest round, and their opt-out
+  // (services/digestMail.ts). No row = mail on, never sent.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS digest_mails (
+      user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      last_sent_on DATE,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE
+    )
+  `);
+  // Failed sends on `failed_on` (#602): a failed mail is retried on the
+  // next tick, up to a cap per day.
+  await db.execute(sql`ALTER TABLE digest_mails ADD COLUMN IF NOT EXISTS failed_on DATE`);
+  await db.execute(sql`ALTER TABLE digest_mails ADD COLUMN IF NOT EXISTS failures INTEGER NOT NULL DEFAULT 0`);
+
+  // ── Outgoing webhooks ───────────────────────────────────────────
+  // A URL subscribed to one map's events (map_id) or a whole workspace's
+  // (map_id NULL), HMAC-signed with `secret` (services/webhooks.ts).
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      map_id UUID REFERENCES maps(id) ON DELETE CASCADE,
+      url TEXT NOT NULL,
+      secret TEXT NOT NULL,
+      events JSONB NOT NULL DEFAULT '[]'::jsonb,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      description TEXT,
+      created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_delivery_at TIMESTAMPTZ,
+      last_status INTEGER,
+      last_error TEXT
+    )
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS webhook_subscriptions_scope_idx ON webhook_subscriptions (workspace_id, map_id)
+  `);
+
+  // ── Wiki publish (#637) ─────────────────────────────────────────
+  // The wiki document each map's timeline goes to, so a second publish
+  // updates it instead of creating another (services/wikiPublish.ts).
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS map_wiki_documents (
+      map_id UUID PRIMARY KEY REFERENCES maps(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL DEFAULT 'outline',
+      document_id TEXT NOT NULL,
+      document_url TEXT NOT NULL,
+      published_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      published_by UUID REFERENCES users(id) ON DELETE SET NULL
+    )
   `);
 
   console.log('[db] Migrations complete.');

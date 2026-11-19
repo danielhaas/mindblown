@@ -4,7 +4,9 @@ import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
-import { groupDone, groupByPriority, cardBlockState, kanbanColumnId, startedLabel, type CardBlock } from './kanban.js';
+import { useTicketPhases, type CardPhase } from './useTicketPhases.js';
+import { StopTicketButton } from './StopTicketButton.js';
+import { groupDone, groupByPriority, cardBlockState, hiddenFromBoard, kanbanColumnId, needsBriefOnBoard, startedLabel, etaLabel, durationLabels, outsideGate, personHolds, type CardBlock } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -70,22 +72,46 @@ function formatDate(iso: string): string {
 
 // ── Card Component ───────────────────────────────────────────────
 
+/** Card + badge colours per block kind: grey in the way, amber yours (a brief is too), indigo a later version. */
+function blockLook(block: CardBlock) {
+  if (!block) return null;
+  if (block.kind === 'human' || block.kind === 'brief') {
+    return { label: block.kind === 'brief' ? 'Needs brief' : 'Needs you', card: '#fffbeb', border: '#f59e0b', badge: '#fde68a', text: '#92400e' };
+  }
+  if (block.kind === 'later') return { label: 'Later', card: '#eef2ff', border: '#a5b4fc', badge: '#e0e7ff', text: '#3730a3' };
+  if (block.kind === 'fleet') return { label: 'Fleet', card: '#eef2ff', border: '#6366f1', badge: '#c7d2fe', text: '#3730a3' };
+  return { label: block.kind === 'blocked' ? 'Blocked' : 'Waiting', card: '#e2e8f0', border: '#94a3b8', badge: '#cbd5e1', text: '#475569' };
+}
+
+/** Phase chip: the fleet at work, waiting on CI, or waiting on a person or a fix. */
+const PHASE_LOOK: Record<CardPhase['tone'], { background: string; color: string }> = {
+  active: { background: '#e0e7ff', color: '#3730a3' },
+  waiting: { background: '#f1f5f9', color: '#475569' },
+  problem: { background: '#fee2e2', color: '#b91c1c' },
+};
+
 function Card({
   card,
   effortUnit,
   selected,
   block,
   showStarted,
+  phase,
   onClick,
   onDragStart,
 }: {
   card: KanbanCard;
   effortUnit: string;
   selected: boolean;
-  /** Blocked or waiting on a predecessor (cardBlockState) — greyed out, detail on hover. */
+  /**
+   * Blocked or waiting on a predecessor (cardBlockState) — greyed out; held
+   * for a person — amber, it is yours to act on. Detail on hover.
+   */
   block: CardBlock;
   /** In-progress columns show when the work started. */
   showStarted: boolean;
+  /** Where the fleet is with this ticket (#546); null for a ticket no fresh rollup reports. */
+  phase: CardPhase | null;
   onClick: () => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
@@ -96,6 +122,12 @@ function Card({
   const progress = node.percentComplete ?? computedProgress;
   const githubLink = node.externalLinks.find((l) => isForgeLink(l));
   const started = showStarted ? startedLabel(node.startedAt) : null;
+  const eta = showStarted ? etaLabel(node.expectedDoneAt) : null;
+  const { took, planned, over } = durationLabels(node);
+  const human = block?.kind === 'human' || block?.kind === 'brief';
+  const later = block?.kind === 'later';
+  const greyed = block !== null && !human && !later && block.kind !== 'fleet';
+  const look = blockLook(block);
 
   return (
     <div
@@ -104,13 +136,13 @@ function Card({
       onClick={onClick}
       title={block?.detail}
       style={{
-        background: block ? '#e2e8f0' : '#ffffff',
-        opacity: block ? 0.7 : 1,
+        background: look?.card ?? '#ffffff',
+        opacity: greyed ? 0.7 : later ? 0.85 : 1,
         borderRadius: 8,
         padding: '10px 12px',
         marginBottom: 6,
         cursor: 'grab',
-        borderLeft: `3px solid ${block ? '#94a3b8' : borderColor}`,
+        borderLeft: `3px solid ${look?.border ?? borderColor}`,
         boxShadow: selected
           ? '0 0 0 2px #4f46e5, 0 1px 4px rgba(0,0,0,0.08)'
           : '0 1px 3px rgba(0,0,0,0.06)',
@@ -170,11 +202,12 @@ function Card({
         </span>
         {block && (
           <span
+            data-testid={`kanban-card-${block.kind}`}
             style={{
               fontSize: 9,
               fontWeight: 700,
-              color: '#475569',
-              background: '#cbd5e1',
+              color: look?.text,
+              background: look?.badge,
               padding: '1px 6px',
               borderRadius: 4,
               flexShrink: 0,
@@ -183,7 +216,7 @@ function Card({
               letterSpacing: '0.04em',
             }}
           >
-            {block.kind === 'blocked' ? 'Blocked' : 'Waiting'}
+            {look?.label}
           </span>
         )}
         {githubLink && (
@@ -206,6 +239,27 @@ function Card({
           </a>
         )}
       </div>
+
+      {/* The reason on the card, two lines; the whole text on hover. */}
+      {block?.kind === 'blocked' && block.detail !== 'Blocked' && (
+        <div
+          data-testid="kanban-card-reason"
+          style={{
+            fontSize: 11,
+            lineHeight: 1.35,
+            color: '#475569',
+            margin: '-2px 0 6px',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+            wordBreak: 'break-word',
+          }}
+        >
+          {/* The worker's session name eats a line; the hover keeps it. */}
+          {block.detail.replace(/^Blocked: /, '').replace(/^Fleet worker \S+: /, '')}
+        </div>
+      )}
 
       {/* Progress bar */}
       {progress != null && progress > 0 && (
@@ -269,6 +323,18 @@ function Card({
           </span>
         )}
 
+        {/* The fleet's phase */}
+        {phase && (
+          <span
+            data-testid="kanban-card-phase"
+            title={phase.prNumber ? `Fleet: ${phase.text} — PR #${phase.prNumber}` : `Fleet: ${phase.text}`}
+            style={{ fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4, ...PHASE_LOOK[phase.tone] }}
+          >
+            {phase.text}
+          </span>
+        )}
+        <StopTicketButton nodeId={node.id} phase={phase} />
+
         {/* Started */}
         {started && (
           <span
@@ -277,6 +343,33 @@ function Card({
             style={{ fontSize: 10, color: '#64748b' }}
           >
             {started.short}
+          </span>
+        )}
+
+        {/* The worker's ETA */}
+        {eta && (
+          <span
+            data-testid="kanban-card-eta"
+            title={eta.full}
+            style={{ fontSize: 10, color: eta.overdue ? '#dc2626' : '#64748b', fontWeight: eta.overdue ? 600 : undefined }}
+          >
+            {eta.short}
+          </span>
+        )}
+
+        {/* How long a done ticket took, and what the worker planned */}
+        {took && (
+          <span
+            data-testid="kanban-card-took"
+            title={planned ? `${took}, ${planned}` : took}
+            style={{ fontSize: 10, color: over ? '#dc2626' : '#64748b', fontWeight: over ? 600 : undefined }}
+          >
+            {took}
+          </span>
+        )}
+        {planned && (
+          <span data-testid="kanban-card-planned" style={{ fontSize: 10, color: '#64748b' }}>
+            {planned}
           </span>
         )}
 
@@ -320,6 +413,9 @@ function Column({
   selectedNodeId,
   swimlanes,
   nodes,
+  holds,
+  later,
+  phases,
   onSelectNode,
   onDragStart,
   onDragOver,
@@ -330,6 +426,12 @@ function Column({
   selectedNodeId: string | null;
   swimlanes: boolean;
   nodes: Record<string, Node>;
+  /** Tickets held for a person (`personHolds`) → hover text. */
+  holds: Map<string, string>;
+  /** Tickets outside the dispatch gate (`outsideGate`) → hover text. */
+  later: Map<string, string>;
+  /** Fleet tickets' phases (`useTicketPhases`), shown in in-progress columns. */
+  phases: Map<string, CardPhase>;
   onSelectNode: (id: string) => void;
   onDragStart: (e: React.DragEvent, nodeId: string) => void;
   onDragOver: (e: React.DragEvent) => void;
@@ -373,14 +475,25 @@ function Column({
     return groups;
   };
 
+  // One block state per card: drives the card badge and the column's ready count.
+  const blocks = new Map(
+    column.cards.map((c) => [
+      c.node.id,
+      cardBlockState(c.node, c.blockedBy, isDone, (id) => nodes[id]?.text ?? id, holds.get(c.node.id) ?? null, later.get(c.node.id) ?? null, needsBriefOnBoard(c.node, column.category)),
+    ]),
+  );
+  // Ready = nothing in its way: not blocked, not waiting on a dependency, not held for a person, not fenced out by the gate.
+  const readyCount = isDone ? 0 : column.cards.filter((c) => blocks.get(c.node.id) === null).length;
+
   const renderCard = (card: KanbanCard) => (
     <Card
       key={card.node.id}
       card={card}
       effortUnit={effortUnit}
       selected={card.node.id === selectedNodeId}
-      block={cardBlockState(card.node, card.blockedBy, isDone, (id) => nodes[id]?.text ?? id)}
+      block={blocks.get(card.node.id) ?? null}
       showStarted={column.category === 'in_progress'}
+      phase={column.category === 'in_progress' ? phases.get(card.node.id) ?? null : null}
       onClick={() => onSelectNode(card.node.id)}
       onDragStart={(e) => onDragStart(e, card.node.id)}
     />
@@ -488,6 +601,22 @@ function Column({
         >
           {column.cards.length}
         </span>
+        {readyCount > 0 && (
+          <span
+            data-testid={`kanban-ready-${column.id}`}
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: '#047857',
+              background: '#d1fae5',
+              padding: '1px 7px',
+              borderRadius: 10,
+            }}
+            title={`${readyCount} of ${column.cards.length} have nothing in their way: not blocked, not waiting on a dependency, not waiting for a person, not outside the fleet's gate, not missing a brief`}
+          >
+            {readyCount} ready
+          </span>
+        )}
         {totalEffort > 0 && (
           <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 500 }}>
             {formatEffort(Math.round(totalEffort * 10) / 10, effortUnit)}
@@ -623,6 +752,16 @@ export function KanbanView() {
 
   const effortUnit = currentMap?.effortUnit ?? 'days';
 
+  const workflow = currentMap?.statusWorkflow;
+  const holds = useMemo(() => personHolds(Object.values(nodes), workflow ?? []), [nodes, workflow]);
+  const phases = useTicketPhases();
+  const versions = useMindmapStore((s) => s.versions);
+  const gate = currentMap?.dispatchGate;
+  const later = useMemo(
+    () => outsideGate(Object.values(nodes), gate ?? [], statusColumns, (id) => versions.find((v) => v.id === id)?.name ?? null),
+    [nodes, gate, statusColumns, versions],
+  );
+
   // Build columns with cards
   const columns: KanbanColumn[] = useMemo(() => {
     // Kanban shows ALL leaves regardless of the mindmap's collapse state or
@@ -651,6 +790,7 @@ export function KanbanView() {
     }
 
     for (const node of leafNodes) {
+      if (hiddenFromBoard(node, statusColumns)) continue;
       const cv = computed.get(node.id as NodeId);
       const card: KanbanCard = {
         node,
@@ -747,7 +887,7 @@ export function KanbanView() {
           (s) => s.id === node.status || s.name.toLowerCase() === (node.status ?? '').toLowerCase(),
         )?.category === 'done';
         const stampStart = toCategory === 'in_progress' && !node.startedAt;
-        const clearStart = toCategory === 'todo' && node.startedAt != null;
+        const clearStart = toCategory === 'todo' && (node.startedAt != null || node.expectedDoneAt != null);
         if (toDone !== fromDone || stampStart || clearStart) {
           const current = useMindmapStore.getState().nodes[nodeId];
           if (current) {
@@ -755,7 +895,7 @@ export function KanbanView() {
               ...current,
               ...(toDone !== fromDone && { completedAt: toDone ? new Date().toISOString() : null }),
               ...(stampStart && { startedAt: new Date().toISOString() }),
-              ...(clearStart && { startedAt: null }),
+              ...(clearStart && { startedAt: null, expectedDoneAt: null }),
             });
           }
         }
@@ -828,6 +968,9 @@ export function KanbanView() {
             selectedNodeId={selectedNodeId}
             swimlanes={swimlanes}
             nodes={nodes}
+            holds={holds}
+            later={later}
+            phases={phases}
             onSelectNode={selectNode}
             onDragStart={handleDragStart}
             onDragOver={handleDragOver}

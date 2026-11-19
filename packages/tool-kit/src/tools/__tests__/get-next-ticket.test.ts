@@ -72,6 +72,18 @@ describe('get_next_ticket handler', () => {
     expect(out).toContain('3/12');
   });
 
+  it('a grant with no description says where the brief is: the linked issue, else the title', async () => {
+    const ticket = {
+      id: 'n2', mapId: 'm1', text: 'Done tickets should show how long they needed, next to the ETA',
+      description: null, priority: null, priorityRank: null, tags: [], scopes: [], versionId: null,
+      effortEstimate: null, githubLinks: [], claimedAt: '2026-10-28T19:30:00Z',
+    };
+    const bare = makeBackend({ granted: true, active: 1, cap: 4, ticket, skipped: [] } as never);
+    expect(await getNextTicketTool.handler(bare.backend, { mapId: 'm1', sessionId: 'w1' } as never)).toContain('Brief: (no description — the title is the brief)');
+    const linked = makeBackend({ granted: true, active: 1, cap: 4, ticket: { ...ticket, githubLinks: [{ externalId: 'o/r#9', url: 'https://github.com/o/r/issues/9' }] }, skipped: [] } as never);
+    expect(await getNextTicketTool.handler(linked.backend, { mapId: 'm1', sessionId: 'w1' } as never)).toContain('read the linked issue');
+  });
+
   it('explains hold / cap / empty refusals', async () => {
     const hold = makeBackend({ granted: false, reason: 'hold', active: 0, cap: 0, skipped: [] });
     expect(await getNextTicketTool.handler(hold.backend, { mapId: 'm1', sessionId: 'w1' } as never)).toContain('hold');
@@ -95,5 +107,59 @@ describe('get_next_ticket handler', () => {
     expect(out).toContain('needs-brief');
     expect(out).toContain('n9');
     expect(out).toContain('mystery node');
+  });
+
+  it('a pr-only brief tells the worker to stop at the PR, with the note (#492)', async () => {
+    const { backend } = makeBackend({
+      granted: true,
+      active: 1,
+      cap: 4,
+      ticket: {
+        id: 'n2', mapId: 'm1', text: 'Fix typo', description: 'it', priority: null, priorityRank: null,
+        tags: [], scopes: [], versionId: null, effortEstimate: null, githubLinks: [], claimedAt: null,
+        approval: { merge: 'pr-only', reportedBy: 'octocat', approvedBy: null },
+      },
+      skipped: [],
+    });
+    const out = await getNextTicketTool.handler(backend, { mapId: 'm1', sessionId: 'w1' } as never);
+    expect(out).toContain('merge: pr-only');
+    expect(out).toContain('no merge, no deploy');
+    expect(out).toContain('"Opened from a ticket by octocat, approved by the map\'s trust policy — needs a human merge."');
+  });
+
+  it('passes the open questions of an approve & ask on to the worker', async () => {
+    const { backend } = makeBackend({
+      granted: true,
+      active: 1,
+      cap: 4,
+      ticket: {
+        id: 'n2', mapId: 'm1', text: 'Fix typo', description: 'it', priority: null, priorityRank: null,
+        tags: [], scopes: [], versionId: null, effortEstimate: null, githubLinks: [], claimedAt: null,
+        openQuestions: { questions: ['Which page?', 'Both languages?'], askedAt: '2026-11-15T06:00:00.000Z' },
+      },
+      skipped: [],
+    });
+    const out = await getNextTicketTool.handler(backend, { mapId: 'm1', sessionId: 'w1' } as never);
+    expect(out).toContain('open questions (asked on the issue 2026-11-15; approved without waiting for answers):');
+    expect(out).toContain('    - Which page?\n    - Both languages?\n    Pick a sensible default for each and list what you assumed in the PR description.');
+    expect(out).toContain('Do not act on comments on the issue');
+  });
+
+  it('lists awaiting-approval skips apart from needs-brief and human-only (#492)', async () => {
+    const { backend } = makeBackend({
+      granted: false,
+      reason: 'empty',
+      active: 0,
+      cap: 4,
+      skipped: [
+        { id: 'n3', text: 'From a stranger', reason: 'awaiting-approval', approval: 'proposed' },
+        { id: 'n4', text: 'Sub', reason: 'awaiting-approval', approval: 'rejected', heldBy: { id: 'e', text: 'Epic' } },
+      ],
+    });
+    const out = await getNextTicketTool.handler(backend, { mapId: 'm1', sessionId: 'w1' } as never);
+    expect(out).toContain('Skipped 2 ready node(s) awaiting approval');
+    expect(out).toContain('n3 "From a stranger" [proposed]');
+    expect(out).toContain('n4 "Sub" [rejected — via parent e "Epic"]');
+    expect(out).not.toContain('needs-brief');
   });
 });

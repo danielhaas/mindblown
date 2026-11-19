@@ -49,6 +49,8 @@ import { markWorkStarted } from './workStartSync.js';
 import { handlePrClosed, type GhPrPayload } from './prSync.js';
 import { pushKumaHeartbeat } from './kumaPush.js';
 import { sdNotifyWatchdog } from './sdNotify.js';
+import { appBindingKey, clearForgeRefusal, noteForgeRefusal, refusalStatus, rowBindingKey } from './forgeRefusals.js';
+import { issueCloseHeld } from '../db/reporterChecks.js';
 
 // ── Per-repo auth-failure tracking (#75) ─────────────────────────
 //
@@ -117,6 +119,8 @@ interface RepoTarget {
   repo: string;
   /** Resolves an authenticated client at fetch time (App tokens are short-lived). */
   resolveForge: () => Promise<ForgeClient>;
+  /** Which credential this is (sync/forgeRefusals.ts) — a refused fetch is recorded under it (#513). */
+  bindingKey?: string;
 }
 
 export interface ReconcileResult {
@@ -175,6 +179,15 @@ export interface ReconcileResult {
    * restart-looped prod every ~24 min for two weeks).
    */
   authFailure?: boolean;
+  /**
+   * True when the forge refused the repo (401/403/404, `refusalStatus`):
+   * a dead token, no access, or a repo deleted under its binding. The loop
+   * is alive and the binding is the problem, so it doesn't make the tick
+   * unhealthy either (Plan health shows it; incident 2026-10-23: a deleted
+   * test map's Gitea row answered 404 every tick and the watchdog
+   * restart-looped prod every ~14 min for a day).
+   */
+  refused?: boolean;
 }
 
 // ── State helper (idempotent transition logic) ───────────────────
@@ -241,42 +254,41 @@ export function computeStateUpdates(
   const looksDoneInMB = node.percentComplete === 100 || node.status === 'done';
   const hasSnapshot = hasCloseSnapshot(link);
 
-  // "Issue offen, Node done" ist seit dem Gate in updateGitHubIssue der
-  // NORMALZUSTAND, solange ein PR läuft — der Agent setzt den Node beim
-  // Öffnen des PRs auf done, und das Issue bleibt bewusst offen bis zum
-  // Merge. Ohne dieses Gate läse der Reopen-Zweig unten das als "auf
-  // GitHub wieder geöffnet" und setzte percentComplete auf null zurück
-  // (Snapshot ist leer, weil der Close-Pfad nie lief) — der Fortschritt
-  // wäre unrettbar weg. Geblockt wird darum NUR bei laufendem PR OHNE
-  // Snapshot; ein vorhandener Snapshot macht den Reset zum verlustfreien
-  // Restore, und ein abgebrochener PR heisst, dass die Arbeit NICHT
-  // gelandet ist — der Node darf dann nicht ewig auf done/100 stehen.
-  // Semantik + Incident-Rationale: prBlocksNodeReopen in @mindblown/core
-  // (Gegenstück zum Outbound-Gate prBlocksIssueClose).
-  // Zweiter, breiterer Wächter für dieselbe Gefahr — und der Grund, dass
-  // er nötig wurde, ist dieser PR selbst.
+  // Since the gate in updateGitHubIssue, "issue open, node done" is the
+  // NORMAL STATE while a PR is running — the agent sets the node to done
+  // when it opens the PR, and the issue deliberately stays open until the
+  // merge. Without this gate the reopen branch below would read that as
+  // "reopened on GitHub" and reset percentComplete to null (the snapshot is
+  // empty because the close path never ran) — the progress would be lost
+  // for good. So we block ONLY while a PR is running WITHOUT a snapshot; an
+  // existing snapshot turns the reset into a lossless restore, and an
+  // abandoned PR means the work did NOT land — the node must not sit at
+  // done/100 forever then.
+  // Semantics + incident rationale: prBlocksNodeReopen in @mindblown/core
+  // (counterpart of the outbound gate prBlocksIssueClose).
+  // A second, broader guard for the same danger — and the reason it became
+  // necessary is this PR itself.
   //
-  // `prBlocksNodeReopen(null, …)` liefert false: ohne Mirror gibt es
-  // nichts zu vetieren. Vor dem Close-Gate war das folgenlos, weil ein
-  // done-Node sein Issue sofort geschlossen hatte — der Reopen-Zweig war
-  // für diese Form unerreichbar. Jetzt hält der Sync das Issue bewusst
-  // OFFEN, während der Node done ist, und der Hold-Pfad PATCHt weiter
-  // Titel/Body/Labels, hebt also `updated_at` und holt das Issue in den
-  // nächsten 5-Minuten-Catchup. Ist `linkedPr` in dem Moment leer (das
-  // Webhook kam nie an — genau die Lage, für die dieser PR gebaut ist),
-  // nähme der Zweig unten „Issue offen + Node done" als Wiedereröffnung
-  // und schriebe `percentComplete: null, status: 'in_progress'`.
+  // `prBlocksNodeReopen(null, …)` returns false: without a mirror there is
+  // nothing to veto. Before the close gate that was harmless, because a
+  // done node closed its issue immediately — the reopen branch was
+  // unreachable for this shape. Now the sync deliberately keeps the issue
+  // OPEN while the node is done, and the hold path keeps PATCHing
+  // title/body/labels, which bumps `updated_at` and pulls the issue into
+  // the next 5-minute catchup. If `linkedPr` is empty at that moment (the
+  // webhook never arrived — exactly the situation this PR was built for),
+  // the branch below would take "issue open + node done" as a reopen and
+  // write `percentComplete: null, status: 'in_progress'`.
   //
-  // Ohne Snapshot ist dieser Reset kein Restore, sondern Datenverlust:
-  // es gibt keinen erfassten Vorzustand, auf den er zurückfiele. Das ist
-  // dasselbe „wipe progress irrecoverably"-Argument, das der Kommentar
-  // oben für `state === 'open'` bereits macht — nur nie auf den leeren
-  // Mirror ausgedehnt.
+  // Without a snapshot this reset is not a restore but data loss: there is
+  // no recorded prior state to fall back to. It is the same "wipe progress
+  // irrecoverably" argument the comment above already makes for
+  // `state === 'open'` — just never extended to the empty mirror.
   //
-  // Preis, bewusst bezahlt: ein von Hand auf GitHub wiedereröffnetes
-  // Issue ohne Mirror und ohne Snapshot repariert der Catchup nicht mehr
-  // von selbst. Das Ereignis dafür ist `issues.reopened`, und dessen
-  // Webhook-Pfad (routes/integrations.ts) bleibt unangetastet.
+  // Price, paid deliberately: an issue reopened by hand on GitHub with no
+  // mirror and no snapshot is no longer repaired by the catchup on its own.
+  // The event for that is `issues.reopened`, and its webhook path
+  // (routes/integrations.ts) stays untouched.
   const emptyMirrorOnDoneNode =
     node.linkedPr == null && !hasSnapshot && looksDoneInMB;
   const blockReopen =
@@ -518,7 +530,7 @@ export async function resolveHeldCloses(
           links = node.externalLinks.map((l) => (l === link ? stamped : l));
           await nodeDb.updateNode(c.nodeId, { externalLinks: links });
         }
-        const result = await updateGitHubIssue({ ...node, externalLinks: links }, stamped, forge);
+        const result = await updateGitHubIssue({ ...node, externalLinks: links }, stamped, forge, { holdClose: await issueCloseHeld(node.id) });
         if (result.stateAction !== 'closed_completed') continue; // retried next round, mirror still armed
         await nodeDb.setExternalLinkState(c.nodeId, c.externalId, 'closed');
         await replay(defaultBranch);
@@ -558,7 +570,7 @@ export async function resolveHeldCloses(
       // claim wins (livelock rule) — let the outbound decision close it.
       const link = node.externalLinks.find((l) => isForgeLink(l) && l.externalId === c.externalId);
       if (!link) continue;
-      const result = await updateGitHubIssue(node, link, forge);
+      const result = await updateGitHubIssue(node, link, forge, { holdClose: await issueCloseHeld(node.id) });
       if (result.stateAction === 'closed_completed') {
         await nodeDb.setExternalLinkState(c.nodeId, c.externalId, 'closed');
         closed++;
@@ -743,6 +755,8 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
         await pushAuthFailureAlarm(repoLabel);
       }
     }
+    const refused = refusalStatus(err);
+    if (refused && target.bindingKey) noteForgeRefusal(target.bindingKey, refused);
     return {
       repo: repoLabel,
       fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, prematureClosesHealed: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
@@ -750,6 +764,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       since,
       error: `token: ${err instanceof Error ? err.message : String(err)}`,
       ...(isAuthFailure && { authFailure: true }),
+      ...((refused || err instanceof UnservableBindingError) && { refused: true }),
     };
   }
 
@@ -785,6 +800,8 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
         await pushAuthFailureAlarm(repoLabel);
       }
     }
+    const refused = refusalStatus(err);
+    if (refused && target.bindingKey) noteForgeRefusal(target.bindingKey, refused);
     return {
       repo: repoLabel,
       fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, prematureClosesHealed: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
@@ -792,6 +809,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       since,
       error: `fetch: ${err instanceof Error ? err.message : String(err)}`,
       ...(isAuthFailure && { authFailure: true }),
+      ...(refused && { refused: true }),
     };
   }
 
@@ -801,6 +819,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   // is specifically about the GitHub credential, not about downstream
   // node-write errors.
   consecutiveAuthFailures.delete(repoLabel);
+  if (target.bindingKey) clearForgeRefusal(target.bindingKey);
 
   const externalIds = issues.map((i) => `${target.owner}/${target.repo}#${i.number}`);
   const linkIndex = await findNodesByExternalIds(externalIds);
@@ -820,7 +839,10 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       const node = await nodeDb.getNode(hit.nodeId);
       if (!node) { skipped++; continue; }
 
-      const updates = computeStateUpdates(node, issue, externalId);
+      // An issue the reporter's check reopened to ask is open on purpose while the node stays done.
+      const askingReporter =
+        issue.state !== 'closed' && (node.status === 'done' || node.percentComplete === 100) && (await issueCloseHeld(node.id));
+      const updates = askingReporter ? null : computeStateUpdates(node, issue, externalId);
       if (!updates) {
         // No progress/status transition, but the link's cached open/closed
         // mirror may still be absent (most links were created without it)
@@ -1099,6 +1121,29 @@ interface DiscoveredTarget extends RepoTarget {
  * Deduplicated by `${owner}/${repo}` — a repo only needs one fetch per
  * cycle, regardless of how many maps reference it.
  */
+/**
+ * A forge row this server can't build a client for: its Gitea sign-in is
+ * gone or can't be refreshed, URLs are missing, or Gitea OAuth isn't
+ * configured. It fails the same way every tick until someone reconnects,
+ * so catch-up reports it as `refused`, not as a sick loop.
+ */
+export class UnservableBindingError extends Error {}
+
+/**
+ * The forge rows some map syncs with: same workspace, same owner/repo (the
+ * match `patIntegrationForMap` makes). Exported for unit-test access.
+ */
+export function rowsBoundToMaps<R extends { workspaceId: string; config: unknown }>(
+  rows: R[],
+  boundMaps: Array<{ workspaceId: string; owner: string | null; repo: string | null }>,
+): R[] {
+  const bound = new Set(boundMaps.map((m) => `${m.workspaceId}\0${m.owner}/${m.repo}`));
+  return rows.filter((r) => {
+    const cfg = r.config as { owner?: string; repo?: string } | null;
+    return bound.has(`${r.workspaceId}\0${cfg?.owner}/${cfg?.repo}`);
+  });
+}
+
 async function discoverTargets(): Promise<DiscoveredTarget[]> {
   const seen = new Map<string, DiscoveredTarget>();
 
@@ -1128,15 +1173,24 @@ async function discoverTargets(): Promise<DiscoveredTarget[]> {
       owner: m.owner,
       repo: m.repo,
       resolveForge: () => forgeFromInstallation(installationId),
+      bindingKey: appBindingKey(installationId),
     });
   }
 
-  // PAT integrations (any forge kind)
+  // PAT integrations (any forge kind) — only rows a map syncs with. A row
+  // whose map was deleted or moved to another repo has nowhere to ingest
+  // to (dan/xx2, 2026-10-23). Accepted trade-off: nodes still linked to
+  // such a repo (link_issue, a rebound map's old links) get its state
+  // changes from webhooks only, without catch-up as the backstop.
   const patIntegrations = await db
     .select()
     .from(integrations)
     .where(and(inArray(integrations.provider, FORGE_PROVIDERS), eq(integrations.enabled, true)));
-  for (const integ of patIntegrations) {
+  const patMaps = await db
+    .select({ workspaceId: maps.workspaceId, owner: maps.githubRepoOwner, repo: maps.githubRepoName })
+    .from(maps)
+    .where(and(isNull(maps.githubInstallationId), isNotNull(maps.githubRepoOwner), isNotNull(maps.githubRepoName), isNull(maps.archivedAt)));
+  for (const integ of rowsBoundToMaps(patIntegrations, patMaps)) {
     const cfg = integ.config as unknown as ForgeIntegrationConfig;
     if (!isServableIntegrationConfig(cfg)) continue;
     const key = `${cfg.owner}/${cfg.repo}`;
@@ -1150,9 +1204,10 @@ async function discoverTargets(): Promise<DiscoveredTarget[]> {
       // path a failed App-token mint takes.
       resolveForge: async () => {
         const forge = await forgeFromIntegration(integ);
-        if (!forge) throw new Error(`integration ${integ.id} (${integ.provider}) cannot be served`);
+        if (!forge) throw new UnservableBindingError(`integration ${integ.id} (${integ.provider}) cannot be served`);
         return forge;
       },
+      bindingKey: rowBindingKey(integ),
     });
   }
 
@@ -1264,6 +1319,8 @@ export function getLastHealthyTickAt(): number {
  * Before this carve-out, a single tenant's dead token suppressed the
  * watchdog ping forever and systemd restart-looped the whole service
  * every ~24 min (incident 2026-07-10, `meheav1-stack/proptechdev`).
+ * The same goes for any repo the forge refuses (`refused`: 401/403/404),
+ * e.g. a repo deleted under its binding (incident 2026-10-23, `dan/xx2`).
  *
  * An empty `results` array (no repos discovered, no work done) counts
  * as healthy — the sweep completed without crashing, which is what
@@ -1274,7 +1331,7 @@ export function getLastHealthyTickAt(): number {
 export function isHealthyTick(results: ReconcileResult[]): boolean {
   return results.every(
     (r) =>
-      (!r.error || r.authFailure) &&
+      (!r.error || r.authFailure || r.refused) &&
       r.ingestErrored === 0 &&
       r.stateSyncErrored === 0,
   );
@@ -1308,9 +1365,9 @@ export async function pushCatchupHeartbeat(results: ReconcileResult[]): Promise<
     results.reduce((acc, r) => acc + pick(r), 0);
 
   const hasError = results.some(
-    (r) => (r.error && !r.authFailure) || r.ingestErrored > 0 || r.stateSyncErrored > 0,
+    (r) => (r.error && !r.authFailure && !r.refused) || r.ingestErrored > 0 || r.stateSyncErrored > 0,
   );
-  const authFailed = results.filter((r) => r.authFailure).length;
+  const authFailed = results.filter((r) => r.authFailure || r.refused).length;
   const status = hasError ? 'down' : 'up';
   const msg = `repos=${results.length} fetched=${sum((r) => r.fetched)} ingested=${sum((r) => r.ingested)} applied=${sum((r) => r.applied)} errored=${sum((r) => r.ingestErrored + r.stateSyncErrored)} authFailed=${authFailed}`;
 

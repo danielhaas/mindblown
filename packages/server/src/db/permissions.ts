@@ -54,6 +54,7 @@ export async function listPermissions(mapId: string) {
       permission: mapPermissions.permission,
       userName: users.name,
       userEmail: users.email,
+      userKind: users.kind,
     })
     .from(mapPermissions)
     .innerJoin(users, eq(mapPermissions.userId, users.id))

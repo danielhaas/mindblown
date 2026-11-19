@@ -1,7 +1,16 @@
 import { z } from 'zod';
-import { DISPATCH_POLICY_KEYS, MIX_BUGS_PREFIX, MIX_BUGS_REGEX } from '@mindblown/core';
+import { DISPATCH_POLICY_KEYS, MIX_BUGS_PREFIX, MIX_BUGS_REGEX, projectSetup } from '@mindblown/core';
+import type { SetupStepId, TrustLevelPolicy, TrustPolicy } from '@mindblown/core';
 import { defineTool } from '../spec.js';
 import { filterMapData, formatMapTree } from '../formatters.js';
+
+/** One untrusted level's knobs in a trust policy (#491). */
+const trustLevelSchema = z
+  .object({
+    dispatch: z.enum(['auto', 'approval']).describe('"auto" = the queue hands the ticket out; "approval" = a person approves it first.'),
+    merge: z.enum(['auto', 'pr-only']).describe('"auto" = the worker may merge; "pr-only" = it stops at the pull request.'),
+  })
+  .strict();
 
 export const listMapsTool = defineTool({
   name: 'list_maps',
@@ -82,7 +91,7 @@ export const createMapTool = defineTool({
 export const updateMapTool = defineTool({
   name: 'update_map',
   description:
-    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, focus factor, phases, public-holiday calendar (holidayJurisdiction / holidayOverrides), or issue auto-import setting. phases is the map's project-phase definition list ({id, name, position} — statusWorkflow idiom); pass the COMPLETE new array to add, rename, or reorder phases. Keep existing ids stable when renaming/reordering — nodes reference phases by id (node.phaseId), so a changed id orphans them. Omit id on a NEW entry and one is generated. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). focusFactor (0.05–1.0, default 1) is the fraction of calendar time that actually reaches planned-ticket work — set it below 1 to stretch the velocity-adjusted completion forecast for meetings/support/firefighting/unplanned work (e.g. 0.5 = half of each day reaches planned work, so forecasts take twice as long). autoImportNewIssues toggles whether new issues on the bound repo (GitHub or Gitea) auto-create nodes under the map's inbox node. maxActiveClaims / dispatchGate / dispatchPolicy configure the get_next_ticket pull queue: maxActiveClaims caps this map's concurrently claimed nodes (0 = hold, grants nothing — the default; on a map in a fleet it is the map's ceiling, and the fleet's own cap from update_fleet limits all its maps together); dispatchGate is an AND-filter fencing what the queue hands out (entries \"version:<versionId>\" or \"type:bug\", or several joined by \"|\" inside one entry to accept ANY of them, e.g. \"type:bug|version:<id>\" = bugs first, the release as fallback; empty = no fence; a ticket outside the gate is invisible, not deprioritized); dispatchPolicy is the ordered ranking of the gated ready set (keys bugs/priority/size/age; empty = default [\"bugs\",\"priority\",\"age\"]; optionally ONE parametric entry \"mix:bugs=<0-100>\" that deterministically interleaves bugs and non-bugs at that percentage — each class sorted by the remaining keys, 0 = inert, 100 = all bugs first, a drained class is back-filled by the other); profilePolicy activates profile routing for get_next_ticket (heavy = first refusal on P0-or-big tickets, light = only small P2/P3 tickets, standard/unknown = everything else; unestimated tickets go to everyone) — thresholds in hours ({heavyMinHours, lightMaxHours}, defaults: one day / 2h), estimates normalized from the map's effortUnit via hoursPerDay; null (the default) keeps the queue profile-blind. fleetId connects the map to a worker fleet (null disconnects), fleetShare is its weight there. Pass nullable fields as null to clear.",
+    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, focus factor, phases, public-holiday calendar (holidayJurisdiction / holidayOverrides), or issue auto-import setting. phases is the map's project-phase definition list ({id, name, position} — statusWorkflow idiom); pass the COMPLETE new array to add, rename, or reorder phases. Keep existing ids stable when renaming/reordering — nodes reference phases by id (node.phaseId), so a changed id orphans them. Omit id on a NEW entry and one is generated. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). focusFactor (0.05–1.0, default 1) is the fraction of calendar time that actually reaches planned-ticket work — set it below 1 to stretch the velocity-adjusted completion forecast for meetings/support/firefighting/unplanned work (e.g. 0.5 = half of each day reaches planned work, so forecasts take twice as long). autoImportNewIssues toggles whether new issues on the bound repo (GitHub or Gitea) auto-create nodes under the map's inbox node. maxActiveClaims / dispatchGate / dispatchPolicy configure the get_next_ticket pull queue: maxActiveClaims caps this map's concurrently claimed nodes (0 = hold, grants nothing — the default; on a map in a fleet it is the map's ceiling, and the fleet's own cap from update_fleet limits all its maps together); dispatchGate is an AND-filter fencing what the queue hands out (entries \"version:<versionId>\" or \"type:bug\", or several joined by \"|\" inside one entry to accept ANY of them, e.g. \"type:bug|version:<id>\" = bugs first, the release as fallback; empty = no fence; a ticket outside the gate is invisible, not deprioritized); dispatchPolicy is the ordered ranking of the gated ready set (keys bugs/priority/size/age; empty = default [\"bugs\",\"priority\",\"age\"]; optionally ONE parametric entry \"mix:bugs=<0-100>\" that deterministically interleaves bugs and non-bugs at that percentage — each class sorted by the remaining keys, 0 = inert, 100 = all bugs first, a drained class is back-filled by the other); profilePolicy activates profile routing for get_next_ticket (heavy = first refusal on P0-or-big tickets, light = only small P2/P3 tickets, standard/unknown = everything else; unestimated tickets go to everyone) — thresholds in hours ({heavyMinHours, lightMaxHours}, defaults: one day / 2h), estimates normalized from the map's effortUnit via hoursPerDay; null (the default) keeps the queue profile-blind. fleetId connects the map to a worker fleet (null disconnects), fleetShare is its weight there. trustPolicy (admin only) sets who may run the fleet on this map. Pass nullable fields as null to clear.",
   schema: {
     mapId: z.string().describe('The map ID'),
     name: z.string().optional().describe('New map name'),
@@ -161,6 +170,10 @@ export const updateMapTool = defineTool({
       .boolean()
       .optional()
       .describe('Archive (true) or unarchive (false) the map. An archived map is on hold: forge webhooks and catch-up sync, issue triage, the get_next_ticket pull queue, sprint rollover and every other automated or agent-driven write (including your own tool calls) get 409 MAP_ARCHIVED until it is unarchived. People can still open and edit it in the browser. Only archive or unarchive when a person asked for it.'),
+    setupCompleted: z
+      .boolean()
+      .optional()
+      .describe('Finish (true) or reopen (false) the project setup checklist (see project_setup_status). true hides the "Set up this project" card on the map; it does not change anything else.'),
     aiPolicy: z
       .enum(['any', 'local', 'none'])
       .optional()
@@ -179,13 +192,17 @@ export const updateMapTool = defineTool({
       .uuid()
       .nullable()
       .optional()
-      .describe('Connect the map to a worker fleet (id from list_fleets / create_fleet); null disconnects it. A map has at most one fleet, a fleet serves many maps. Needs admin on the map, and connecting needs ownership of the fleet. The map keeps its own maxActiveClaims (its ceiling inside the fleet), gate and policy.'),
+      .describe('Connect the map to a worker fleet (id from list_fleets / create_fleet); null disconnects it. A map has at most one fleet, a fleet serves many maps. Needs admin on the map, and connecting needs ownership of the fleet. The map keeps its own maxActiveClaims (its ceiling inside the fleet), gate and policy — except that a map still on hold (0) opens to 1 when it joins a fleet, unless maxActiveClaims is sent in the same call.'),
     fleetShare: z
       .number()
       .min(0.1)
       .max(100)
       .optional()
       .describe("This map's weight when its fleet picks between projects (0.1–100, default 1): a map with share 2 gets twice the pulls of a map with share 1 when both have ready work."),
+    fleetCanEditCi: z
+      .boolean()
+      .optional()
+      .describe("Let the fleet change CI workflows (.github/workflows/*) in the map's GitHub repo (default false). CI code can read the repo's secrets, so this is off unless the repo is new or you trust the fleet's code with them; the setup wizard and create_forge_repo turn it on for a repo they create. Changing the map's repo turns it off again. Only the map's creator can turn it on (the fleet uses their GitHub access); any map admin can turn it off, and the MindBlown GitHub App needs its Workflows permission (without it the fleet gets its usual token)."),
     aiEstimateDrafts: z
       .boolean()
       .optional()
@@ -215,7 +232,7 @@ export const updateMapTool = defineTool({
             .string()
             .optional()
             .describe('Stable phase id. REQUIRED for existing phases (keep it unchanged); omit for a new phase and one is generated.'),
-          name: z.string().min(1).describe('Display name, e.g. "M1 – Grundgerüst"'),
+          name: z.string().min(1).describe('Display name, e.g. "M1 – Foundation"'),
           position: z
             .number()
             .optional()
@@ -232,8 +249,23 @@ export const updateMapTool = defineTool({
       .describe(
         'Project phase definitions (REPLACE mode — the full new array). Send the complete list to add, rename, or reorder; keep ids of existing phases stable so node.phaseId references stay valid.',
       ),
+    trustPolicy: z
+      .object({
+        trustedUserIds: z.array(z.string()).describe('MindBlown user ids whose tickets run fully automatic. Default: the map creator.'),
+        trustedForgeLogins: z.array(z.string()).describe('Forge (GitHub/Gitea) logins whose issues run fully automatic, case-insensitive. Default: the login the map\'s forge binding syncs as.'),
+        levels: z
+          .object({
+            known: trustLevelSchema.describe('Map members not on the trusted lists.'),
+            external: trustLevelSchema.describe('Everyone else, incl. forge authors not linked to a map member.'),
+          })
+          .strict(),
+      })
+      .strict()
+      .nullable()
+      .optional()
+      .describe('Who may run the fleet on this map (#491), REPLACE mode — send the whole policy; null goes back to the defaults. A ticket\'s reporter decides its level: trusted (on the lists, or reporter unknown) runs fully automatic and is the only work ever deployed automatically; known and external follow their dispatch ("auto" | "approval") and merge ("auto" | "pr-only") knobs. Safe default for both: approval + pr-only. Needs admin on the map.'),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, fleetId, fleetShare, autoImportNewIssues, aiPolicy, aiEstimateDrafts, holidayJurisdiction, holidayOverrides, phases, archived }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, fleetId, fleetShare, fleetCanEditCi, autoImportNewIssues, aiPolicy, aiEstimateDrafts, holidayJurisdiction, holidayOverrides, phases, archived, setupCompleted, trustPolicy }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -248,6 +280,7 @@ export const updateMapTool = defineTool({
       profilePolicy?: { heavyMinHours?: number; lightMaxHours?: number } | null;
       fleetId?: string | null;
       fleetShare?: number;
+      fleetCanEditCi?: boolean;
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
       aiEstimateDrafts?: boolean;
@@ -255,6 +288,8 @@ export const updateMapTool = defineTool({
       holidayOverrides?: { add: string[]; remove: string[] };
       phases?: Array<{ id: string; name: string; position: number; color?: string; targetDate?: string | null }>;
       archived?: boolean;
+      setupCompleted?: boolean;
+      trustPolicy?: TrustPolicy | null;
     } = {};
     if (name !== undefined) fields.name = name;
     if (description !== undefined) fields.description = description;
@@ -269,12 +304,15 @@ export const updateMapTool = defineTool({
     if (profilePolicy !== undefined) fields.profilePolicy = profilePolicy;
     if (fleetId !== undefined) fields.fleetId = fleetId;
     if (fleetShare !== undefined) fields.fleetShare = fleetShare;
+    if (fleetCanEditCi !== undefined) fields.fleetCanEditCi = fleetCanEditCi;
     if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
     if (aiPolicy !== undefined) fields.aiPolicy = aiPolicy;
     if (aiEstimateDrafts !== undefined) fields.aiEstimateDrafts = aiEstimateDrafts;
     if (holidayJurisdiction !== undefined) fields.holidayJurisdiction = holidayJurisdiction;
     if (holidayOverrides !== undefined) fields.holidayOverrides = holidayOverrides;
     if (archived !== undefined) fields.archived = archived;
+    if (setupCompleted !== undefined) fields.setupCompleted = setupCompleted;
+    if (trustPolicy !== undefined) fields.trustPolicy = trustPolicy;
     if (phases !== undefined) {
       // Normalize: generate ids for new entries, default position to the
       // array index — callers reordering can just send the array in the
@@ -295,7 +333,19 @@ export const updateMapTool = defineTool({
     }
     if (Object.keys(fields).length === 0) return 'No fields to update.';
     const updated = await backend.updateMap(mapId, fields);
-    return `Updated map "${updated.name}" (id: ${updated.id})`;
+    const done = `Updated map "${updated.name}" (id: ${updated.id})`;
+    const t = updated.trustPolicy;
+    if (!t) return done;
+    const lists = (xs: string[]) => (xs.length ? xs.join(', ') : '(none)');
+    const level = (l: TrustLevelPolicy) => `dispatch ${l.dispatch}, merge ${l.merge}`;
+    return [
+      done,
+      `Trust policy${trustPolicy === null ? ' (defaults)' : ''}:`,
+      `  trusted users: ${lists(t.trustedUserIds)}`,
+      `  trusted forge logins: ${lists(t.trustedForgeLogins)}`,
+      `  known: ${level(t.levels.known)}`,
+      `  external: ${level(t.levels.external)}`,
+    ].join('\n');
   },
 });
 
@@ -355,4 +405,78 @@ export const listBaselinesTool = defineTool({
   },
 });
 
-export const mapTools = [listMapsTool, getMapTool, createMapTool, updateMapTool, deleteMapTool, freezeBaselineTool, listBaselinesTool];
+/** What an agent calls to finish each setup step. */
+const SETUP_HOW: Record<SetupStepId, string> = {
+  describe: 'update_map(description): what it is, who it is for, what done looks like.',
+  repo: 'create_forge_repo (MCP) or the setup wizard for a new repo; for an existing one connect_forge_repo (or connect_github_repo), then import_issues to bring in the open issues.',
+  plan: 'bulk_create_nodes or ai_braindump under the root, built from the description and the imported issues (ask the person the ai_plan_questions first and pass their answers).',
+  fleet: 'list_fleets, then update_map(fleetId, maxActiveClaims: 0) — connected but on hold until the start step. Skip it when people do the work.',
+  start: 'update_map(maxActiveClaims: 1) once the person agrees the fleet may begin.',
+};
+
+export const projectSetupStatusTool = defineTool({
+  name: 'project_setup_status',
+  description:
+    "The setup checklist of a project (guided onboarding): describe it → connect the repo → lay out the plan → pick who does the work (fleet) → start. Shows each step done or open and the tool that finishes it. Use it to walk a person through a new project in conversation, one step at a time; the repo comes before the plan so the plan can build on the repo's issues. When every step they want is done, update_map(setupCompleted: true) closes the checklist on the map.",
+  schema: {
+    mapId: z.string().describe('The map ID'),
+  },
+  handler: async (backend, { mapId }) => {
+    const { map, nodes } = await backend.getMap(mapId);
+    const setup = projectSetup(
+      {
+        description: map.description,
+        rootNodeId: map.rootNodeId,
+        fleetId: map.fleetId ?? null,
+        fleetName: map.fleetName ?? null,
+        maxActiveClaims: map.maxActiveClaims ?? 0,
+        forgeKind: map.forgeKind ?? null,
+        forgeProblem: map.forgeProblem ?? null,
+        githubRepoOwner: map.githubRepoOwner ?? null,
+        githubRepoName: map.githubRepoName ?? null,
+        setupCompletedAt: map.setupCompletedAt ?? null,
+      },
+      nodes,
+    );
+    const lines = [
+      `Setup of "${map.name}": ${setup.steps.filter((s) => s.done).length}/${setup.steps.length} steps done${setup.completed ? ' (checklist closed)' : ''}.`,
+      ...setup.steps.map((s, i) => {
+        const head = `${i + 1}. [${s.done ? 'x' : ' '}] ${s.label}${s.optional ? ' (optional)' : ''} — ${s.detail}`;
+        return s.done ? head : `${head}\n   How: ${SETUP_HOW[s.id]}`;
+      }),
+    ];
+    lines.push(setup.next ? `Next: ${setup.next.label}.` : 'Every step is done.');
+    if (!setup.completed && !setup.next) lines.push('Close the checklist with update_map(setupCompleted: true).');
+    return lines.join('\n');
+  },
+});
+
+export const exportMarkdownTool = defineTool({
+  name: 'export_markdown',
+  description:
+    "The map — or one subtree — as a Markdown timeline for someone who is not on the project: header (progress, projected end), a summary table (milestone | status | projected dates | waiting on), then one section per top-level child in schedule order with its status, projected dates, what it is waiting on (blocked leaves and leaves tagged `external`, with who owns them), the open work linked to its issues, and done milestones collapsed to what was delivered. Returns the Markdown itself, so you can paste it into any wiki or document through that tool's own MCP. detail 'summary' (default) shows no node ids or effort numbers; 'full' adds them.",
+  schema: {
+    mapId: z.string().describe('The map ID'),
+    rootNodeId: z.string().optional().describe('Render only this subtree; its children become the sections. Default: the whole map.'),
+    detail: z.enum(['summary', 'full']).optional().describe('"summary" (default) for outside readers; "full" adds node ids and effort.'),
+    timeZone: z.string().optional().describe('IANA time zone of the reader (e.g. "Europe/Zurich") for the "generated" stamp. Default UTC.'),
+  },
+  handler: async (backend, { mapId, rootNodeId, detail, timeZone }) => {
+    return backend.exportMarkdown(mapId, { rootNodeId, detail, timeZone });
+  },
+});
+
+export const publishToWikiTool = defineTool({
+  name: 'publish_to_wiki',
+  description:
+    "Publish the map's Markdown timeline (see export_markdown) to the workspace's Outline wiki. The first publish creates the page in the configured collection; every later one updates that same page. One-way: the page says it is generated and links back to the map — edits belong in the map. Needs the workspace's wiki connection (Outline URL, API token, collection), set by the workspace owner in Import / Export → Publish to wiki.",
+  schema: {
+    mapId: z.string().describe('The map ID'),
+  },
+  handler: async (backend, { mapId }) => {
+    const r = await backend.publishToWiki(mapId);
+    return `${r.created ? 'Created' : 'Updated'} the wiki page: ${r.documentUrl} (published ${r.publishedAt}).`;
+  },
+});
+
+export const mapTools = [listMapsTool, getMapTool, createMapTool, updateMapTool, deleteMapTool, freezeBaselineTool, listBaselinesTool, projectSetupStatusTool, exportMarkdownTool, publishToWikiTool];

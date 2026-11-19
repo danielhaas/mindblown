@@ -1,0 +1,24 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">MindBlown</string>
+    <string name="title_activity_main">MindBlown</string>
+    <string name="package_name">com.mindblown.app</string>
+    <string name="custom_url_scheme">com.mindblown.app</string>
+
+    <!-- Kanban home-screen widget (#589) -->
+    <string name="widget_description">Your kanban board at a glance: in progress and blocked</string>
+    <string name="widget_sign_in">Sign in to MindBlown to see your board. Tap to open the app.</string>
+    <string name="widget_pick_map">Tap to pick the map this widget shows.</string>
+    <string name="widget_loading">Loading the board…</string>
+    <string name="widget_unreachable">Couldn\'t reach MindBlown. Retrying on the next refresh.</string>
+    <string name="widget_updated">%1$s</string>
+    <string name="widget_stale">⚠ stale · %1$s</string>
+    <string name="widget_in_progress">In progress</string>
+    <string name="widget_blocked">Blocked</string>
+    <string name="widget_quiet">Nothing in progress, nothing blocked.</string>
+    <string name="widget_config_sign_in">Sign in to MindBlown in the app first, then add the widget again.</string>
+    <string name="widget_config_open_app">Open MindBlown</string>
+    <string name="widget_config_loading">Loading your maps…</string>
+    <string name="widget_config_pick">Which map should this widget show?</string>
+    <string name="widget_config_no_maps">You have no maps yet.</string>
+</resources>

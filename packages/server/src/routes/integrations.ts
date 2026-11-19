@@ -11,6 +11,7 @@ import {
   importGitHubIssues,
   extractVersionFromMilestone,
   extractClosingIssueRefs,
+  extractReferencedIssueRefs,
   processWebhook,
   verifyWebhookSignature,
   readWebhookHeaders,
@@ -38,6 +39,7 @@ import {
   syncIssueLabelsToNodes,
 } from '../sync/githubIngest.js';
 import * as PrSync from '../sync/prSync.js';
+import { applyMergedPr } from '../sync/prMerged.js';
 import { handleAbandonedPr } from '../sync/prAbandon.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { markWorkStarted } from '../sync/workStartSync.js';
@@ -47,7 +49,7 @@ import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
-import { prBlocksNodeReopen, hasCloseSnapshot, isForgeLink, forgeLabel } from '@mindblown/core';
+import { prBlocksNodeReopen, hasCloseSnapshot, isForgeLink, forgeLabel, userReporter } from '@mindblown/core';
 import { extractAutoLinkIssueNumber } from '../lib/autoLink.js';
 import { isMirrorDescription, stampMirrorHash } from '../lib/descriptionMirror.js';
 import { createForgeIssueForNode, NoForgeIntegrationError, NO_FORGE_MESSAGE } from '../services/forgeIssue.js';
@@ -63,27 +65,29 @@ import {
   forgeFromIntegration,
   isServableIntegrationConfig,
   mapBindableToWorkspaceForge,
+  pickForgeRow,
   FORGE_PROVIDERS,
   type ForgeIntegrationConfig,
 } from '../lib/forge.js';
 import { publicWebhookUrl, setUpWebhookAfterBind } from '../lib/forgeWebhook.js';
+import { onRepoPush } from '../services/repoDocs.js';
+import { reproposeOnIssueEdit } from '../services/editReapproval.js';
 import { keepIngestHold, ownerOfExternalId, withIngestHold } from '../lib/forgeTrust.js';
+import { askingOnIssue } from '../db/reporterChecks.js';
 
-// ── Helper: find integration config for a workspace (PAT) ─────────
+// ── Helper: a workspace's row for one repo (PAT) ──────────────────
 
-async function getForgeIntegration(
+/** The row a connect for `owner/repo` re-uses — disabled ones too; another repo's row is never touched. */
+async function getForgeIntegrationForRepo(
   workspaceId: string,
+  owner: string,
+  repo: string,
 ): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
   const rows = await db
     .select()
     .from(integrations)
     .where(and(eq(integrations.workspaceId, workspaceId), inArray(integrations.provider, FORGE_PROVIDERS)));
-
-  // Same rule as lib/githubContext.ts: the ENABLED row, newest first — a
-  // disabled leftover must never shadow the live connection (2026-09-24).
-  const row = rows
-    .filter((r) => r.enabled)
-    .sort((a, b) => (b.updatedAt?.getTime?.() ?? 0) - (a.updatedAt?.getTime?.() ?? 0))[0];
+  const row = pickForgeRow(rows, { owner, repo, includeDisabled: true });
   if (!row) return null;
   return { id: row.id, provider: row.provider, config: row.config as unknown as ForgeIntegrationConfig };
 }
@@ -478,8 +482,8 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    // Upsert: check if integration already exists
-    const existing = await getForgeIntegration(body.workspaceId);
+    // Upsert this repo's row; a second repo gets its own row.
+    const existing = await getForgeIntegrationForRepo(body.workspaceId, body.owner, body.repo);
 
     const config: ForgeIntegrationConfig = {
       owner: body.owner,
@@ -1069,6 +1073,10 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           parentId,
           text: item.issue.title,
           createdBy,
+          // The issue author, not the importing user (#490).
+          reportedBy: item.issue.user?.login
+            ? { kind: 'forge', provider: forge.endpoint.kind, login: item.issue.user.login }
+            : null,
         });
 
         const priority = item.issue.labels
@@ -1109,6 +1117,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           parentId: parentNodeId,
           text: label,
           createdBy,
+          reportedBy: userReporter(req.userId),
         });
         branchIds.set(label, branchNode.id);
         return branchNode.id;
@@ -1121,6 +1130,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           parentId: parentNodeId,
           text: 'Backlog',
           createdBy,
+          reportedBy: userReporter(req.userId),
         });
         backlogId = backlogNode.id;
         return backlogId;
@@ -1564,6 +1574,13 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // ── push → Docs tabs re-list (#550) ─────────────────────────────
+    // Nothing else consumes a push; answer here.
+    if (event === 'push') {
+      const maps = repoFullName ? await onRepoPush(repoFullName, payload) : 0;
+      return reply.send({ ok: true, docsMaps: maps });
+    }
+
     // Special handling for issues.closed / issues.reopened: preserve and restore
     // the pre-close progress + status so reopening a partially-completed issue
     // doesn't discard the user's prior progress.
@@ -1646,12 +1663,21 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         return changes.title === undefined && changes.body === undefined;
       })();
 
+    // Our own reopen to ask the reporter (services/reporterCheck.ts): the
+    // work is done, so nothing a reopen normally sets off — inbox ingest,
+    // re-triage, the rollback off done — applies to it.
+    const reopenedToAskReporter =
+      event === 'issues' && payloadAction === 'reopened' && issuePayload?.number != null && !!repoFullName
+        ? await askingOnIssue(`${repoFullName}#${issuePayload.number}`)
+        : false;
+
     if (
       event === 'issues' &&
       issuePayload?.number != null &&
       repoFullName &&
       (payloadAction === 'opened' || payloadAction === 'reopened' || payloadAction === 'edited') &&
-      !isMetadataOnlyEdit
+      !isMetadataOnlyEdit &&
+      !reopenedToAskReporter
     ) {
       const slashIdx = repoFullName.indexOf('/');
       if (slashIdx > 0) {
@@ -1729,7 +1755,8 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       event === 'issues' &&
       issuePayload?.number != null &&
       repoFullName &&
-      payloadAction === 'reopened'
+      payloadAction === 'reopened' &&
+      !reopenedToAskReporter
     ) {
       try {
         const externalId = `${repoFullName}#${issuePayload.number}`;
@@ -1902,6 +1929,12 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         // `issues-reopen-gate.test.ts` → "resets with the fallback when no
         // PR is linked (legacy behavior)" (around :252). Read that test
         // before touching this branch.
+        if (looksDoneInMB && reopenedToAskReporter) {
+          // The reporter's check reopened the issue to ask (services/reporterCheck.ts):
+          // the work is done and stays done until the reporter or a person says otherwise.
+          await nodeDb.setExternalLinkState(nodeId, externalId, 'open');
+          return reply.send({ received: true, action: actionLabel, matched: true, nodeId, skipped: 'reporter_check' });
+        }
         if (!looksDoneInMB) {
           // Echo of our own reopen (or a redundant one): the node already
           // reflects "open" — a person or the intake put it back to work.
@@ -2221,165 +2254,19 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         merge_commit_sha?: string | null;
         html_url?: string | null;
       };
-      // The one piece of durable proof that this issue's work shipped.
-      // Stamped onto the link so the outbound sync can close the issue as
-      // COMPLETED later on local evidence — without it, a done-node whose
-      // mirror was already cleared looks exactly like a node that never
-      // had a PR, which is how the premature-close incident got its
-      // COMPLETED/commit_id=null closes.
-      const mergeCommitSha = pr.merge_commit_sha ?? null;
-      const refs = extractClosingIssueRefs(`${pr.title ?? ''} ${pr.body ?? ''}`);
-      const transitions: Array<{
-        externalId: string;
-        nodeId: string;
-        status: 'transitioned' | 'already_done' | 'not_linked';
-      }> = [];
-
-      for (const issueNumber of refs) {
-        const externalId = `${repoFullName}#${issueNumber}`;
-        const nodeId = await findNodeByExternalId(externalId);
-        if (!nodeId) {
-          transitions.push({ externalId, nodeId: '', status: 'not_linked' });
-          continue;
-        }
-        const node = await nodeDb.getNode(nodeId);
-        if (!node) {
-          transitions.push({ externalId, nodeId, status: 'not_linked' });
-          continue;
-        }
-        // Idempotency: replay → no second transition.
-        //
-        // The node is normally ALREADY done here — the coding agent marks
-        // it done when it opens the PR — so this is the branch the merge
-        // evidence has to be recorded on, not an edge case. Guarded on
-        // "sha not yet stored" so a webhook replay still writes nothing.
-        if (node.status === 'done' && node.percentComplete === 100) {
-          if (mergeCommitSha) {
-            const links = node.externalLinks.map((l) => ({ ...l }));
-            const idx = links.findIndex(
-              (l) => isForgeLink(l) && l.externalId === externalId,
-            );
-            if (idx >= 0 && links[idx].mergeCommitSha !== mergeCommitSha) {
-              links[idx] = {
-                ...links[idx],
-                mergeCommitSha,
-                mergedPrNumber: pr.number,
-              };
-              await nodeDb.updateNode(nodeId, { externalLinks: links });
-              // Same replay guard as the stamp: the delivery row lands once.
-              events
-                .recordPrMerged(node.mapId, nodeId, null, {
-                  prNumber: pr.number,
-                  repo: repoFullName,
-                  url: pr.html_url ?? null,
-                  mergeCommitSha,
-                  externalId,
-                  alreadyDone: true,
-                })
-                .catch(() => {});
-            }
-          }
-          transitions.push({ externalId, nodeId, status: 'already_done' });
-          continue;
-        }
-        const links = node.externalLinks.map((l) => ({ ...l }));
-        const linkIdx = links.findIndex(
-          (l) => isForgeLink(l) && l.externalId === externalId,
-        );
-        if (linkIdx >= 0) {
-          links[linkIdx] = {
-            ...links[linkIdx],
-            previousPercentComplete: node.percentComplete,
-            previousStatus: node.status,
-            lastSyncedAt: new Date().toISOString(),
-            ...(mergeCommitSha
-              ? { mergeCommitSha, mergedPrNumber: pr.number }
-              : {}),
-          };
-        }
-        const updates: nodeDb.UpdateNodeInput = {
-          percentComplete: 100,
-          status: 'done',
-          externalLinks: links,
-        };
-        const updated = await nodeDb.updateNode(nodeId, updates);
-        if (updated) {
-          broadcast(updated.mapId, {
-            type: 'node:updated',
-            nodeId,
-            fields: Object.keys(updates),
-            node: updated,
-            source: 'github_webhook_pr_merge',
-          });
-          // This write bypasses the PUT route, so the history it keeps has
-          // to be written here too: the status/percent change, the claim
-          // the DB layer just cleared, and the merge itself.
-          events.recordFieldChanges(updated.mapId, nodeId, null, node, updated).catch(() => {});
-          events
-            .recordClaimTransition(updated.mapId, nodeId, null, node, updated, {
-              reason: 'done',
-              note: `PR #${pr.number} merged`,
-            })
-            .catch(() => {});
-          events
-            .recordPrMerged(updated.mapId, nodeId, null, {
-              prNumber: pr.number,
-              repo: repoFullName,
-              url: pr.html_url ?? null,
-              mergeCommitSha,
-              externalId,
-              alreadyDone: false,
-            })
-            .catch(() => {});
-        }
-        console.log(
-          `[gh-webhook] PR #${pr.number} merged → transitioned node ${nodeId} (${externalId}) to done`,
-        );
-        transitions.push({ externalId, nodeId, status: 'transitioned' });
-      }
-
-      // GitHub's own auto-close honors closing keywords only in the PR
-      // BODY. Title-only refs leave the issue open after the merge —
-      // and since handlePrClosed just cleared the mirror and the node
-      // is now done, the next catchup tick would read "issue open +
-      // node done + no PR" as a reopen and revert the shipped work.
-      // Close those issues ourselves, best-effort (the catchup is the
-      // backstop if this fetch fails).
-      const bodyRefs = new Set(extractClosingIssueRefs(pr.body ?? ''));
-      const titleOnlyRefs = refs.filter((n) => !bodyRefs.has(n));
-      if (titleOnlyRefs.length > 0) {
-        (async () => {
-          const ctx = await getGitHubContextForRepo(repoFullName);
-          if (!ctx) return;
-          for (const n of titleOnlyRefs) {
-            try {
-              await closeGitHubIssue(
-                {
-                  provider: ctx.forge.endpoint.kind,
-                  externalId: `${repoFullName}#${n}`,
-                  url: ctx.forge.issueWebUrl(ctx.owner, ctx.repo, n),
-                  syncEnabled: true,
-                  lastSyncedAt: null,
-                },
-                ctx.forge,
-                'completed',
-              );
-            } catch (err) {
-              console.warn(
-                `[gh-webhook] closing title-only ref ${repoFullName}#${n} after merge failed:`,
-                err instanceof Error ? err.message : err,
-              );
-            }
-          }
-        })().catch(() => {});
-      }
+      // The post-merge flow is shared with a person's merge through
+      // MindBlown (merge_pr): sync/prMerged.ts.
+      const transitions = await applyMergedPr(repoFullName, pr, {
+        actorUserId: null,
+        resolveForge: () => getGitHubContextForRepo(repoFullName),
+      });
 
       return reply.send({
         received: true,
         action: 'pull_request.merged',
         prNumber: pr.number,
-        matched: transitions.some((t) => t.status === 'transitioned' || t.status === 'already_done'),
-        transitions,
+        matched: transitions.some((t) => t.status !== 'not_linked'),
+        transitions: transitions.map(({ recorded: _recorded, ...t }) => t),
       });
     }
 
@@ -2425,9 +2312,21 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     // Title edits keep the `#NNNN ` prefix convention: ingest titles
     // nodes as `#N <title>`, and search/auto-link parse that marker —
     // the raw payload title would silently strip it.
+    let reproposed = false;
     if (payloadAction === 'edited' && issuePayload?.number != null) {
       const node = await nodeDb.getNode(nodeId);
       if (node) {
+        // An untrusted edit to an approved ticket's text sends it back
+        // for approval (#605) — compared against the text stored BEFORE
+        // this edit lands.
+        const back = await reproposeOnIssueEdit(node, payload as never, forgeKind);
+        if (back.reproposed) {
+          reproposed = true;
+          // As announceApproval does: the node, then the approval card
+          // (and #493's push) — the row comes back on asks:updated.
+          broadcast(back.node.mapId, { type: 'node:updated', nodeId, fields: ['approval'], node: back.node, source: 'github_webhook' });
+          broadcast(back.node.mapId, { type: 'asks:updated', kind: 'approval', nodeId });
+        }
         if ('description' in nodeUpdates) {
           const changes = payload.changes as
             | { body?: { from?: string | null } }
@@ -2505,6 +2404,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         matched: true,
         nodeId,
         skipped: 'no_change',
+        ...(reproposed ? { reproposed } : {}),
       });
     }
 
@@ -2525,6 +2425,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       action: result.action,
       matched: true,
       nodeId,
+      ...(reproposed ? { reproposed } : {}),
     });
   });
 

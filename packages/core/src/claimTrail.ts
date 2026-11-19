@@ -36,6 +36,8 @@ export interface ClaimedEvent {
   profile: string | null;
   via: ClaimVia;
   previousSession: string | null;
+  /** The map's fleet when the claim happened (#481) — which fleet did the work. Absent on older rows. */
+  fleetId?: string | null;
 }
 
 export interface ReleasedEvent {
@@ -47,6 +49,8 @@ export interface ReleasedEvent {
   note: string | null;
   claimedAt: string | null;
   heldMinutes: number | null;
+  /** The map's fleet when the claim ended (#481). Absent on older rows. */
+  fleetId?: string | null;
 }
 
 export interface PrMergedEvent {
@@ -57,6 +61,8 @@ export interface PrMergedEvent {
   externalId: string;
   /** The node was already done when the merge landed (the normal case — the worker marks done when it opens the PR). */
   alreadyDone: boolean;
+  /** The person who merged it through MindBlown (merge_pr); absent on a merge done on the forge. */
+  mergedBy?: string | null;
 }
 
 export const CLAIM_EVENT_TYPES = ['node.claimed', 'node.released', 'node.pr_merged'] as const;
@@ -199,7 +205,7 @@ export function describeClaimEvent(e: ChangeEventLike): string | null {
   if (e.eventType === 'node.pr_merged') {
     const p = asPrMerged(e.newValue);
     if (!p) return null;
-    return `PR #${p.prNumber} merged${p.repo ? ` (${p.repo})` : ''}`;
+    return `PR #${p.prNumber} merged${p.repo ? ` (${p.repo})` : ''}${p.mergedBy ? ` by ${p.mergedBy}` : ''}`;
   }
   return null;
 }

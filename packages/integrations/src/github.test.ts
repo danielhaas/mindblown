@@ -14,6 +14,8 @@ import {
   importGitHubIssues,
   _clearIssueListCacheForTests,
   parseLinkNext,
+  extractClosingIssueRefs,
+  extractReferencedIssueRefs,
   type IssueLandingProbe,
 } from './github.js';
 import { GitHubForge } from './forge/github.js';
@@ -184,10 +186,10 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
     expect(patch.labels).toEqual(['compliance']);
   });
 
-  // Unit-Kontrakt, kein Happy-Path-Nachweis: `handlePrClosed` setzt beim
-  // Merge `linkedPr: null`, ein persistiertes 'merged' entsteht nur über
-  // ein nachträgliches `pull_request.edited`. Den echten Merge-Weg decken
-  // GitHubs eigenes `Closes #N` und der `linkedPr: null`-Test darunter ab.
+  // Unit contract, not proof of the happy path: `handlePrClosed` sets
+  // `linkedPr: null` on merge; a persisted 'merged' only arises from a
+  // later `pull_request.edited`. The real merge path is covered by GitHub's
+  // own `Closes #N` and the `linkedPr: null` test below.
   it('closes the issue once the PR is merged', async () => {
     await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: pr('merged') }),
@@ -310,6 +312,25 @@ describe('updateGitHubIssue — the close needs evidence, not a done-flag', () =
     expect(sentPatch()).not.toHaveProperty('state');
     expect(result.stateAction).toBe('held');
     expect(result.holdReason).toBe('pr_in_flight');
+  });
+
+  it("holds the close while the reporter checks the fix — without even probing", async () => {
+    const probe = vi.fn();
+    const result = await updateGitHubIssue(
+      node({ status: 'done', percentComplete: 100, linkedPr: null }),
+      { ...LINK, mergeCommitSha: 'deadbeefcafe' },
+      FORGE,
+      { probe, holdClose: true },
+    );
+    expect(sentPatch()).not.toHaveProperty('state');
+    expect(result).toMatchObject({ stateAction: 'held', holdReason: 'reporter_check' });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('a not-done node still reopens under holdClose', async () => {
+    const result = await updateGitHubIssue(node({ status: 'todo', percentComplete: 0 }), LINK, FORGE, { holdClose: true });
+    expect(sentPatch()).toMatchObject({ state: 'open' });
+    expect(result.stateAction).toBe('reopened');
   });
 
   it('does NOT close when the probe itself fails — no evidence, no close', async () => {
@@ -1321,5 +1342,20 @@ describe('forge request timeout (#312)', () => {
     } finally {
       timeout.mockRestore();
     }
+  });
+});
+
+describe('extractReferencedIssueRefs', () => {
+  it('reads the fleet convention "Refs #N" and its variants', () => {
+    expect(extractReferencedIssueRefs('fix(x): y\n\nRefs #1196')).toEqual([1196]);
+    expect(extractReferencedIssueRefs('Ref #3, refs: #4, References #5')).toEqual([3, 4, 5]);
+  });
+
+  it('ignores bare mentions and words merely containing "ref"', () => {
+    expect(extractReferencedIssueRefs('Also mentions #2. Prefs #7')).toEqual([]);
+  });
+
+  it('is not a closing keyword', () => {
+    expect(extractClosingIssueRefs('Refs #1196')).toEqual([]);
   });
 });

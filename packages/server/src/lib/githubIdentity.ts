@@ -26,7 +26,9 @@ export interface GithubIdentityRow {
   scopes: string | null;
 }
 
-const SELECT = {
+// A function, not a constant: read at call time, so a module that only
+// imports this file (and a test that stubs the schema) never touches it.
+const select = () => ({
   id: userGithubIdentities.id,
   userId: userGithubIdentities.userId,
   githubLogin: userGithubIdentities.githubLogin,
@@ -34,11 +36,11 @@ const SELECT = {
   encryptedRefreshToken: userGithubIdentities.encryptedRefreshToken,
   tokenExpiresAt: userGithubIdentities.tokenExpiresAt,
   scopes: userGithubIdentities.scopes,
-};
+});
 
 export async function findGithubIdentity(userId: string): Promise<GithubIdentityRow | null> {
   const [row] = await db
-    .select(SELECT)
+    .select(select())
     .from(userGithubIdentities)
     .where(and(eq(userGithubIdentities.userId, userId), eq(userGithubIdentities.kind, 'github')))
     .limit(1);
@@ -46,7 +48,7 @@ export async function findGithubIdentity(userId: string): Promise<GithubIdentity
 }
 
 async function findGithubIdentityById(id: string): Promise<GithubIdentityRow | null> {
-  const [row] = await db.select(SELECT).from(userGithubIdentities).where(eq(userGithubIdentities.id, id)).limit(1);
+  const [row] = await db.select(select()).from(userGithubIdentities).where(eq(userGithubIdentities.id, id)).limit(1);
   return row ?? null;
 }
 

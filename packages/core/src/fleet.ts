@@ -22,6 +22,21 @@ export function clampFleetShare(value: number | null | undefined): number {
   return Math.min(FLEET_SHARE_MAX, Math.max(FLEET_SHARE_MIN, value));
 }
 
+/**
+ * The map cap a connect leaves behind (#482). Picking a fleet means "take
+ * care of this project", so a map still on hold (cap 0) opens to one
+ * ticket at a time. A cap the caller sends in the same update wins, and a
+ * map that already had a cap keeps it. Undefined = leave the cap alone.
+ */
+export function capOnFleetConnect(
+  before: { fleetId: string | null | undefined; maxActiveClaims: number | null | undefined },
+  input: { fleetId?: string | null; maxActiveClaims?: number },
+): number | undefined {
+  if (!input.fleetId || input.fleetId === before.fleetId) return undefined;
+  if (input.maxActiveClaims !== undefined) return undefined;
+  return (before.maxActiveClaims ?? 0) === 0 ? 1 : undefined;
+}
+
 // ── Fleet pull: which project's ticket wins (#478) ─────────────
 //
 // Smooth weighted round-robin (the nginx upstream scheme). Each grant,
@@ -87,6 +102,8 @@ export interface FleetWorkerStatus {
   worker?: string;
   pane?: string;
   runner?: string;
+  /** Rollup v2 (#479): which agent runs this worker — `claude-code`, `qwen-code`, … Shown verbatim. */
+  agent?: string;
   model?: string;
   account?: string;
   profile?: string;
@@ -95,7 +112,11 @@ export interface FleetWorkerStatus {
   state_since?: string | null;
   last_activity?: string | null;
   ctx_pct?: number | null;
-  claim?: { mapId?: string; nodeId?: string; title?: string } | null;
+  /**
+   * `redacted` is set by the server on a read (#479): the claim is on a map
+   * the reader can't view, so its map, node and title were removed.
+   */
+  claim?: { mapId?: string; nodeId?: string; title?: string; redacted?: true } | null;
   limit_reset_at?: string | null;
   /** Set by the satellite: state says working but nothing moved past the threshold. */
   derived_dead?: boolean;
@@ -105,15 +126,55 @@ export interface FleetWorkerStatus {
   blocked_nodes?: { node: string; at: string }[];
 }
 
-/** One host's rollup (`rollup/<host>.json`, v1). */
+/**
+ * One ticket a host holds and the step it is at (#546). `workers` names
+ * only each slot's current ticket; once a PR is open the slot moves on, so
+ * the tickets waiting for CI or merging are reported here.
+ */
+export interface FleetClaimPhase {
+  nodeId: string;
+  mapId?: string;
+  /** starting | working | pr | fixing | merging — anything else is shown verbatim. */
+  phase: string;
+  phase_since?: string | null;
+  pr_number?: number | null;
+  /** On `pr`: what the PR is waiting on — `none` = no CI reported, `manual` = a person must merge it. */
+  ci?: 'pending' | 'red' | 'conflict' | 'none' | 'manual' | null;
+  /** On `fixing`: which fix run this is, from 1. */
+  fix_attempt?: number | null;
+  /**
+   * #585: the tail of the running ticket's live view, oldest line first
+   * (at most AGENT_OUTPUT_MAX_LINES). Carries commands, paths and error
+   * snippets, so the regular fleet reads drop it (`withoutClaimOutput`);
+   * it is served on its own route that needs edit on the map.
+   */
+  output?: string[] | null;
+  /** ISO: when the worker read the live view; the rollup's `generated_at` when absent. */
+  output_at?: string | null;
+}
+
+/** #585: lines of a running ticket's live view a rollup keeps — the newest ones. */
+export const AGENT_OUTPUT_MAX_LINES = 100;
+/** A longer line is cut; a minified blob in the live view must not fill the push. */
+export const AGENT_OUTPUT_MAX_LINE_CHARS = 500;
+
+/**
+ * One host's rollup (`rollup/<host>.json`). v1 is pushed per map and
+ * serves that map; v2 (#479) is pushed once per fleet and names the maps
+ * the host serves in `maps`. Everything else is shared.
+ */
 export interface FleetRollup {
   v: number;
   host: string;
   generated_at: string;
   map_id?: string;
+  /** v2: the maps this host takes tickets from. */
+  maps?: string[];
   /** Non-null = host is draining (DRAIN file), string = the reason. */
   draining?: string | null;
   workers: FleetWorkerStatus[];
+  /** #546: every ticket the host holds, with its phase. Absent from older workers. */
+  claims?: FleetClaimPhase[];
   counts?: Record<string, number>;
   dead?: string[];
   blocked?: { count: number; recent: { node: string; at: string }[] };
@@ -142,6 +203,8 @@ export interface FleetTickPayload {
   pullStatus?: { sat: string; ok: boolean; files: string[]; at?: string }[];
   /** Set when the tick ran without judgment (orchestrator account at its limit). */
   noJudgment?: string | null;
+  /** Set by the server on a read (#479): the prose was removed for a reader who can't view every map of the fleet. */
+  redacted?: true;
 }
 
 /** Mirrors the orchestrator/dashboard constant: older than this = host down, paused, or agent stopped. */
@@ -159,7 +222,148 @@ export function parseRollup(x: unknown): FleetRollup | null {
   const workers = r.workers.filter(
     (w): w is FleetWorkerStatus => !!w && typeof w === 'object' && typeof (w as FleetWorkerStatus).session === 'string' && typeof (w as FleetWorkerStatus).state === 'string',
   );
-  return { ...(r as unknown as FleetRollup), v: typeof r.v === 'number' ? r.v : 1, workers };
+  const out: FleetRollup = { ...(r as unknown as FleetRollup), v: typeof r.v === 'number' ? r.v : 1, workers };
+  if (r.maps !== undefined) {
+    if (!Array.isArray(r.maps)) return null;
+    out.maps = [...new Set(r.maps.filter((m): m is string => typeof m === 'string' && m !== ''))];
+  }
+  // A malformed claims list loses the phases, not the whole rollup.
+  if (r.claims !== undefined) {
+    if (Array.isArray(r.claims)) {
+      out.claims = r.claims.filter(
+        (c): c is FleetClaimPhase => !!c && typeof c === 'object' && typeof (c as FleetClaimPhase).nodeId === 'string' && typeof (c as FleetClaimPhase).phase === 'string',
+      ).map(parseClaimOutput);
+    } else {
+      delete out.claims;
+    }
+  }
+  return out;
+}
+
+/** A claim's live-view tail, bounded: strings only, the newest lines, each cut to length. A malformed one is dropped. */
+function parseClaimOutput(c: FleetClaimPhase): FleetClaimPhase {
+  if (c.output === undefined) return c;
+  const out = { ...c };
+  if (Array.isArray(c.output)) {
+    out.output = c.output
+      .filter((l): l is string => typeof l === 'string')
+      .slice(-AGENT_OUTPUT_MAX_LINES)
+      .map((l) => (l.length > AGENT_OUTPUT_MAX_LINE_CHARS ? `${l.slice(0, AGENT_OUTPUT_MAX_LINE_CHARS)}…` : l));
+  } else {
+    delete out.output;
+  }
+  if (out.output_at != null && (typeof out.output_at !== 'string' || Number.isNaN(Date.parse(out.output_at)))) delete out.output_at;
+  return out;
+}
+
+/** A rollup without the claims' live-view tails (#585) — what every regular fleet read serves. */
+export function withoutClaimOutput(rollup: FleetRollup): FleetRollup {
+  if (!rollup.claims?.some((c) => 'output' in c || 'output_at' in c)) return rollup;
+  return {
+    ...rollup,
+    claims: rollup.claims.map((c) => {
+      const { output: _output, output_at: _outputAt, ...rest } = c;
+      return rest;
+    }),
+  };
+}
+
+/** One ticket's agent output as its own route serves it (#585). */
+export interface AgentOutput {
+  host: string;
+  /** When the worker read the live view. */
+  at: string;
+  lines: string[];
+}
+
+/**
+ * The live-view tail of the newest report that holds this ticket on this
+ * map — null when that report carries none. The newest holder decides,
+ * tail or not: a ticket re-granted on another host shows nothing until its
+ * new agent prints, never the dead host's old run. A claim that names no
+ * map belongs to the map only when the host serves that map alone. Stale
+ * hosts count: the report says its time, and an old tail is still the
+ * agent's last word.
+ */
+export function claimOutput(
+  hosts: { host: string; generatedAt: string; mapIds: string[]; rollup: FleetRollup }[],
+  mapId: string,
+  nodeId: string,
+): AgentOutput | null {
+  let newest: { host: string; generatedAt: string; claim: FleetClaimPhase } | null = null;
+  for (const h of hosts) {
+    for (const c of h.rollup.claims ?? []) {
+      if (c.nodeId !== nodeId) continue;
+      const onMap = c.mapId ? c.mapId === mapId : h.mapIds.length === 1 && h.mapIds[0] === mapId;
+      if (!onMap) continue;
+      if (!newest || Date.parse(h.generatedAt) > Date.parse(newest.generatedAt)) newest = { host: h.host, generatedAt: h.generatedAt, claim: c };
+    }
+  }
+  if (!newest || !Array.isArray(newest.claim.output)) return null;
+  return { host: newest.host, at: newest.claim.output_at ?? newest.generatedAt, lines: newest.claim.output };
+}
+
+/**
+ * The maps a rollup reports for: v2 names them; a v1 rollup serves the
+ * single map it was pushed for (`pushedFor`, the map route's id).
+ */
+export function rollupServedMaps(rollup: FleetRollup, pushedFor: string | null): string[] {
+  if (rollup.maps && rollup.maps.length > 0) return rollup.maps;
+  const one = rollup.map_id ?? pushedFor;
+  return one ? [one] : [];
+}
+
+/**
+ * A rollup as a reader who can view only `visible` may see it (#479): maps
+ * they can't view drop out of `maps`, and a claim on one becomes
+ * `{ redacted: true }` — together with everything else that talks about
+ * that ticket (the worker's prompt question, what it waits on, its PR,
+ * the nodes it parked). A claim that names no map belongs to the host's
+ * only served map, or to any of them when the reader sees them all; else
+ * it can't be placed and is redacted too. Node lists that carry no map
+ * (`blocked_nodes`, `blocked.recent`) stay only when the reader sees every
+ * map the host serves.
+ */
+export function redactRollup(rollup: FleetRollup, served: string[], visible: ReadonlySet<string>): FleetRollup {
+  const seesAll = served.length > 0 && served.every((m) => visible.has(m));
+  const workers = rollup.workers.map((w) => {
+    const out: FleetWorkerStatus = { ...w };
+    if (w.claim) {
+      const mapId = w.claim.mapId ?? (served.length === 1 ? served[0] : null);
+      const placed = mapId ? visible.has(mapId) : seesAll;
+      if (!placed) {
+        out.claim = { redacted: true };
+        delete out.prompt_question;
+        delete out.waiting;
+        delete out.pr_number;
+        delete out.blocked_nodes;
+      }
+    }
+    if (!seesAll) delete out.blocked_nodes;
+    return out;
+  });
+  const out: FleetRollup = { ...rollup, workers };
+  if (rollup.claims) out.claims = rollup.claims.filter((c) => (c.mapId ? visible.has(c.mapId) : seesAll));
+  if (rollup.maps) out.maps = rollup.maps.filter((m) => visible.has(m));
+  if (rollup.map_id && !visible.has(rollup.map_id)) delete out.map_id;
+  if (!seesAll && rollup.blocked) out.blocked = { count: rollup.blocked.count, recent: [] };
+  return out;
+}
+
+/**
+ * A tick as a reader who can't view every map of the fleet may see it
+ * (#479): one orchestrator writes about all projects, so its prose —
+ * assessment, anomalies, asks, recommendations, reasons, the files it
+ * pulled — stays with readers who see them all. The numbers stay.
+ */
+export function redactTick(payload: FleetTickPayload): FleetTickPayload {
+  const out: FleetTickPayload = { redacted: true };
+  if (payload.summary) out.summary = payload.summary;
+  if (payload.cap) out.cap = { set: payload.cap.set, reason: null };
+  if (payload.policy) out.policy = { set: payload.policy.set, reason: null };
+  if (payload.noJudgment !== undefined) out.noJudgment = payload.noJudgment;
+  if (payload.pullStatus) out.pullStatus = payload.pullStatus.map((p) => ({ sat: p.sat, ok: p.ok, files: [], ...(p.at ? { at: p.at } : {}) }));
+  return out;
 }
 
 /** Minimal shape check for an incoming tick. */
@@ -214,6 +418,19 @@ export interface HostSummary {
   /** Effective states (dead derived) → count. */
   counts: Record<string, number>;
   claims: number;
+  /**
+   * The host's open PRs (phase `pr`: waiting for CI, red, a conflict, a
+   * hand merge) — claims with no agent on them, so a "parked" slot can still
+   * hold these; a `problem` tone means a person has to act. Empty on a
+   * stale host.
+   */
+  held: HeldClaim[];
+}
+
+export interface HeldClaim {
+  nodeId: string;
+  mapId: string | null;
+  phase: TicketPhase;
 }
 
 export interface FleetSummary {
@@ -247,17 +464,25 @@ export function summarizeFleet(
       for (const w of rollup.workers) {
         const s = effectiveWorkerState(w, now);
         counts[s] = (counts[s] ?? 0) + 1;
-        if (w.claim && (w.claim.nodeId || w.claim.title)) claims += 1;
+        if (w.claim && (w.claim.nodeId || w.claim.title || w.claim.redacted)) claims += 1;
       }
+      const freshness = hostFreshness(rollup.generated_at, receivedAt, now, staleMin);
+      // Like ticketPhases: a stale host says nothing about where its PRs are.
+      const held = freshness.stale
+        ? []
+        : (rollup.claims ?? [])
+            .filter((c) => c.phase === 'pr')
+            .map((c) => ({ nodeId: c.nodeId, mapId: c.mapId ?? null, phase: ticketPhase(c) }));
       return {
         host: rollup.host,
         generatedAt: rollup.generated_at,
         receivedAt,
-        freshness: hostFreshness(rollup.generated_at, receivedAt, now, staleMin),
+        freshness,
         draining: rollup.draining ?? null,
         workers: rollup.workers,
         counts,
         claims,
+        held,
       };
     })
     .sort((a, b) => a.host.localeCompare(b.host));
@@ -326,6 +551,114 @@ export function estimateServerNow(serverNowIso: string, fetchedAtMs: number, now
   const serverNow = Date.parse(serverNowIso);
   if (Number.isNaN(serverNow)) return new Date(nowMs);
   return new Date(serverNow + Math.max(0, nowMs - fetchedAtMs));
+}
+
+// ── Ticket phase (#546) ───────────────────────────────────────────
+
+/** Where a fleet ticket is, for its card: `problem` waits on a person or a fix, `waiting` on CI. */
+export interface TicketPhase {
+  label: string;
+  tone: 'active' | 'waiting' | 'problem';
+  /** ISO; null when the worker did not say. */
+  since: string | null;
+  prNumber: number | null;
+  /** An agent runs on it now (set up, coding or fixing): what a Stop can stop (#549). */
+  agentRunning: boolean;
+}
+
+export function ticketPhase(c: FleetClaimPhase): TicketPhase {
+  const base = { since: c.phase_since ?? null, prNumber: c.pr_number ?? null, agentRunning: false };
+  switch (c.phase) {
+    case 'starting':
+      return { ...base, label: 'Setting up', tone: 'active', agentRunning: true };
+    case 'working':
+      return { ...base, label: 'Agent working', tone: 'active', agentRunning: true };
+    case 'pr':
+      if (c.ci === 'red') return { ...base, label: 'CI red', tone: 'problem' };
+      if (c.ci === 'conflict') return { ...base, label: 'Merge conflict', tone: 'problem' };
+      if (c.ci === 'none') return { ...base, label: 'No CI', tone: 'problem' };
+      if (c.ci === 'manual') return { ...base, label: 'Needs a human merge', tone: 'problem' };
+      return { ...base, label: 'Waiting for CI', tone: 'waiting' };
+    case 'fixing':
+      return { ...base, label: c.fix_attempt ? `Fixing (${c.fix_attempt})` : 'Fixing', tone: 'active', agentRunning: true };
+    case 'merging':
+      return { ...base, label: 'Merging', tone: 'active' };
+    default:
+      return { ...base, label: c.phase, tone: 'active' };
+  }
+}
+
+/**
+ * Each claimed ticket's phase from the hosts' last rollups, by node id.
+ * A stale host says nothing — no phase beats a wrong one. A ticket two
+ * hosts report goes to the newer rollup.
+ */
+export function ticketPhases(
+  hosts: { generatedAt: string; receivedAt: string; rollup: FleetRollup }[],
+  now: Date,
+): Map<string, TicketPhase> {
+  const out = new Map<string, TicketPhase>();
+  const fresh = hosts
+    .filter((h) => !hostFreshness(h.generatedAt, h.receivedAt, now).stale)
+    .sort((a, b) => Date.parse(a.generatedAt) - Date.parse(b.generatedAt));
+  for (const h of fresh) {
+    for (const c of h.rollup.claims ?? []) out.set(c.nodeId, ticketPhase(c));
+  }
+  return out;
+}
+
+export const liveClaimKey = (mapId: string, nodeId: string, session: string): string =>
+  `${mapId}\n${nodeId}\n${session}`;
+
+/**
+ * Claims a live worker is on right now, as liveClaimKey strings. The
+ * stale-claim sweeper leaves these alone even when the node has not changed.
+ *
+ * Only `workers[]` counts, not the #546 `claims[]` list: a worker names
+ * the exact session that holds the claim, and it lists only tickets an
+ * agent is running on (a PR waiting on a person is not one — that claim is
+ * swept as before). A stale host, or a worker that is dead or not
+ * `working` (parked on a prompt, a limit, auth) protects nothing; the
+ * worker's own agent timeout ends a hung run. The
+ * map must be one this host serves, so no host can pin another fleet's claim.
+ */
+export function liveWorkerClaims(
+  hosts: { generatedAt: string; receivedAt: string; mapIds?: string[]; rollup: FleetRollup }[],
+  now: Date,
+): Set<string> {
+  const out = new Set<string>();
+  for (const h of hosts) {
+    if (hostFreshness(h.generatedAt, h.receivedAt, now).stale) continue;
+    for (const w of h.rollup.workers ?? []) {
+      const nodeId = w.claim?.nodeId;
+      const mapId = w.claim?.mapId ?? (h.mapIds?.length === 1 ? h.mapIds[0] : undefined);
+      if (!nodeId || !mapId || !w.session || w.state !== 'working' || isWorkerDead(w, now)) continue;
+      if (h.mapIds && !h.mapIds.includes(mapId)) continue;
+      out.add(liveClaimKey(mapId, nodeId, w.session));
+    }
+  }
+  return out;
+}
+
+/** "Waiting for CI · 12m": the label and how long the ticket has been in it. */
+export function ticketPhaseText(p: TicketPhase, now: Date): string {
+  const t = p.since ? Date.parse(p.since) : NaN;
+  if (!Number.isFinite(t)) return p.label;
+  const minutes = Math.max(0, Math.floor((now.getTime() - t) / 60_000));
+  const hours = Math.floor(minutes / 60);
+  const elapsed = minutes < 60 ? `${minutes}m` : hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+  return `${p.label} · ${elapsed}`;
+}
+
+/**
+ * The blocker the Stop button writes (#549). A blocker on a running ticket
+ * is what stops the worker's agent (claude-fleet#92), so Stop is a blocker
+ * that says who stopped it and why.
+ */
+export function stopBlockerReason(who: string, reason: string): string {
+  const name = who.trim() || 'a person';
+  const why = reason.trim();
+  return why ? `Stopped by ${name}: ${why}` : `Stopped by ${name}`;
 }
 
 // ── Tick history ──────────────────────────────────────────────────

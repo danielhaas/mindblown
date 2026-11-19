@@ -9,6 +9,7 @@ import {
   date,
   integer,
   primaryKey,
+  unique,
 } from 'drizzle-orm/pg-core';
 
 // ── Users ──────────────────────────────────────────────────────────
@@ -23,6 +24,12 @@ export const users = pgTable('users', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   /** Last password change or admin reset; JWTs issued before it are refused (#315). */
   passwordChangedAt: timestamp('password_changed_at', { withTimezone: true }),
+  /**
+   * 'person' or 'fleet' (#481). A fleet user is a fleet's service identity:
+   * no password, no login, reached only through API keys its fleet's owner
+   * issues; its map grants follow the fleet's connections (db/maps.ts).
+   */
+  kind: text('kind').notNull().default('person'),
 });
 
 // ── System-wide key/value settings ────────────────────────────────
@@ -92,6 +99,8 @@ export const maps = pgTable('maps', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   createdBy: uuid('created_by').notNull().references(() => users.id),
   archivedAt: timestamp('archived_at', { withTimezone: true }),
+  // Guided onboarding: the owner finished or dismissed the setup checklist.
+  setupCompletedAt: timestamp('setup_completed_at', { withTimezone: true }),
   publicToken: text('public_token'),
   githubInstallationId: text('github_installation_id'),
   githubRepoOwner: text('github_repo_owner'),
@@ -180,6 +189,13 @@ export const maps = pgTable('maps', {
   fleetId: uuid('fleet_id').references(() => fleets.id, { onDelete: 'set null' }),
   // Weight when the fleet picks between its maps (#478); 0.1–100.
   fleetShare: real('fleet_share').notNull().default(1),
+  // The fleet's repo token may change CI workflows (off: #507's default).
+  fleetCanEditCi: boolean('fleet_can_edit_ci').notNull().default(false),
+
+  // ── Trust (#491) ────────────────────────────────────────────────
+  // TrustPolicy | null — who may run the fleet on this map. NULL = the
+  // defaults (services/trustPolicy.ts), computed on read.
+  trustPolicy: jsonb('trust_policy'),
 });
 
 // ── Fleets (#477) ──────────────────────────────────────────────────
@@ -192,10 +208,37 @@ export const fleets = pgTable('fleets', {
   name: text('name').notNull(),
   ownerId: uuid('owner_id').notNull().references(() => users.id),
   maxActiveClaims: integer('max_active_claims').notNull().default(0),
+  /** Blocked tickets go to the fleet without a click (core Fleet.autoCheckBlockers). */
+  autoCheckBlockers: boolean('auto_check_blockers').notNull().default(true),
   /** Weighted round-robin credit per connected map id (#478) — internal pull state, not a knob. */
   pullDeficits: jsonb('pull_deficits').$type<Record<string, number>>().notNull().default({}),
+  /** The fleet's service user (#481, users.kind = 'fleet') — the identity its API keys act as. */
+  serviceUserId: uuid('service_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── Fleet pairings (#506) ──────────────────────────────────────────
+// A machine registers itself without a credential and shows a short code;
+// its owner types the code into MindBlown, and the machine collects its
+// fleet key once with the secret it kept. Only hashes of code and secret
+// are stored. Unconfirmed rows live 10 minutes, every row at most a day.
+export const fleetPairings = pgTable('fleet_pairings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  codeHash: text('code_hash').notNull().unique(),
+  secretHash: text('secret_hash').notNull(),
+  hostname: text('hostname').notNull(),
+  agent: text('agent'),
+  model: text('model'),
+  slots: integer('slots').notNull().default(1),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+  confirmedBy: uuid('confirmed_by').references(() => users.id, { onDelete: 'cascade' }),
+  fleetId: uuid('fleet_id').references(() => fleets.id, { onDelete: 'cascade' }),
+  /** Re-pair into an existing fleet: its other keys are revoked when the machine collects. */
+  replaceKeys: boolean('replace_keys').notNull().default(false),
+  collectedAt: timestamp('collected_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────
@@ -266,6 +309,10 @@ export const nodes = pgTable('nodes', {
   // cleared when the node goes back to todo. Kanban In-Progress cards.
   startedAt: timestamp('started_at', { withTimezone: true }),
 
+  // The worker's own ETA for this node. Caller-set; kept through done,
+  // cleared with started_at when the node goes back to todo.
+  expectedDoneAt: timestamp('expected_done_at', { withTimezone: true }),
+
   // ── Requirements register ─────────────────────────────────────
   // requirement_id: stable business requirement ID (e.g. 'MAN-01').
   //   Non-null marks the node as a requirement. Unique per map,
@@ -275,7 +322,7 @@ export const nodes = pgTable('nodes', {
   requirementPriority: text('requirement_priority'),
   // Business phrasing for register/doc export; NOT GitHub-synced.
   requirementText: text('requirement_text'),
-  // How to verify (Prüfanleitung, markdown) + deep link + demo video for
+  // How to verify (markdown) + deep link + demo video for
   // the review surface. Like requirement_text, NOT GitHub-synced.
   verificationText: text('verification_text'),
   verificationUrl: text('verification_url'),
@@ -307,6 +354,14 @@ export const nodes = pgTable('nodes', {
   // Cleared on `pull_request.closed`. Null when no PR currently
   // references this issue.
   linkedPr: jsonb('linked_pr'),
+  // reported_by: who asked for this node (#490) — NodeReporter JSON
+  // ({kind:'user',userId} | {kind:'forge',provider,login}). Written once
+  // on insert, never updated. Null = unknown (pre-#490 rows).
+  reportedBy: jsonb('reported_by'),
+  // approval (#492): NodeApproval JSON ({state, merge, by, at}). Stamped on
+  // insert from the map's trust policy; null = no stamp, which the pull
+  // queue holds (fail-closed). Existing rows: services/approvalBackfill.ts.
+  approval: jsonb('approval'),
 });
 
 // ── Map Permissions ───────────────────────────────────────────────
@@ -480,6 +535,9 @@ export const triageDecisions = pgTable('triage_decisions', {
   externalId: text('external_id').notNull(), // "owner/repo#NNN"
   issueTitle: text('issue_title').notNull(),
   issueState: text('issue_state').notNull(), // 'open' | 'closed'
+  // NodeReporter of the issue author, so a later operator "place" stamps the
+  // node's approval from the author (#492). Null on operator orphan rows.
+  issueReporter: jsonb('issue_reporter'),
   decision: text('decision').notNull(), // 'skip' | 'place' | 'uncertain'
   reason: text('reason').notNull(),
   confidence: integer('confidence').notNull(), // 0-100
@@ -560,7 +618,7 @@ export const cycles = pgTable('cycles', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-// ── Requirement acceptances (Abnahme) ──────────────────────────────
+// ── Requirement acceptances (sign-off) ──────────────────────────────
 //
 // Human sign-off per requirement node per user — orthogonal to the
 // derived status. Append-only history: revoking sets revoked_at, a
@@ -608,29 +666,35 @@ export const lintDismissals = pgTable('lint_dismissals', {
 });
 
 // ── Leidang fleet telemetry ───────────────────────────────────────
-// Last-known satellite rollup per (map, host) — overwritten on every push
+// Last-known satellite rollup per (fleet, host) — overwritten on every push
 // (rollup.sh, every ~2 min). A row that stops being refreshed IS the
 // host-down signal; nothing here is a session register. `payload` is the
-// rollup v1 document verbatim (core `FleetRollup`).
+// rollup document verbatim (core `FleetRollup`, v1 or v2). Keyed by fleet
+// since #479: a host reports once for every project it serves. `map_id` is
+// the map route a rollup came in through (what a v1 rollup serves); null
+// when pushed to the fleet route.
 
 export const fleetStatus = pgTable(
   'fleet_status',
   {
-    mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+    fleetId: uuid('fleet_id').notNull().references(() => fleets.id, { onDelete: 'cascade' }),
     host: text('host').notNull(),
+    mapId: uuid('map_id').references(() => maps.id, { onDelete: 'set null' }),
     generatedAt: timestamp('generated_at', { withTimezone: true }).notNull(),
     receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
     payload: jsonb('payload').notNull(),
   },
-  (t) => [primaryKey({ columns: [t.mapId, t.host] })],
+  (t) => [primaryKey({ columns: [t.fleetId, t.host] })],
 );
 
 // One row per orchestrator tick (decision.json + the numbers it judged
-// from); trimmed per map on insert to TICK_RETENTION_DAYS of received_at
-// plus a TICK_HARD_CAP row guard (db/fleet.ts).
+// from); trimmed per fleet on insert to TICK_RETENTION_DAYS of received_at
+// plus a TICK_HARD_CAP row guard (db/fleet.ts). `map_id` = the map route
+// it came in through, if any (#479).
 export const fleetTicks = pgTable('fleet_ticks', {
   id: uuid('id').primaryKey().defaultRandom(),
-  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  fleetId: uuid('fleet_id').notNull().references(() => fleets.id, { onDelete: 'cascade' }),
+  mapId: uuid('map_id').references(() => maps.id, { onDelete: 'set null' }),
   tickAt: timestamp('tick_at', { withTimezone: true }).notNull(),
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
   payload: jsonb('payload').notNull(),
@@ -641,10 +705,14 @@ export const fleetTicks = pgTable('fleet_ticks', {
 // whole every orchestrator tick (PUT /maps/:id/asks). MindBlown never
 // derives this list itself — the collector is the truth; what lives here
 // is the answer state. `payload` is the collector item verbatim (core `Ask`).
+// Keyed by fleet since #479: `map_id` is the project the ask is about, null
+// for a fleet-level ask. Unique on (fleet, ask, map) with NULLS NOT DISTINCT
+// — two projects' collectors may reuse an ask id (`ticket-12` in two repos).
 export const asks = pgTable(
   'asks',
   {
-    mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+    fleetId: uuid('fleet_id').notNull().references(() => fleets.id, { onDelete: 'cascade' }),
+    mapId: uuid('map_id').references(() => maps.id, { onDelete: 'cascade' }),
     askId: text('ask_id').notNull(),
     payload: jsonb('payload').notNull(),
     pushedAt: timestamp('pushed_at', { withTimezone: true }).notNull().defaultNow(),
@@ -656,11 +724,12 @@ export const asks = pgTable(
     writes: jsonb('writes').notNull().default([]), // AskWrite[]
     workerPending: boolean('worker_pending').notNull().default(false),
   },
-  (t) => [primaryKey({ columns: [t.mapId, t.askId] })],
+  (t) => [unique('asks_fleet_ask_map_uq').on(t.fleetId, t.askId, t.mapId).nullsNotDistinct()],
 );
 
 // The last push's meta (tick id, generated_at, the collector's own counts)
-// — one row per map, overwritten on every push.
+// — one row per (fleet, map) the push came for, map null for a fleet-wide
+// push; overwritten on every push.
 // Which map an uploaded document belongs to (#292): the map it was first
 // attached on. Access to a document = view on that map, while a live node
 // there still references it. Video and images are public and not tracked.
@@ -670,8 +739,127 @@ export const mediaOwners = pgTable('media_owners', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const asksPushes = pgTable('asks_pushes', {
+// ── Approval pushes (#493) ─────────────────────────────────────────
+// When a map last got a "tickets waiting for approval" push, and which
+// proposed tickets have had their one 24 h reminder.
+export const approvalNotifications = pgTable('approval_notifications', {
   mapId: uuid('map_id').primaryKey().references(() => maps.id, { onDelete: 'cascade' }),
-  pushedAt: timestamp('pushed_at', { withTimezone: true }).notNull().defaultNow(),
-  meta: jsonb('meta').notNull(),
+  lastPushedAt: timestamp('last_pushed_at', { withTimezone: true }).notNull(),
+});
+
+export const approvalReminders = pgTable('approval_reminders', {
+  nodeId: uuid('node_id').primaryKey().references(() => nodes.id, { onDelete: 'cascade' }),
+  remindedAt: timestamp('reminded_at', { withTimezone: true }).notNull(),
+});
+
+// ── AI read of proposed tickets ─────────────────────────────────────
+// One row per node: the AI's verdict on the text whose hash it carries
+// (services/approvalReview.ts). A text edit changes the hash, so the
+// row goes stale and the next tick reads the ticket again.
+export const approvalReviews = pgTable('approval_reviews', {
+  nodeId: uuid('node_id').primaryKey().references(() => nodes.id, { onDelete: 'cascade' }),
+  textHash: text('text_hash').notNull(),
+  verdict: text('verdict').notNull(),
+  reason: text('reason').notNull(),
+  questions: jsonb('questions').$type<string[]>().notNull(),
+  provider: text('provider').notNull(),
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true }).notNull(),
+  // A trusted person posted the questions on the issue (Ask the reporter).
+  askedAt: timestamp('asked_at', { withTimezone: true }),
+  // The questions as posted (the person's edit of the AI's) — what the worker gets.
+  askedQuestions: jsonb('asked_questions').$type<string[]>(),
+});
+
+// ── The reporter's check ────────────────────────────────────────────
+// One row per ticket an outside reporter filed and a person approved: after
+// the merge and the next deploy the reporter is asked on the issue to check
+// the fix (services/reporterCheck.ts). `state` / `outcome` as core
+// ReporterCheckState / ReporterCheckOutcome.
+export const reporterChecks = pgTable('reporter_checks', {
+  nodeId: uuid('node_id').primaryKey().references(() => nodes.id, { onDelete: 'cascade' }),
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  issueRef: text('issue_ref').notNull(),
+  issueUrl: text('issue_url').notNull(),
+  reporter: text('reporter').notNull(),
+  state: text('state').notNull(),
+  outcome: text('outcome'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  askedAt: timestamp('asked_at', { withTimezone: true }),
+  remindedAt: timestamp('reminded_at', { withTimezone: true }),
+  replyAt: timestamp('reply_at', { withTimezone: true }),
+  replyUrl: text('reply_url'),
+  replyExcerpt: text('reply_excerpt'),
+  doneAt: timestamp('done_at', { withTimezone: true }),
+  // The merge commit this round is about: a new one starts the next round.
+  mergeSha: text('merge_sha'),
+});
+
+// ── Daily mail with open questions (#597) ──────────────────────────
+// One row per person: the local day of the last digest round (a second
+// tick or a restart on that day sends nothing), the opt-out switch, and
+// the failed sends of `failedOn` (#602: retried up to a cap per day).
+export const digestMails = pgTable('digest_mails', {
+  userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+  lastSentOn: date('last_sent_on', { mode: 'string' }),
+  enabled: boolean('enabled').notNull().default(true),
+  failedOn: date('failed_on', { mode: 'string' }),
+  failures: integer('failures').notNull().default(0),
+});
+
+export const asksPushes = pgTable(
+  'asks_pushes',
+  {
+    fleetId: uuid('fleet_id').notNull().references(() => fleets.id, { onDelete: 'cascade' }),
+    mapId: uuid('map_id').references(() => maps.id, { onDelete: 'cascade' }),
+    pushedAt: timestamp('pushed_at', { withTimezone: true }).notNull().defaultNow(),
+    meta: jsonb('meta').notNull(),
+  },
+  (t) => [unique('asks_pushes_fleet_map_uq').on(t.fleetId, t.mapId).nullsNotDistinct()],
+);
+
+// ── Repo credential handouts (#507) ────────────────────────────────
+// A fleet key fetched a project's repo credentials: which fleet, which
+// map, which repo, when — never the token. The owner reads it on the
+// fleet page. Kept 30 days.
+export const fleetRepoHandouts = pgTable('fleet_repo_handouts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  fleetId: uuid('fleet_id').notNull().references(() => fleets.id, { onDelete: 'cascade' }),
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  repo: text('repo').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── Outgoing webhooks ──────────────────────────────────────────────
+// A URL subscribed to a map's events (map_id set) or to every map of a
+// workspace (map_id null). `secret` signs each delivery (HMAC-SHA256);
+// encrypted at rest when ENCRYPTION_KEY is set. `events` empty = all.
+// last_* = the outcome of the latest delivery attempt, for the owner.
+export const webhookSubscriptions = pgTable('webhook_subscriptions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id, { onDelete: 'cascade' }),
+  mapId: uuid('map_id').references(() => maps.id, { onDelete: 'cascade' }),
+  url: text('url').notNull(),
+  secret: text('secret').notNull(),
+  events: jsonb('events').notNull().default([]),
+  active: boolean('active').notNull().default(true),
+  description: text('description'),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  lastDeliveryAt: timestamp('last_delivery_at', { withTimezone: true }),
+  lastStatus: integer('last_status'),
+  lastError: text('last_error'),
+});
+
+// ── Wiki publish (#637) ──────────────────────────────────────────
+// The wiki document a map's timeline is published to: created on the first
+// publish, updated in place after that (a one-way push). The Outline base
+// URL, token and collection live on the workspace's `integrations` row
+// (provider 'outline').
+export const mapWikiDocuments = pgTable('map_wiki_documents', {
+  mapId: uuid('map_id').primaryKey().references(() => maps.id, { onDelete: 'cascade' }),
+  provider: text('provider').notNull().default('outline'),
+  documentId: text('document_id').notNull(),
+  documentUrl: text('document_url').notNull(),
+  publishedAt: timestamp('published_at', { withTimezone: true }).notNull().defaultNow(),
+  publishedBy: uuid('published_by').references(() => users.id, { onDelete: 'set null' }),
 });

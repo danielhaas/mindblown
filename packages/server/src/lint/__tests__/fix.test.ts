@@ -149,6 +149,72 @@ describe('applyLintFix — node-side actions', () => {
     expect(updateNode).toHaveBeenLastCalledWith('b', expect.objectContaining({ blockedReason: 'waiting on Dan' }));
   });
 
+  it('requeue puts it back in the queue as it stands: todo, progress kept, claim released', async () => {
+    seed({ id: 'a', status: 'wip', percentComplete: 85 });
+    const r = await applyLintFix('m1', 'a', 'requeue', 'u1');
+    expect(updateNode).toHaveBeenCalledWith('a', { status: 'todo', claimedBySession: null });
+    expect(r.node.percentComplete).toBe(85);
+  });
+
+  it('needs-human: tag on, the blocker text becomes the next step at the top, blocker and a blocked status go', async () => {
+    seed({ id: 'a', status: 'blocked', percentComplete: 85, blockedReason: 'check on a real phone', tags: ['blocked', 'app'], description: 'Inter everywhere.' });
+    const r = await applyLintFix('m1', 'a', 'needs-human', 'u1');
+    expect(updateNode).toHaveBeenCalledWith('a', {
+      tagsAppend: ['needs-human'],
+      claimedBySession: null,
+      description: '**Next step (a person): check on a real phone**\n\nInter everywhere.',
+      blockedReason: null,
+      tagsRemove: ['blocked'],
+      status: 'wip',
+    });
+    expect(r.changedFields).toEqual(['tags', 'claimedBySession', 'description', 'blockedReason', 'status']);
+  });
+
+  it('needs-human from a stalled answer keeps the free text as the step and leaves the status alone', async () => {
+    seed({ id: 'a', status: 'wip', percentComplete: 90 });
+    await applyLintFix('m1', 'a', 'needs-human', 'u1', { note: 'run the import on prod' });
+    expect(updateNode).toHaveBeenCalledWith('a', {
+      tagsAppend: ['needs-human'],
+      claimedBySession: null,
+      description: '**Next step (a person): run the import on prod**',
+    });
+  });
+
+  it('to-fleet ("Fleet can do it") takes every skip tag off and puts it back in the queue, progress kept', async () => {
+    seed({ id: 'a', status: 'wip', percentComplete: 95, tags: ['android', 'needs-human', 'Kira-Skip'] });
+    const r = await applyLintFix('m1', 'a', 'to-fleet', 'u1');
+    expect(updateNode).toHaveBeenCalledWith('a', { tagsRemove: ['needs-human', 'Kira-Skip'], status: 'todo', claimedBySession: null });
+    expect(r.changedFields).toEqual(['tags', 'status', 'claimedBySession']);
+  });
+
+  it('write-brief writes the text as the description and drops the needs-brief trace; no text is refused', async () => {
+    seed({ id: 'a', status: 'todo', tags: ['needs-brief'] });
+    const r = await applyLintFix('m1', 'a', 'write-brief', 'u1', { note: '  Show on done cards how long they took ' });
+    expect(updateNode).toHaveBeenCalledWith('a', { description: 'Show on done cards how long they took', tagsRemove: ['needs-brief'] });
+    expect(r.changedFields).toEqual(['description', 'tags']);
+    await expect(applyLintFix('m1', 'a', 'write-brief', 'u1', { note: ' ' })).rejects.toMatchObject({ code: 'BAD_ACTION' });
+  });
+
+  it('write-brief keeps a description written since, the answer on top', async () => {
+    seed({ id: 'a', status: 'todo', description: 'Earlier text' });
+    await applyLintFix('m1', 'a', 'write-brief', 'u1', { note: 'The brief' });
+    expect(updateNode).toHaveBeenCalledWith('a', { description: '**The brief**\n\nEarlier text', tagsRemove: ['needs-brief'] });
+  });
+
+  it('fleet-fix ("Fleet can fix it") drops the blocker, tags fleet-fix, keeps the claim and progress', async () => {
+    seed({ id: 'a', status: 'wip', percentComplete: 90, blockedReason: 'Fleet worker h: CI failed on PR #9 (abc).', tags: ['blocked'], claimedBySession: 'h:slot1:fleet-worker' });
+    const r = await applyLintFix('m1', 'a', 'fleet-fix', 'u1');
+    expect(updateNode).toHaveBeenCalledWith('a', { blockedReason: null, tagsAppend: ['fleet-fix'], tagsRemove: ['blocked'] });
+    expect(r.changedFields).toEqual(['blockedReason', 'tags']);
+  });
+
+  it('fleet-check tags the node and leaves the blocker until the queue hands it out', async () => {
+    seed({ id: 'a', status: 'wip', blockedReason: 'Waiting for the vendor', tags: [] });
+    const r = await applyLintFix('m1', 'a', 'fleet-check', 'u1');
+    expect(updateNode).toHaveBeenCalledWith('a', { tagsAppend: ['fleet-check'] });
+    expect(r.changedFields).toEqual(['tags']);
+  });
+
   it('clear-blocker delegates to the unblock service and fans out its changed fields', async () => {
     seed({ id: 'a', status: 'shipped', blockedReason: 'swept', tags: ['blocked'] });
     const r = await applyLintFix('m1', 'a', 'clear-blocker', 'u1');

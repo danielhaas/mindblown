@@ -16,6 +16,8 @@ export type {
   AskListOptions,
   AskListResult,
   AskAnswerResult,
+  FleetCheckResult,
+  // Approvals (#494)
   FleetStatusOptions,
   FleetJournalResult,
   FleetJournalOptions,
@@ -26,6 +28,7 @@ export type {
   SkippedTicket,
   GetNextTicketResult,
   FleetPullMapOutcome,
+  TicketRepo,
   // Closed-issue audit (premature-close backfill)
   ClosedIssueAuditOptions,
   ClosedIssueAuditVerdict,
@@ -38,11 +41,23 @@ export type {
   AttachmentText,
   AttachmentTextPage,
   AttachmentNotReadable,
+  // Repo docs
+  RepoDocsList,
+  RepoDocText,
+  ProposeDocEditInput,
+  ProposeDocEditResult,
+  // Outgoing webhooks
+  CreateWebhookInput,
+  UpdateWebhookInput,
+  WebhookPingResult,
+  // Markdown timeline + wiki publish (#637)
+  ExportMarkdownOptions,
+  WikiPublishResult,
 } from './backend.js';
 export type { ToolSpec } from './spec.js';
 export { defineTool } from './spec.js';
 export type { MapDetail, MapSummary, NodeWithComputed, AttachmentSummary } from './types.js';
-export { filterMapData, formatMapTree, type MapFilters } from './formatters.js';
+export { filterMapData, formatMapTree, formatReporter, formatApproval, type MapFilters } from './formatters.js';
 export { formatBytes } from './tools/attachments.js';
 export { specToOpenAiTool, type OpenAiTool } from './openai.js';
 export { specToAnthropicTool, type AnthropicTool } from './anthropic.js';
@@ -57,8 +72,15 @@ import { asksTools } from './tools/asks.js';
 import { fleetJournalTools } from './tools/fleetJournal.js';
 import { attachmentTools } from './tools/attachments.js';
 import { fleetTools } from './tools/fleets.js';
-export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools, fleetTools };
+import { docsTools } from './tools/docs.js';
+import { approvalTools } from './tools/approvals.js';
+import { reporterCheckTools } from './tools/reporterChecks.js';
+import { prMergeTools } from './tools/prMerge.js';
+import { webhookTools } from './tools/webhooks.js';
+import { waitingOnHumansTools } from './tools/waitingOnHumans.js';
+export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools, fleetTools, docsTools, approvalTools, reporterCheckTools, prMergeTools, webhookTools, waitingOnHumansTools };
 export { renderAskList } from './tools/asks.js';
+export { renderPendingApprovals } from './tools/approvals.js';
 
 export const allTools = [
   ...mapTools,
@@ -69,6 +91,12 @@ export const allTools = [
   ...orchestrationTools,
   ...githubAuditTools,
   ...asksTools,
+  ...approvalTools,
+  ...waitingOnHumansTools,
+  ...reporterCheckTools,
+  ...prMergeTools,
   ...fleetJournalTools,
   ...attachmentTools,
+  ...docsTools,
+  ...webhookTools,
 ];

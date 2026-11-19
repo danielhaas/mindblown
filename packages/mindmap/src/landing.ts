@@ -11,6 +11,7 @@ import type { Node, ComputedNodeValues, Cycle, Priority, BlockedItem, BlockerGro
 import { effectiveVersionId, groupBlockers as coreGroupBlockers, isStalledCandidate } from '@mindblown/core';
 import type { ReleaseForecastRow } from './api.js';
 import { isLeafDone } from './viewScope.js';
+import { localDay } from './localTime.js';
 
 export type StatusCategory = 'todo' | 'in_progress' | 'done';
 export type CategoryOf = (node: Node) => StatusCategory;
@@ -26,9 +27,8 @@ function isOpen(node: Node, categoryOf: CategoryOf): boolean {
 
 const DAY = 86_400_000;
 
-function isoDay(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
+/** Today is the viewer's day: a target date passes at their midnight, not UTC's (#595). */
+const isoDay = localDay;
 
 export function daysBetween(fromIso: string, toIso: string): number {
   return Math.round((Date.parse(toIso.slice(0, 10)) - Date.parse(fromIso.slice(0, 10))) / DAY);

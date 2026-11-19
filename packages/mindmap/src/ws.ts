@@ -3,17 +3,17 @@ import { getToken } from './api.js';
 type MessageHandler = (data: unknown) => void;
 
 /**
- * Ohne VITE_API_URL: gleiche Herkunft wie die Seite, Schema aus dem Protokoll
- * abgeleitet (https -> wss). Ein leerer Basis-String würde eine relative
- * WebSocket-URL ergeben, die der Browser nicht auflöst — anders als bei fetch
- * braucht `new WebSocket()` eine absolute Adresse.
+ * Without VITE_API_URL: same origin as the page, scheme derived from the
+ * protocol (https -> wss). An empty base string would yield a relative
+ * WebSocket URL, which the browser does not resolve — unlike fetch,
+ * `new WebSocket()` needs an absolute address.
  *
- * Bewusst eine Funktion und keine Modul-Konstante: `window` beim Import zu
- * lesen macht das Modul in Node unimportierbar, und `store.ts` zieht es mit
- * herein. Die Tests laufen in der node-Umgebung ohne DOM, also fiel dort die
- * ganze Suite mit `ReferenceError: window is not defined` aus — obwohl keiner
- * der Tests je eine Verbindung aufbaut. Erst beim Verbinden auszuwerten kostet
- * nichts und hält den Import seiteneffektfrei.
+ * Deliberately a function, not a module constant: reading `window` at import
+ * time makes the module unimportable in Node, and `store.ts` pulls it in. The
+ * tests run in the node environment without a DOM, so the whole suite failed
+ * there with `ReferenceError: window is not defined` — although none of the
+ * tests ever opens a connection. Evaluating at connect time costs nothing and
+ * keeps the import free of side effects.
  */
 function wsBase(): string {
   const configured = import.meta.env.VITE_API_URL;

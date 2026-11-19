@@ -9,7 +9,14 @@
  * That is the whole claim under test: the field is in the statement.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+const { STAMP, approvalForNewNode } = vi.hoisted(() => {
+  const STAMP = { state: 'proposed', merge: 'pr-only', by: null, at: '2026-10-28T00:00:00.000Z' } as const;
+  return { STAMP, approvalForNewNode: vi.fn(async () => STAMP) };
+});
+vi.mock('../../services/trustPolicy.js', () => ({ approvalForNewNode }));
+
 import { createNode, estimateSourceUpdate, type DbHandle } from '../nodes.js';
 
 function stubHandle(): { handle: DbHandle; inserted: () => Record<string, unknown> | null } {
@@ -64,6 +71,14 @@ describe('createNode forwards every data field to the INSERT (#389)', () => {
       versionId: null,
       cycleId: null,
     });
+  });
+
+  it('stamps the approval from the reporter against the map (#492)', async () => {
+    const { handle, inserted } = stubHandle();
+    const reportedBy = { kind: 'user', userId: 'fleet-user' } as const;
+    await createNode({ mapId: 'm1', parentId: 'p1', text: 'follow-up', createdBy: 'u1', reportedBy }, handle);
+    expect(approvalForNewNode).toHaveBeenLastCalledWith('m1', reportedBy, expect.any(Date));
+    expect(inserted()).toMatchObject({ approval: STAMP });
   });
 });
 

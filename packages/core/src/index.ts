@@ -43,8 +43,8 @@ export type {
   NodeMap,
 } from './types.js';
 
-export { FORGE_LINK_PROVIDERS, isForgeLink, forgeLabel } from './types.js';
-export type { ForgeKindName } from './types.js';
+export { FORGE_LINK_PROVIDERS, isForgeLink, forgeLabel, userReporter } from './types.js';
+export type { ApprovalState, ForgeKindName, ForgeProblem, NodeApproval, NodeReporter } from './types.js';
 
 // Computation engine
 export {
@@ -129,6 +129,7 @@ export {
   GATE_VERSION_PREFIX,
   isBugNode,
   hasBrief,
+  TITLE_BRIEF_MIN_WORDS,
   parseGateEntry,
   gateVersionIds,
   GATE_OR,
@@ -137,24 +138,46 @@ export {
   dispatchQueueSnapshot,
   dispatchSkipTag,
   dispatchHold,
+  approvalHold,
+  parentHolds,
+  isEpicLeaf,
+  EPIC_HOLD_TAG,
   DISPATCH_SKIP_TAGS,
   BLOCKED_TAG,
+  FLEET_FIX_TAG,
+  holdsCapSlot,
+  fleetCanFix,
+  FLEET_CHECK_TAG,
+  fleetFixAction,
   planUnblock,
 } from './dispatch.js';
-export type { DispatchPolicyKey, GateEntry, GateTerm, DispatchState, DispatchQueueSnapshot, DispatchHold, UnblockPlan } from './dispatch.js';
+export type { DispatchPolicyKey, GateEntry, GateTerm, DispatchState, DispatchQueueSnapshot, DispatchHold, ParentHold, UnblockPlan } from './dispatch.js';
 
 // Leidang fleet telemetry — rollup/tick shapes + the reading the Fleet card shows
 export {
   ROLLUP_STALE_MIN,
   WORKER_DEAD_MIN,
   parseRollup,
+  rollupServedMaps,
+  redactRollup,
+  redactTick,
   parseTick,
+  withoutClaimOutput,
+  claimOutput,
+  AGENT_OUTPUT_MAX_LINES,
+  AGENT_OUTPUT_MAX_LINE_CHARS,
   hostFreshness,
   isWorkerDead,
   effectiveWorkerState,
   summarizeFleet,
   silentSatellites,
   estimateServerNow,
+  ticketPhase,
+  ticketPhases,
+  liveWorkerClaims,
+  liveClaimKey,
+  stopBlockerReason,
+  ticketPhaseText,
   TICK_WINDOW_DEFAULT_LIMIT,
   TICK_HISTORY_DEFAULT_LIMIT,
   TICK_WINDOW_MAX_LIMIT,
@@ -165,16 +188,21 @@ export {
   FLEET_SHARE_MAX,
   DEFAULT_FLEET_SHARE,
   clampFleetShare,
+  capOnFleetConnect,
   orderFleetPull,
   advanceFleetPull,
 } from './fleet.js';
 export type {
   FleetPullDeficits,
   FleetWorkerStatus,
+  FleetClaimPhase,
+  AgentOutput,
   FleetRollup,
   FleetTickPayload,
+  TicketPhase,
   HostFreshness,
   HostSummary,
+  HeldClaim,
   FleetSummary,
   SilentReason,
   TickWindow,
@@ -193,10 +221,12 @@ export {
   decisionLine,
   decisionCommentBody,
   prependDecision,
+  replaceNextStep,
   planAskWrites,
   sortAsks,
   isNoQuestion,
   isVersionOnly,
+  questionParts,
   countAsks,
   digestAsks,
   formatAskDigest,
@@ -210,12 +240,14 @@ export type {
   AskDocument,
   AskDocumentMeta,
   AskAnswerInput,
+  StepFollowUp,
   AskWrite,
   AskRow,
   AskNodeState,
   AskWritePlan,
   AskCounts,
   AskDigest,
+  QuestionParts,
 } from './asks.js';
 
 // Rich-text rendering
@@ -238,7 +270,6 @@ export {
   stageCounts,
   BUILT_THRESHOLD,
   STAGE_LABEL,
-  STAGE_LABEL_DE,
   STAGE_ORDER,
   STAGE_COLOR,
 } from './requirements.js';
@@ -302,6 +333,7 @@ export type {
   JournalWindow,
   JournalPreset,
   JournalWorker,
+  JournalMapRef,
   JournalClaim,
   JournalRelease,
   JournalDelivered,
@@ -351,8 +383,124 @@ export { classifyBlocker, groupBlockers, STALLED_GROUP_LABEL } from './blockers.
 export type { BlockerKind, BlockerGroup, BlockedItem } from './blockers.js';
 
 // Stalled — in progress, unclaimed, no change for hours
-export { STALLED_AFTER_HOURS, isStalledCandidate, findStalled, formatIdle, describeStalled } from './stalled.js';
-export type { StalledNodeLike, StalledLeaf, StalledRelease, StalledActivity } from './stalled.js';
+export {
+  STALLED_AFTER_HOURS,
+  isStalledCandidate,
+  findStalled,
+  formatIdle,
+  describeStalled,
+  STALLED_ASK_AFTER_HOURS,
+  STALLED_ASK_PREFIX,
+  STALLED_ASK_OPTIONS,
+  stalledAskId,
+  stalledAskNodeId,
+  isStalledAskDue,
+  stalledAskAfterHours,
+  DECISION_TITLE_RE,
+  buildStalledAsk,
+  stalledAnswerAction,
+  stalledAnswerNote,
+} from './stalled.js';
+export type { StalledNodeLike, StalledLeaf, StalledRelease, StalledActivity, StalledAnswer } from './stalled.js';
+
+// "Your steps" — a person's needs-human tickets on the Questions card
+export {
+  STEP_ASK_PREFIX,
+  STEP_ASK_OPTIONS,
+  stepAskId,
+  stepAskNodeId,
+  isDerivedAsk,
+  nextStepOf,
+  stepSummaryOf,
+  stepParts,
+  buildStepAsk,
+  stepAnswerAction,
+  isStepOption,
+  STEP_FOLLOW_UPS,
+  derivedAnswerPreview,
+  BLOCKER_ASK_PREFIX,
+  BLOCKER_ASK_OPTIONS,
+  blockerAskId,
+  blockerAskNodeId,
+  derivedAskNodeId,
+  isPersonStepAsk,
+  buildBlockerAsk,
+  blockerAnswerAction,
+  blockerFleetAction,
+  autoCheckable,
+  staleCheckable,
+  namedTickets,
+  AUTO_CHECK_BY,
+  AUTO_CHECK_GRACE_MINUTES,
+  BRIEF_ASK_PREFIX,
+  BRIEF_ASK_OPTIONS,
+  briefAskId,
+  briefAskNodeId,
+  buildBriefAsk,
+  briefAnswerAction,
+} from './humanSteps.js';
+export type { StepAnswer, StepParts, BlockerAnswer, BriefAnswer } from './humanSteps.js';
 
 // Which uploaded files stay public capability URLs (#292, decision D)
 export { PUBLIC_MEDIA_EXTENSIONS, isPublicMediaFileName } from './media.js';
+
+// Trust policy: who may run the fleet on a map (#491)
+export { SAFE_TRUST_LEVEL, defaultTrustPolicy, trustLevel, automationFor, approvalAtCreation, parseTrustPolicy } from './trust.js';
+export type { TrustLevel, TrustDispatch, TrustMerge, TrustLevelPolicy, TrustPolicy, TrustAutomation, ForgeUserLink } from './trust.js';
+// Deciding on proposed tickets (#494)
+export { approvalHints, MAX_ASK_QUESTIONS } from './approval.js';
+export { REPORTER_REMIND_AFTER_DAYS, REPORTER_CLOSE_AFTER_DAYS } from './reporterCheck.js';
+export type { ReporterCheck, ReporterCheckList, ReporterCheckState, ReporterCheckOutcome, ReopenAfterCheckInput, DeployedResult } from './reporterCheck.js';
+export type { PendingApproval, PendingApprovalList, ApproveInput, RejectInput, AskReporterInput, ApprovalReview, ApprovalReviewVerdict } from './approval.js';
+
+// A person merges a fleet PR through MindBlown (pr_summary / merge_pr / prs_waiting)
+export { PR_SUMMARY_FILES, WAITS_ON_PERSON, waitsOnPerson, ciResult, snapshotCi, waitLabel, mergeRefusal } from './prMerge.js';
+export type { PrSummary, PrCheck, PrCheckState, PrCiResult, PrFileStat, MergeRefusal, MergeRefusalCode, MergePrResult, PrWaiting, PrsWaitingList } from './prMerge.js';
+
+// Guided onboarding: the project setup checklist
+export { projectSetup } from './setup.js';
+export type { SetupStepId, SetupStep, ProjectSetup } from './setup.js';
+
+// The kanban board at a glance (home-screen widget, #589)
+export { summarizeBoard, BOARD_SUMMARY_DEFAULT_LIMIT } from './boardSummary.js';
+export type { BoardSummary, BoardSummaryItem, BoardSummaryBlocked } from './boardSummary.js';
+
+// Outgoing webhooks: per map/workspace event subscriptions
+export { WEBHOOK_EVENTS, WEBHOOK_PING_EVENT, isWebhookEvent, statusCategory, webhookNodeRef, webhookEventsForNodeUpdate } from './webhooks.js';
+export type { WebhookEvent, WebhookSubscription, WebhookPayload, WebhookNodeRef, FleetWaitingOnHumanData } from './webhooks.js';
+
+// Waiting on humans: is a fleet idle, and what do people hold up
+export {
+  fleetIdleState,
+  isWaitingWorkerState,
+  waitingItemsFromAsks,
+  ownerPerson,
+  summarizeWaiting,
+  waitingCountsGrew,
+  waitingAlertDue,
+  WAITING_TOP_N,
+  DEFAULT_WAITING_PERSON,
+  WAITING_ALERT_THROTTLE_MS,
+} from './waitingOnHumans.js';
+export type {
+  WaitingKind,
+  WaitingItem,
+  WaitingCounts,
+  PersonWaiting,
+  FleetIdleState,
+  FleetWaitingOnHumans,
+  WaitingOnHumansResult,
+  WaitingAlertState,
+} from './waitingOnHumans.js';
+
+// A map (or subtree) as a Markdown timeline for readers outside the project (#637)
+export {
+  renderTimelineMarkdown,
+  timelineMilestones,
+  formatTimelineDay,
+  isTimeZone,
+  isWaitingLeaf,
+  TIMELINE_DETAILS,
+  EXTERNAL_TAG,
+} from './timelineExport.js';
+export type { TimelineDetail, TimelineSpan, TimelineInput, TimelineMilestone, TimelineWaiting, MilestoneStatus } from './timelineExport.js';

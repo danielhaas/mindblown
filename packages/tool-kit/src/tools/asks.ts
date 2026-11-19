@@ -18,6 +18,12 @@ function ref(r: AskRow): string {
   return a.ticket != null ? `#${a.ticket}` : (a.requirement ?? a.id);
 }
 
+/** The ask id, then its ticket/requirement ref when that differs (a step or node ask's ref is its id). */
+function ids(r: AskRow): string {
+  const x = ref(r);
+  return x === r.ask.id ? x : `${r.ask.id} · ${x}`;
+}
+
 function title(r: AskRow): string {
   const t = (r.ask.title ?? '').trim();
   const x = ref(r);
@@ -25,11 +31,19 @@ function title(r: AskRow): string {
   return t.startsWith(x + ' ') ? t.slice(x.length + 1) : t;
 }
 
-export function renderAskList(res: AskListResult, mapId: string): string {
+/** `[Map] ` in front of a row when the list spans a fleet's maps (#479); fleet-level rows say so. */
+function projectOf(r: AskRow, names: Map<string, string> | null): string {
+  if (!names) return '';
+  if (!r.mapId) return '[fleet] ';
+  return `[${names.get(r.mapId) ?? r.mapId.slice(0, 8)}] `;
+}
+
+export function renderAskList(res: AskListResult, scopeLabel: string): string {
   const rows = sortAsks(res.items);
   const lines: string[] = [];
+  const names = res.maps ? new Map(res.maps.map((m) => [m.id, m.name])) : null;
   if (!res.pushedAt) {
-    lines.push(`No asks pushed yet for map ${mapId} — the orchestrator's asks push (PUT /maps/:id/asks) is not wired, or the fleet is off.`);
+    lines.push(`No asks pushed yet for ${scopeLabel} — the orchestrator's asks push is not wired, or the fleet is off.`);
     return lines.join('\n');
   }
   const c = res.counts;
@@ -55,24 +69,24 @@ export function renderAskList(res: AskListResult, mapId: string): string {
     if (a.moot) bits.push('MOOT');
     if (a.stale) bits.push('STALE (ticket closed)');
     if (r.workerPending) bits.push('worker note pending');
-    lines.push(`- ${a.id} · ${ref(r)} ${title(r).slice(0, 80)} · ${bits.join(' · ')}`);
-    lines.push(`  Frage (${a.question_author ?? '?'}): ${a.question.slice(0, 400)}`);
-    if (a.options.length > 0) lines.push(`  Optionen: ${a.options.join(' | ')}`);
+    lines.push(`- ${projectOf(r, names)}${ids(r)} ${title(r).slice(0, 80)} · ${bits.join(' · ')}`);
+    lines.push(`  Question (${a.question_author ?? '?'}): ${a.question.slice(0, 400)}`);
+    if (a.options.length > 0) lines.push(`  Options: ${a.options.join(' | ')}`);
     const unb: string[] = [];
-    if (a.unblocks.node_id) unb.push(`node ${a.unblocks.node_id.slice(0, 8)}${a.unblocks.node_status ? ` (${a.unblocks.node_status})` : ''}`);
+    if (a.unblocks.node_id) unb.push(`node ${a.unblocks.node_id}${a.unblocks.node_status ? ` (${a.unblocks.node_status})` : ''}`);
     if (a.unblocks.worker) unb.push(`worker ${a.unblocks.worker}`);
     if (a.unblocks.pr) unb.push(`PR ${a.unblocks.pr}${a.unblocks.pr_state ? ` ${a.unblocks.pr_state}` : ''}`);
     if (a.url) unb.push(a.url);
-    if (unb.length) lines.push(`  entblockt: ${unb.join(' · ')}`);
-    if (r.answer?.decision) lines.push(`  Entscheid: ${r.answer.decision}`);
+    if (unb.length) lines.push(`  unblocks: ${unb.join(' · ')}`);
+    if (r.answer?.decision) lines.push(`  Decision: ${r.answer.decision}`);
   }
   if (noQuestion.length > 0) {
-    lines.push('', `## Keine Frage — geparkte Planposten / Text ist schon der Entscheid (${noQuestion.length})`);
-    for (const r of noQuestion) lines.push(`- ${r.ask.id} · ${ref(r)} [${r.ask.hint}] ${title(r).slice(0, 90)}`);
+    lines.push('', `## No question — parked plan items / the text already is the decision (${noQuestion.length})`);
+    for (const r of noQuestion) lines.push(`- ${projectOf(r, names)}${ids(r)} [${r.ask.hint}] ${title(r).slice(0, 90)}`);
   }
   if (versionOnly.length > 0) {
-    lines.push('', `## Nur Version fehlt — NEEDS-VERSION (${versionOnly.length}, Antwort = Milestone)`);
-    for (const r of versionOnly) lines.push(`- ${r.ask.id} · ${ref(r)} ${title(r).slice(0, 90)}${r.ask.priority ? ` · ${r.ask.priority}` : ''}`);
+    lines.push('', `## Only the version is missing — NEEDS-VERSION (${versionOnly.length}, answer = milestone)`);
+    for (const r of versionOnly) lines.push(`- ${projectOf(r, names)}${ids(r)} ${title(r).slice(0, 90)}${r.ask.priority ? ` · ${r.ask.priority}` : ''}`);
   }
   return lines.join('\n');
 }
@@ -87,19 +101,24 @@ export const listAsksTool = defineTool({
     'ordered answerer → priority → idle age. `hint` says what kind of thing it',
     'is: decision (someone must choose), ops-task (a session with the right key',
     'can just do it), waiting-external, already-decided / parked-plan (folded',
-    'as "keine Frage"). MindBlown never invents an ask — wording, options and',
+    'as "no question"). MindBlown never invents an ask — wording, options and',
     'answerer come from the collector. Read-only; answer with answer_ask.',
+    'Pass `mapId` for one project, or `fleetId` for every project of a fleet',
+    '(each row then names its map; [fleet] = a fleet-level ask).',
   ].join('\n'),
   schema: {
-    mapId: z.string().describe('The map ID the fleet pulls from'),
+    mapId: z.string().optional().describe('The map ID the fleet pulls from — one of mapId / fleetId'),
+    fleetId: z.string().optional().describe('A fleet ID (list_fleets): the asks of all its maps you can view'),
     status: z.enum(STATUSES).optional().describe('Default open. all = including answered/later/delegated rows'),
     hint: z.enum(HINTS).optional().describe('Only one kind of ask'),
     answerer: z.enum(ANSWERERS).optional().describe('Only questions whose primary answerer is this person'),
     limit: z.number().int().min(1).max(500).optional(),
   },
-  handler: async (backend, { mapId, status, hint, answerer, limit }) => {
-    const res = await backend.listAsks(mapId, { status, hint, answerer, limit });
-    return renderAskList(res, mapId);
+  handler: async (backend, { mapId, fleetId, status, hint, answerer, limit }) => {
+    if (!mapId === !fleetId) throw new Error('Pass exactly one of mapId or fleetId');
+    const opts = { status, hint, answerer, limit };
+    const res = fleetId ? await backend.listAsksForFleet(fleetId, opts) : await backend.listAsks(mapId!, opts);
+    return renderAskList(res, fleetId ? `fleet ${fleetId}` : `map ${mapId}`);
   },
 });
 
@@ -108,7 +127,7 @@ export const answerAskTool = defineTool({
   description: [
     'Record a human\'s answer to one ask and write it where the fleet picks it',
     'up — exactly what claude-fleet leidang-asks-apply does: issue comment',
-    '«Entscheid (by, date): …» on the ticket (+ milestone and NEEDS-VERSION off',
+    '«Decision (by, date): …» on the ticket (+ milestone and NEEDS-VERSION off',
     'when that was the question and a milestone is given); decision at the top',
     'of the node description, blockedReason cleared, `blocked` tag removed,',
     'status → todo unless the node is done, claimed, or noRequeue; a',
@@ -116,25 +135,62 @@ export const answerAskTool = defineTool({
     '`later` and `delegate` only record. A moot ask (PR behind the dialog',
     'merged/closed) writes nothing. NEVER call this without an explicit',
     'decision from the human — the tool records decisions, it does not make them.',
+    'Pass `mapId`, or `fleetId` for an ask from a fleet-wide list_asks (add',
+    '`askMapId` when two maps share the ask id; "" for a fleet-level ask).',
+    'A step row (id "step-<nodeId>", Your steps): "Done" / "Fleet can do it",',
+    'or free text = a decision — «Decision (by, date): …» in place of the next',
+    'step and as a comment on the linked issue, then `next`: fleet (default —',
+    'skip tags and blocked off, labels too, status todo), done, or mine (the',
+    'step stays a person\'s, the text its new next step).',
   ].join('\n'),
   schema: {
-    mapId: z.string(),
+    mapId: z.string().optional().describe('The ask\'s map — one of mapId / fleetId'),
+    fleetId: z.string().optional().describe('The fleet the ask belongs to (list_asks fleetId=)'),
+    askMapId: z.string().optional().describe('With fleetId: which map\'s ask, when the id is not unique in the fleet ("" = fleet-level)'),
     askId: z.string().describe('The ask id from list_asks (e.g. "#6823", "REQ-12", a node id)'),
     action: z.enum(['answered', 'later', 'delegate']),
     decision: z.string().optional().describe('The decision text (required for answered). Options from the ask, or free text'),
     by: z.string().optional().describe('Who decided — default Dan'),
     milestone: z.string().optional().describe('Milestone title to set on the ticket when it carried NEEDS-VERSION'),
     noRequeue: z.boolean().optional().describe('Record the answer but keep the node status — a human step still precedes the fleet'),
-    delegateTo: z.enum(['Rita', 'Susi', 'Dana']).optional().describe('For delegate'),
+    delegateTo: z.string().trim().min(1).max(100).optional().describe('For delegate: who takes it — a person on the map (name) or any name'),
+    next: z.enum(['fleet', 'done', 'mine']).optional().describe('Step rows, free-text decision: hand to fleet (default), close as done, or still mine'),
   },
-  handler: async (backend, { mapId, askId, action, decision, by, milestone, noRequeue, delegateTo }) => {
-    const r = await backend.answerAsk(mapId, askId, { action, decision, by, milestone, noRequeue, delegateTo });
+  handler: async (backend, { mapId, fleetId, askMapId, askId, action, decision, by, milestone, noRequeue, delegateTo, next }) => {
+    if (!mapId === !fleetId) throw new Error('Pass exactly one of mapId or fleetId');
+    const input = { action, decision, by, milestone, noRequeue, delegateTo, ...(next ? { next } : {}) };
+    const r = fleetId ? await backend.answerAskForFleet(fleetId, askId, input, askMapId) : await backend.answerAsk(mapId!, askId, input);
     const lines: string[] = [];
     lines.push(`${askId}: ${r.ask.status}${r.ask.answeredBy ? ` by ${r.ask.answeredBy}` : ''}${r.ok ? '' : ' — SOME WRITES FAILED'}`);
     for (const w of r.ask.writes) {
       lines.push(`  ${w.done ? 'wrote' : w.error ? 'FAILED' : 'pending'}: ${w.kind} ${w.target} — ${w.detail}${w.error ? ` (${w.error})` : ''}`);
     }
     if (r.node) lines.push(`  node ${r.node.id.slice(0, 8)} status now ${r.node.status ?? 'null'}`);
+    return lines.join('\n');
+  },
+});
+
+export const fleetCheckBlockersTool = defineTool({
+  name: 'fleet_check_blockers',
+  description: [
+    'Hand every blocked ticket on the fleet\'s maps back to the fleet ("Fleet',
+    'can fix it" on each blocker row of Your steps). A worker\'s own PR with red',
+    'CI or a merge conflict: the worker reworks the branch (fleet-fix). Any',
+    'other blocker: the queue hands the ticket out first, the blocker in the',
+    'brief — the agent gets past it or writes down what a person must do',
+    '(fleet-check). Rows a question to a person already covers, and',
+    'needs-human steps, are left alone. Only on maps you may edit. Only on a',
+    'human\'s request — it starts agent runs.',
+  ].join('\n'),
+  schema: {
+    fleetId: z.string().describe('The fleet (list_fleets)'),
+    by: z.string().optional().describe('Who asked — default Dan'),
+  },
+  handler: async (backend, { fleetId, by }) => {
+    const r = await backend.fleetCheckBlockers(fleetId, by);
+    const lines = [`${r.sent.length} blocker(s) handed to the fleet${r.failed.length ? `, ${r.failed.length} failed` : ''}`];
+    for (const s of r.sent) lines.push(`  ${s.action === 'fleet-fix' ? 'fix its PR' : 'check run'}: ${s.askId}`);
+    for (const f of r.failed) lines.push(`  FAILED ${f.askId}: ${f.error}`);
     return lines.join('\n');
   },
 });
@@ -147,12 +203,15 @@ export const asksDigestTool = defineTool({
     'again, which worker notes still wait for the next tick. Read-only.',
   ].join('\n'),
   schema: {
-    mapId: z.string(),
+    mapId: z.string().optional().describe('One project — one of mapId / fleetId'),
+    fleetId: z.string().optional().describe('Every project of the fleet you can view'),
     since: z.string().optional().describe('ISO 8601 — default: today 00:00 UTC'),
   },
-  handler: async (backend, { mapId, since }) => {
+  handler: async (backend, { mapId, fleetId, since }) => {
+    if (!mapId === !fleetId) throw new Error('Pass exactly one of mapId or fleetId');
     const from = since ?? `${new Date().toISOString().slice(0, 10)}T00:00:00Z`;
-    const res = await backend.listAsks(mapId, { status: 'all', since: from });
+    const opts = { status: 'all' as const, since: from };
+    const res = fleetId ? await backend.listAsksForFleet(fleetId, opts) : await backend.listAsks(mapId!, opts);
     const d = digestAsks(res.items, from);
     return formatAskDigest(d, from.slice(0, 10));
   },
@@ -161,4 +220,4 @@ export const asksDigestTool = defineTool({
 /** Exposed so a caller can preview what an answer would write without writing. */
 export { planAskWrites };
 
-export const asksTools = [listAsksTool, answerAskTool, asksDigestTool];
+export const asksTools = [listAsksTool, answerAskTool, asksDigestTool, fleetCheckBlockersTool];

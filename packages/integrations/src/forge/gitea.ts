@@ -47,11 +47,25 @@ import {
   type IssuesListQuery,
   type ListPullRequestsQuery,
   type MilestoneRef,
+  type CreatePullRequestInput,
+  type PutFileInput,
+  type PutFileResult,
+  type RepoTree,
   type RequestOptions,
   type UpdateIssueInput,
+  type ForgeCheck,
+  type ForgePullRequestDetail,
+  type ForgePullRequestFile,
+  type MergePullRequestInput,
+  type RepoMergeSettings,
 } from './types.js';
+import { blobBytes, contentsPath, encodeRef, toBase64, treeFiles, type RawBlob, type RawPutFile, type RawTree } from './contents.js';
 import { FORGE_REQUEST_TIMEOUT_MS } from './constants.js';
 import { walkIssueScan } from './pagination.js';
+import { commitStatusCheck, giteaMergeMethod, pullRequestDetail, pullRequestFiles, type RawCommitStatus, type RawPullRequest } from './pullRequests.js';
+
+/** 20 pages × 1000 entries — beyond that the Docs tab reports a partial listing. */
+const TREE_MAX_PAGES = 20;
 
 export interface GiteaForgeOptions {
   token: string;
@@ -503,6 +517,91 @@ export class GiteaForge implements ForgeClient {
       `/repos/${owner}/${repo}/pulls/${prNumber}/files?limit=100`,
     );
     return rows.map((f) => f.filename);
+  }
+
+  async getPullRequestDetail(owner: string, repo: string, prNumber: number): Promise<ForgePullRequestDetail> {
+    return pullRequestDetail(await this.requestJson<RawPullRequest>(`/repos/${owner}/${repo}/pulls/${prNumber}`));
+  }
+
+  async listPullRequestFileStats(owner: string, repo: string, prNumber: number): Promise<ForgePullRequestFile[]> {
+    return pullRequestFiles(
+      await this.requestList<{ filename: string; additions: number; deletions: number }>(`/repos/${owner}/${repo}/pulls/${prNumber}/files?limit=100`),
+    );
+  }
+
+  /** Gitea / Forgejo Actions report as commit statuses; the combined read keeps the latest per context. */
+  async listCommitChecks(owner: string, repo: string, sha: string): Promise<ForgeCheck[]> {
+    const combined = await this.requestJson<{ statuses: RawCommitStatus[] | null } | null>(`/repos/${owner}/${repo}/commits/${sha}/status`);
+    return (combined?.statuses ?? []).map(commitStatusCheck);
+  }
+
+  async getRepoMergeSettings(owner: string, repo: string): Promise<RepoMergeSettings> {
+    const raw = await this.requestJson<{ default_branch: string; default_merge_style?: string | null }>(`/repos/${owner}/${repo}`);
+    return { defaultBranch: raw.default_branch, defaultMethod: giteaMergeMethod(raw.default_merge_style) };
+  }
+
+  /** Gitea: POST with `Do` + `head_commit_id`; a moved head is a 409 as on GitHub. */
+  async mergePullRequest(owner: string, repo: string, prNumber: number, input: MergePullRequestInput): Promise<void> {
+    await this.requestJson(`/repos/${owner}/${repo}/pulls/${prNumber}/merge`, {
+      method: 'POST',
+      body: { Do: input.method, head_commit_id: input.headSha },
+    });
+  }
+
+  // ── Repo contents ───────────────────────────────────────────────
+
+  /**
+   * Gitea pages a recursive tree (`truncated` on every page but the last;
+   * per_page clamps at `[api] DEFAULT_GIT_TREES_PER_PAGE`, 1000 by default).
+   * Walks at most `TREE_MAX_PAGES` pages and reports `truncated` past that.
+   */
+  async getRepoTree(owner: string, repo: string, ref: string): Promise<RepoTree> {
+    const files: RepoTree['files'] = [];
+    let sha = '';
+    for (let page = 1; page <= TREE_MAX_PAGES; page++) {
+      const raw = await this.requestJson<RawTree>(
+        `/repos/${owner}/${repo}/git/trees/${encodeRef(ref)}?recursive=true&per_page=1000&page=${page}`,
+      );
+      sha = raw.sha;
+      files.push(...treeFiles(raw));
+      if (!raw.truncated) return { sha, files, truncated: false };
+    }
+    return { sha, files, truncated: true };
+  }
+
+  async getBlob(owner: string, repo: string, sha: string): Promise<Uint8Array> {
+    return blobBytes(await this.requestJson<RawBlob>(`/repos/${owner}/${repo}/git/blobs/${sha}`));
+  }
+
+  // ── Repo writes ─────────────────────────────────────────────────
+
+  async createBranch(owner: string, repo: string, name: string, from: string): Promise<void> {
+    await this.requestJson(`/repos/${owner}/${repo}/branches`, { method: 'POST', body: { new_branch_name: name, old_branch_name: from } });
+  }
+
+  async deleteBranch(owner: string, repo: string, name: string): Promise<void> {
+    await this.requestJson(`/repos/${owner}/${repo}/branches/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  }
+
+  async putFile(owner: string, repo: string, input: PutFileInput): Promise<PutFileResult> {
+    try {
+      const res = await this.requestJson<RawPutFile>(contentsPath(owner, repo, input.path), {
+        method: 'PUT',
+        body: { message: input.message, content: toBase64(input.content), sha: input.blobSha, branch: input.branch },
+      });
+      return { blobSha: res.content.sha, commitSha: res.commit.sha };
+    } catch (err) {
+      // Gitea's stale-sha answer is 422 "sha does not match"; GitHub's is 409.
+      if (err instanceof ForgeApiError && err.status === 422 && /sha does not match/i.test(err.body)) {
+        throw new ForgeApiError(409, err.body, 'gitea');
+      }
+      throw err;
+    }
+  }
+
+  async createPullRequest(owner: string, repo: string, input: CreatePullRequestInput): Promise<{ number: number; url: string }> {
+    const pr = await this.requestJson<{ number: number; html_url: string }>(`/repos/${owner}/${repo}/pulls`, { method: 'POST', body: input });
+    return { number: pr.number, url: pr.html_url };
   }
 
   // ── URLs ────────────────────────────────────────────────────────

@@ -37,11 +37,21 @@ const db = vi.hoisted(() => ({
   updateMap: vi.fn(),
   /** Maps each user can view, with their fleetId. */
   visible: {} as Record<string, Array<{ id: string; fleetId: string | null }>>,
+  /** Users that are a fleet's service identity (#481). */
+  fleetUsers: new Set<string>(),
+  createApiKey: vi.fn(),
+  listApiKeysForUser: vi.fn(),
+  revokeApiKey: vi.fn(),
 }));
 
+const SERVICE_USER = 'fleet-service-user';
+
 vi.mock('../../db/fleets.js', () => ({
+  isFleetUser: async (id: string) => db.fleetUsers.has(id),
+  getServiceUserId: async (id: string) => (id === FLEET_ID ? SERVICE_USER : null),
   getFleet: (...a: unknown[]) => db.getFleet(...a),
   listFleetsByOwnerOrIds: (...a: unknown[]) => db.listFleetsByOwnerOrIds(...a),
+  countActiveClaims: async () => 2,
   listFleetMaps: (...a: unknown[]) => db.listFleetMaps(...a),
   createFleet: (...a: unknown[]) => db.createFleet(...a),
   updateFleet: (...a: unknown[]) => db.updateFleet(...a),
@@ -52,15 +62,30 @@ vi.mock('../../db/maps.js', () => ({
   updateMap: (...a: unknown[]) => db.updateMap(...a),
 }));
 vi.mock('../../db/permissions.js', () => ({ getPermission: async () => null, hasPermission: () => false }));
+vi.mock('../../lib/apiKeys.js', () => ({
+  createApiKey: (...a: unknown[]) => db.createApiKey(...a),
+  listApiKeysForUser: (...a: unknown[]) => db.listApiKeysForUser(...a),
+  revokeApiKey: (...a: unknown[]) => db.revokeApiKey(...a),
+}));
 const broadcastMock = vi.hoisted(() => vi.fn());
 vi.mock('../../ws.js', () => ({ broadcast: (...a: unknown[]) => broadcastMock(...a) }));
 
+const waiting = vi.hoisted(() => vi.fn());
+vi.mock('../../services/waitingOnHumans.js', () => ({ waitingOnHumansForUser: (...a: unknown[]) => waiting(...a) }));
+
 import { fleetEntityRoutes } from '../fleets.js';
 
-async function call(userId: string | null, method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: unknown) {
+async function call(
+  userId: string | null,
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  url: string,
+  payload?: unknown,
+  authSource: 'jwt' | 'api-key' = 'jwt',
+) {
   const app: FastifyInstance = Fastify({ logger: false });
   app.addHook('preHandler', async (req) => {
     if (userId) req.userId = userId;
+    Object.assign(req, { authSource });
   });
   await app.register(fleetEntityRoutes);
   const res = await app.inject({ method, url, ...(payload !== undefined ? { payload: payload as object } : {}) });
@@ -69,7 +94,8 @@ async function call(userId: string | null, method: 'GET' | 'POST' | 'PATCH' | 'D
 }
 
 beforeEach(() => {
-  for (const fn of [db.getFleet, db.listFleetsByOwnerOrIds, db.listFleetMaps, db.createFleet, db.updateFleet, db.deleteFleet, db.updateMap, broadcastMock]) fn.mockReset();
+  for (const fn of [db.getFleet, db.listFleetsByOwnerOrIds, db.listFleetMaps, db.createFleet, db.updateFleet, db.deleteFleet, db.updateMap, db.createApiKey, db.listApiKeysForUser, db.revokeApiKey, broadcastMock]) fn.mockReset();
+  db.fleetUsers = new Set();
   db.updateMap.mockImplementation(async (id: string) => ({ id, fleetId: null }));
   db.getFleet.mockResolvedValue(fleetRow());
   db.listFleetMaps.mockResolvedValue(connected);
@@ -112,7 +138,8 @@ describe('GET /api/fleets/:id', () => {
   it('shows the owner every connected map', async () => {
     const res = await call(OWNER, 'GET', `/api/fleets/${FLEET_ID}`);
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ isOwner: true, hiddenMapCount: 0 });
+    // activeClaims: claims across every connected map, for the cap display (#480).
+    expect(res.json()).toMatchObject({ isOwner: true, hiddenMapCount: 0, activeClaims: 2 });
     expect(res.json().maps.map((m: { id: string }) => m.id)).toEqual([MAP_A, MAP_B]);
   });
 
@@ -150,6 +177,14 @@ describe('PATCH /api/fleets/:id', () => {
     expect(db.updateFleet).toHaveBeenCalledWith(FLEET_ID, { name: 'renamed', maxActiveClaims: 5 });
   });
 
+  it('lets the owner switch the automatic blocker check; refuses a non-boolean', async () => {
+    expect((await call(OWNER, 'PATCH', `/api/fleets/${FLEET_ID}`, { autoCheckBlockers: true })).statusCode).toBe(200);
+    expect(db.updateFleet).toHaveBeenCalledWith(FLEET_ID, expect.objectContaining({ autoCheckBlockers: true }));
+    expect((await call(OWNER, 'PATCH', `/api/fleets/${FLEET_ID}`, { autoCheckBlockers: 'yes' })).statusCode).toBe(400);
+    expect((await call(VIEWER, 'PATCH', `/api/fleets/${FLEET_ID}`, { autoCheckBlockers: true })).statusCode).toBe(403);
+    expect(db.updateFleet).toHaveBeenCalledTimes(1);
+  });
+
   it('403s a viewer, 404s a stranger', async () => {
     expect((await call(VIEWER, 'PATCH', `/api/fleets/${FLEET_ID}`, { maxActiveClaims: 9 })).statusCode).toBe(403);
     expect((await call(STRANGER, 'PATCH', `/api/fleets/${FLEET_ID}`, { maxActiveClaims: 9 })).statusCode).toBe(404);
@@ -177,5 +212,66 @@ describe('DELETE /api/fleets/:id', () => {
     expect(broadcastMock).toHaveBeenCalledWith(MAP_B, expect.objectContaining({ type: 'map:updated' }));
     const lastDisconnect = Math.max(...db.updateMap.mock.invocationCallOrder);
     expect(db.deleteFleet.mock.invocationCallOrder[0]).toBeGreaterThan(lastDisconnect);
+  });
+});
+
+describe('fleet credentials (#481)', () => {
+  const url = `/api/fleets/${FLEET_ID}/credentials`;
+
+  it('the owner issues a key for the fleet\'s service user and sees the plaintext once', async () => {
+    db.createApiKey.mockResolvedValue({ id: 'k1', name: 'sat keys', key: 'mb_secret', prefix: 'mb_secre', createdAt: 'c', expiresAt: null });
+    const res = await call(OWNER, 'POST', url, { name: 'sat keys' });
+    expect(res.statusCode).toBe(201);
+    expect(db.createApiKey).toHaveBeenCalledWith(SERVICE_USER, 'sat keys');
+    expect(res.json()).toMatchObject({ id: 'k1', key: 'mb_secret' });
+  });
+
+  it('lists the keys by prefix and revokes one', async () => {
+    db.listApiKeysForUser.mockResolvedValue([{ id: 'k1', prefix: 'mb_secre' }]);
+    db.revokeApiKey.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const list = await call(OWNER, 'GET', url);
+    const revoked = await call(OWNER, 'DELETE', `${url}/k1`);
+    const again = await call(OWNER, 'DELETE', `${url}/k1`);
+    expect(list.json()).toEqual({ credentials: [{ id: 'k1', prefix: 'mb_secre' }] });
+    expect(db.listApiKeysForUser).toHaveBeenCalledWith(SERVICE_USER);
+    expect(db.revokeApiKey).toHaveBeenCalledWith(SERVICE_USER, 'k1');
+    expect([revoked.statusCode, again.statusCode]).toEqual([204, 404]);
+  });
+
+  it('only the owner, only on a web session — an API key never manages keys', async () => {
+    expect((await call(VIEWER, 'POST', url, {})).statusCode).toBe(403);
+    expect((await call(STRANGER, 'GET', url)).statusCode).toBe(404);
+    expect((await call(OWNER, 'POST', url, {}, 'api-key')).statusCode).toBe(403);
+    expect((await call(OWNER, 'DELETE', `${url}/k1`, undefined, 'api-key')).statusCode).toBe(403);
+    expect(db.createApiKey).not.toHaveBeenCalled();
+    expect(db.revokeApiKey).not.toHaveBeenCalled();
+  });
+
+  it('a fleet key cannot create fleets', async () => {
+    db.fleetUsers.add(SERVICE_USER);
+    const res = await call(SERVICE_USER, 'POST', '/api/fleets', { name: 'mine' }, 'api-key');
+    expect(res.statusCode).toBe(403);
+    expect(db.createFleet).not.toHaveBeenCalled();
+  });
+});
+
+describe('waiting on humans', () => {
+  it('reads every fleet of the caller, or one fleet; maps a hidden fleet to its 404', async () => {
+    waiting.mockReset();
+    waiting.mockResolvedValue([{ fleetId: FLEET_ID, idle: true }]);
+    const all = await call(OWNER, 'GET', '/api/waiting-on-humans');
+    expect(all.statusCode).toBe(200);
+    expect(all.json().fleets).toEqual([{ fleetId: FLEET_ID, idle: true }]);
+    expect(waiting).toHaveBeenLastCalledWith(OWNER);
+
+    expect((await call(VIEWER, 'GET', `/api/fleets/${FLEET_ID}/waiting-on-humans`)).statusCode).toBe(200);
+    expect(waiting).toHaveBeenLastCalledWith(VIEWER, FLEET_ID);
+
+    waiting.mockResolvedValue({ status: 404, code: 'FLEET_NOT_FOUND', message: 'no' });
+    const hidden = await call(STRANGER, 'GET', `/api/fleets/${FLEET_ID}/waiting-on-humans`);
+    expect(hidden.statusCode).toBe(404);
+    expect(hidden.json().error.code).toBe('FLEET_NOT_FOUND');
+
+    expect((await call(null, 'GET', '/api/waiting-on-humans')).statusCode).toBe(401);
   });
 });

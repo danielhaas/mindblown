@@ -33,6 +33,7 @@ export {
   giteaUserForge,
   getGiteaUser,
   listGiteaUserRepos,
+  createGiteaUserRepo,
   GITHUB_API_BASE,
   GITHUB_WEB_BASE,
   GITHUB_ENDPOINT,
@@ -43,6 +44,7 @@ export {
   githubForge,
   readWebhookHeaders,
   verifyWebhookSignature,
+  MERGE_METHODS,
 } from './forge/index.js';
 
 export type {
@@ -63,6 +65,11 @@ export type {
   MilestoneRef,
   IssueCloseEvent,
   ListPullRequestsQuery,
+  RepoTree,
+  RepoTreeFile,
+  PutFileInput,
+  PutFileResult,
+  CreatePullRequestInput,
   RequestOptions,
   GitHubForgeOptions,
   GiteaForgeOptions,
@@ -71,6 +78,12 @@ export type {
   GiteaUser,
   GiteaRepo,
   WebhookHeaders,
+  ForgePullRequestDetail,
+  ForgePullRequestFile,
+  ForgeCheck,
+  MergeMethod,
+  MergePullRequestInput,
+  RepoMergeSettings,
 } from './forge/index.js';
 
 // ── Sync operations ──────────────────────────────────────────────
@@ -81,6 +94,7 @@ export {
   closeGitHubIssue,
   processWebhook,
   extractClosingIssueRefs,
+  extractReferencedIssueRefs,
   importGitHubIssues,
   _clearIssueListCacheForTests,
   fetchChangedIssues,
@@ -122,14 +136,16 @@ export {
   isGitHubAppConfigured,
   mintAppJwt,
   mintInstallationToken,
+  mintScopedRepoToken,
   listInstallationRepositories,
   exchangeUserAuthorizationCode,
   refreshUserAccessToken,
   getGitHubUser,
-  getInstallationDetails,
   buildInstallUrl,
   buildOAuthAuthorizeUrl,
-  listAppInstallations,
+  listUserInstallations,
+  listUserInstallationRepositories,
+  createGitHubRepository,
 } from './github-app.js';
 
 export type {
@@ -140,3 +156,7 @@ export type {
   GitHubRepo,
   GitHubInstallationAccount,
 } from './github-app.js';
+
+// ── Outline wiki (#637): publish a map's timeline as a document ──
+export { createOutlineClient, outlineBase, OutlineApiError } from './outline.js';
+export type { OutlineClient, OutlineClientOptions, OutlineDocument } from './outline.js';

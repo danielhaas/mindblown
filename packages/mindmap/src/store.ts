@@ -17,6 +17,7 @@ import type { ViewRole } from './roles.js';
  *  flags too), and those keep their pre-existing no-live-sync behaviour —
  *  merging them would revert optimistic edits such as an in-flight rename. */
 const BROADCAST_MAP_SETTINGS = [
+  'setupCompletedAt',
   'maxActiveClaims',
   'dispatchGate',
   'dispatchPolicy',
@@ -27,6 +28,7 @@ const BROADCAST_MAP_SETTINGS = [
   // Fleet connection (#477) — another tab or an agent connects the map.
   'fleetId',
   'fleetShare',
+  'fleetCanEditCi',
   // Holiday calendar (#110): the Gantt's label and dates follow it.
   'holidayJurisdiction',
   'holidayOverrides',
@@ -60,7 +62,8 @@ export type ActiveView =
   | 'digest'
   | 'cockpit'
   | 'fleet'
-  | 'files';
+  | 'files'
+  | 'docs';
 
 export interface VisibleNode {
   node: Node;
@@ -71,17 +74,21 @@ export interface VisibleNode {
 }
 
 /**
- * Options for getVisibleNodes(). All default to true (full drill-down
- * semantics — what the tree-shaped views want). Aggregate views (Hill
- * Chart, Workload) pass all three as false so ONLY the version/sprint
- * scope walk (incl. tag inheritance + ancestor connect) applies, and
- * drill-down focus, depth limit, and collapse state don't cut their
- * data basis.
+ * Options for getVisibleNodes(). Focus and collapse default to true
+ * (drill-down semantics — what the tree-shaped views want); the depth
+ * limit defaults to FALSE. Aggregate views (Hill Chart, Workload) pass
+ * all three as false so ONLY the version/sprint scope walk (incl. tag
+ * inheritance + ancestor connect) applies.
  */
 export interface VisibleNodesOptions {
   /** Walk from the drill-down focus node and append dimmed context siblings. */
   respectFocus?: boolean;
-  /** Truncate the walk at the maxDepth level (0 = unlimited). */
+  /**
+   * Truncate the walk at the maxDepth level (0 = unlimited). Opt-in:
+   * maxDepth is the mindmap canvas's Depth control, and only the mindmap
+   * editor passes true. A view that inherited it showed one level on
+   * every map load with no control to change it (List #641, Calendar).
+   */
   respectDepth?: boolean;
   /** Don't descend into collapsed nodes. */
   respectCollapsed?: boolean;
@@ -92,6 +99,16 @@ export interface VisibleNodesOptions {
  * Broadcast over WebSocket; viewport is encoded as a logical SVG center
  * (cx, cy) + zoom so it survives different window sizes.
  */
+/**
+ * The mindmap's Depth on map load. A product decision with history: 1
+ * (April) → 3 (#53, "can the map support more than three layers?") → 1
+ * again (f64bd90, unreviewed, inside a search-button commit). Depth 1
+ * is only usable because the "+N" pill drills in on click (#640) and no
+ * other view reads maxDepth (#641). Pinned by a test; change it on
+ * purpose, not on the side.
+ */
+export const DEFAULT_MAX_DEPTH = 1;
+
 export interface RemotePresence {
   userId: string;
   name: string;
@@ -185,7 +202,7 @@ export interface MindmapState {
    * write moves the fleet within ~2 min, so callers apply explicitly, never
    * on-change.
    */
-  updateMapSettings: (fields: Partial<Pick<MindMap, 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy' | 'aiEstimateDrafts'>> & { archived?: boolean }) => Promise<boolean>;
+  updateMapSettings: (fields: Partial<Pick<MindMap, 'name' | 'description' | 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy' | 'aiEstimateDrafts' | 'fleetId' | 'fleetShare' | 'fleetCanEditCi' | 'githubInstallationId' | 'githubRepoOwner' | 'githubRepoName' | 'autoImportNewIssues'>> & { archived?: boolean; setupCompleted?: boolean }) => Promise<boolean>;
   /**
    * Append a new phase (PhaseDef) to the current map's phases list and
    * persist via PUT /api/maps/:id. Returns the new phase's id (so callers
@@ -254,6 +271,14 @@ export interface MindmapState {
    */
   unblockNode: (id: string) => Promise<boolean>;
   /**
+   * Stop a ticket a fleet worker is running (#549): writes `blockedReason`,
+   * which the worker sees within a minute and stops its agent on
+   * (claude-fleet#92). No revision check — the worker writes progress and
+   * ETA to the same node meanwhile, and a 409 would drop the Stop.
+   * Resolves false on failure (error is set).
+   */
+  stopFleetTicket: (id: string, blockedReason: string) => Promise<boolean>;
+  /**
    * Replace a node with what the server just returned, without writing
    * back. For sub-resource endpoints (attachments, dependencies) that have
    * already persisted the change and answered with the whole node —
@@ -310,7 +335,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   computed: new Map(),
   layoutType: 'tree-lr' as const,
   focusNodeId: null,
-  maxDepth: 1,
+  maxDepth: DEFAULT_MAX_DEPTH,
   cycles: [],
   activeCycleFilter: null,
   versions: [],
@@ -391,8 +416,10 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     try {
       const user = await api.getMe();
       set({ user, token });
-    } catch {
-      api.clearToken();
+    } catch (e) {
+      // Unreachable server with nothing cached: keep the token so the
+      // session survives until the connection is back.
+      if (!(e instanceof TypeError)) api.clearToken();
       set({ user: null, token: null });
     }
   },
@@ -435,7 +462,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
         editingNodeId: null,
         computed: recomputeValues(nodesMap),
         focusNodeId: null,
-        maxDepth: 1,
+        maxDepth: DEFAULT_MAX_DEPTH,
         loading: false,
         error: null,
         presence: {},
@@ -456,7 +483,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   createMap: async (name: string, aiPolicy?: 'any' | 'local' | 'none') => {
     set({ loading: true, error: null });
     try {
-      const map = await api.createMap(name, aiPolicy ? { aiPolicy } : {});
+      const { map } = await api.createMap(name, aiPolicy ? { aiPolicy } : {});
       // Reload maps list
       const maps = await api.fetchMaps();
       set({ maps, loading: false });
@@ -482,7 +509,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       editingNodeId: null,
       computed: new Map(),
       focusNodeId: null,
-      maxDepth: 1,
+      maxDepth: DEFAULT_MAX_DEPTH,
       versions: [],
       activeVersionFilter: null,
       reqVersionFilter: null,
@@ -828,7 +855,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   setFollowingUser: (userId) => set({ followingUserId: userId }),
 
   getVisibleNodes: (options) => {
-    const { respectFocus = true, respectDepth = true, respectCollapsed = true } = options ?? {};
+    const { respectFocus = true, respectDepth = false, respectCollapsed = true } = options ?? {};
     const { nodes, rootNodeId, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter, activePhaseFilter } = get();
     if (!rootNodeId) return [];
 
@@ -1008,11 +1035,11 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     const ids = state.selectedNodeIds.includes(id)
       ? state.selectedNodeIds.filter((i) => i !== id)
       : [...state.selectedNodeIds, id];
-    // Der zuletzt angefasste Knoten ist der Anker, nicht der zuerst
-    // selektierte. `selectedNodeId` steuert das Property-Panel und die
-    // Tastaturnavigation: mit ids[0] zeigte das Panel nach Shift-Klick auf
-    // drei Knoten den ersten an, also den, den man am wenigsten gerade im
-    // Sinn hat. Beim Abwählen rückt der letzte verbliebene nach.
+    // The most recently touched node is the anchor, not the first one
+    // selected. `selectedNodeId` drives the property panel and keyboard
+    // navigation: with ids[0], shift-clicking three nodes showed the first
+    // one in the panel — the one you are least thinking about right now.
+    // On deselect, the last remaining node takes over.
     set({
       selectedNodeIds: ids,
       selectedNodeId: ids[ids.length - 1] ?? null,
@@ -1083,6 +1110,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       priorityRank: null,
     completedAt: null,
       startedAt: null,
+      expectedDoneAt: null,
       requirementId: null,
       requirementPriority: null,
       requirementText: null,
@@ -1098,6 +1126,10 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       createdAt: now,
       updatedAt: now,
       createdBy: state.user?.id ?? 'user-001',
+      // Optimistic stub only — the server sets the real reporter (#490).
+      reportedBy: state.user?.id ? { kind: 'user', userId: state.user.id } : null,
+      // The server stamps it from the trust policy (#492).
+      approval: null,
       revision: 1,
       deletedAt: null,
       ...(fields ?? {}),
@@ -1212,6 +1244,26 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       return true;
     } catch (e: any) {
       set({ error: e?.message ?? 'Failed to release the ticket' });
+      return false;
+    }
+  },
+
+  stopFleetTicket: async (id, blockedReason) => {
+    const state = get();
+    const mapId = state.currentMapId;
+    if (!mapId || !state.nodes[id]) {
+      set({ error: 'That ticket is no longer on this map.' });
+      return false;
+    }
+    try {
+      const node = await api.updateNode(mapId, id, { blockedReason });
+      const current = get();
+      if (current.currentMapId !== mapId || !current.nodes[id]) return true;
+      const nodes = { ...current.nodes, [id]: node };
+      set({ nodes, computed: recomputeValues(nodes) });
+      return true;
+    } catch (e: any) {
+      set({ error: e?.message ?? 'Failed to stop the ticket' });
       return false;
     }
   },
@@ -1515,6 +1567,12 @@ function handleWsMessage(
   // a poll. Mirrors the `ws:comment` pattern above.
   if (msg.type === 'triage:updated') {
     window.dispatchEvent(new CustomEvent('ws:triage', { detail: msg }));
+    return;
+  }
+
+  // A push landed on the repo's default branch (#550) — the Docs tab re-lists.
+  if (msg.type === 'docs:updated') {
+    window.dispatchEvent(new CustomEvent('ws:docs', { detail: msg }));
     return;
   }
 

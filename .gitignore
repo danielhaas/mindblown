@@ -7,6 +7,10 @@ backups/
 .env.local
 *.pem
 
+# Playwright output (packages/mindmap e2e)
+test-results/
+playwright-report/
+
 # Local media uploads (MEDIA_DIR default) — production points this at
 # /var/lib/mindblown/media, outside the checkout.
 .media/

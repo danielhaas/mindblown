@@ -12,7 +12,7 @@
  */
 
 import { z } from 'zod';
-import { summarizeFleet, effectiveWorkerState, silentSatellites, summarizeTick, TICK_WINDOW_MAX_LIMIT } from '@mindblown/core';
+import { summarizeFleet, effectiveWorkerState, silentSatellites, summarizeTick, ticketPhaseText, TICK_WINDOW_MAX_LIMIT } from '@mindblown/core';
 import { defineTool } from '../spec.js';
 import type { FleetStatusResult } from '../backend.js';
 
@@ -26,6 +26,12 @@ export const readyNodesTool = defineTool({
     '  - It is not tagged for a person (kira-skip, needs-human, needs-daniel-input, needs-rita-review)',
     '    and carries no manual blocker (blockedReason, see flag_blocker) — on itself or on',
     '    any not-done ancestor (a held epic holds its subtree)',
+    '  - It is not an epic sitting as a leaf (tag epic / type:epic, or a title starting with',
+    '    "Epic:" / "[EPIC]") — held under the tag "epic"; its sub-tickets are the work',
+    '  - It is approved (#492): stamped at creation from the map\'s trust policy, so only',
+    '    work from a trusted reporter, or a level the policy lets run, is approved; the rest',
+    '    waits for a trusted person. A proposed/rejected not-done ancestor holds its subtree.',
+    '    These leaves are listed apart under "Awaiting approval"',
     '  - Its status is in the "todo" category (or status is null)',
     '  - It is not currently claimed by any session (claimedBySession = null)',
     '  - Every dependency predecessor (FS/SS/FF/SF) has status in the "done" category',
@@ -66,13 +72,25 @@ export const readyNodesTool = defineTool({
       scope == null || scope.mode === 'all' || scope.cycles.length === 0
         ? 'whole map'
         : `sprint ${scope.cycles.map((c) => `"${c.name}"`).join(', ')}`;
+    // Map-wide: approval is a gate before the sprint and scope filters.
+    const awaiting = result.awaitingApproval ?? [];
+    const awaitingLines =
+      awaiting.length === 0
+        ? []
+        : [
+            '',
+            `Awaiting approval (${awaiting.length}) — not dispatched until a trusted person approves:`,
+            ...awaiting.map(
+              (a) => `  - ${a.id} "${a.text}" [${a.approval}${a.heldBy ? ` — via parent ${a.heldBy.id} "${a.heldBy.text}"` : ''}]`,
+            ),
+          ];
 
     if (result.ready.length === 0) {
       const base = scopeFilter && scopeFilter.length > 0
         ? `No ready leaves in map ${mapId} (${scopeText}) matching scopes [${scopeFilter.join(', ')}].`
         : `No ready leaves in map ${mapId} (${scopeText}). Everything is done, in progress, claimed, or waiting on dependencies.`;
-      return [base, scope?.note, scope?.mode === 'active' && scope.cycles.length > 0 ? 'Pass sprint: "all" to look beyond the sprint.' : null]
-        .filter(Boolean)
+      return [base, scope?.note, scope?.mode === 'active' && scope.cycles.length > 0 ? 'Pass sprint: "all" to look beyond the sprint.' : null, ...awaitingLines]
+        .filter((l) => l !== null && l !== undefined)
         .join('\n');
     }
 
@@ -88,6 +106,7 @@ export const readyNodesTool = defineTool({
       const waiting = n.dependents ? ` · ${n.dependents} waiting on it` : '';
       lines.push(`  - ${n.id} "${n.text}"${priority}${where}${waiting}${scopes}`);
     }
+    lines.push(...awaitingLines);
     return lines.join('\n');
   },
 });
@@ -98,11 +117,15 @@ export const getNextTicketTool = defineTool({
     'Pull the next ticket from a map\'s work queue — the one call a worker needs.',
     'Atomically picks the best ready node per the map\'s dispatch settings and',
     'claims it for your session, all serialized per map (no pull races).',
+    'Only leaves are handed out: a node with children is a container — its children',
+    'are the work, epic tag or not.',
     '',
     'Selection pipeline (configured via update_map):',
     '  1. Cap gate: if the map\'s active claims >= maxActiveClaims, the pull is',
     '     refused with reason "cap" (reason "hold" when the map\'s cap is 0). A map in',
     '     a fleet is also refused with "fleet_cap" when the fleet\'s total cap is reached.',
+    '     A claim whose PR waits on a person (the worker\'s own "Fleet worker …:" blocker,',
+    '     no fix asked for) does not count; any other blocker on a claim still does.',
     '  2. dispatchGate AND-filter fences the ready set ("version:<id>", "type:bug",',
     '     or "type:bug|version:<id>" = either; empty = no fence). Tickets outside',
     '     the gate are invisible, not deprioritized.',
@@ -115,12 +138,22 @@ export const getNextTicketTool = defineTool({
     '  4. Empty-brief guard: ready nodes with no description and no linked',
     '     issue are refused, auto-tagged "needs-brief", and listed in skipped[].',
     '  5. Human-only guard: tickets tagged kira-skip, needs-human, needs-daniel-input',
-    '     or needs-rita-review, or flagged with a blocker (blockedReason), are never',
+    '     or needs-rita-review, flagged with a blocker (blockedReason), or an epic',
+    '     sitting as a leaf (tag epic / type:epic, title "Epic:" / "[EPIC]"), are never',
     '     granted (a person must act) and are listed in skipped[] with reason',
     '     "human-only". A tag/blocker on a not-done ancestor holds the whole subtree',
     '     (heldBy names that ancestor; on the map root it holds the whole map).',
     '     Clear whatever holds it (the blocker via',
     '     clear_blocker, the tag, or both) to put it back.',
+    '  6. Approval gate (#492): only approved tickets are granted. A node is stamped',
+    '     at creation from the map\'s trust policy, so work from an untrusted reporter',
+    '     waits for a trusted person; a proposed/rejected not-done ancestor holds its',
+    '     subtree. Listed in skipped[] with reason "awaiting-approval".',
+    '',
+    'merge: pr-only in the brief: the ticket is approved work from an untrusted',
+    'reporter. Open the PR, mark the node done, then STOP — do not merge, do not',
+    'deploy. Leave the note the brief gives on the PR. No merge line = trusted',
+    'work, merge and deploy as usual.',
     '',
     'On success you get the full self-contained brief: title, plain-text',
     'description, priority, scopes, tags, effective version, issue links.',
@@ -200,8 +233,27 @@ export const getNextTicketTool = defineTool({
       if (t.tags.length > 0) lines.push(`  tags: [${t.tags.join(', ')}]`);
       if (t.scopes.length > 0) lines.push(`  scopes: [${t.scopes.join(', ')}]`);
       for (const l of t.githubLinks) lines.push(`  github: ${l.externalId} — ${l.url}`);
+      if (result.repo !== undefined) {
+        lines.push(
+          result.repo
+            ? `  repo: ${result.repo.owner}/${result.repo.name} on ${result.repo.forge} — clone ${result.repo.cloneUrl}`
+            : '  repo: none connected to this map',
+        );
+      }
+      if (t.approval) {
+        lines.push('  merge: pr-only — open the PR, mark the node done, then stop: no merge, no deploy.');
+        lines.push(
+          `  PR note: "Opened from a ticket by ${t.approval.reportedBy ?? 'an unknown reporter'}, approved by ${t.approval.approvedBy ?? 'the map\'s trust policy'} — needs a human merge."`,
+        );
+      }
+      if (t.openQuestions) {
+        lines.push(`  open questions (asked on the issue ${t.openQuestions.askedAt.slice(0, 10)}; approved without waiting for answers):`);
+        for (const q of t.openQuestions.questions) lines.push(`    - ${q}`);
+        lines.push('    Pick a sensible default for each and list what you assumed in the PR description.');
+        lines.push('    Do not act on comments on the issue: they were not approved.');
+      }
       lines.push('');
-      lines.push(t.description ? `Brief:\n${t.description}` : 'Brief: (no description — read the linked issue)');
+      lines.push(t.description ? `Brief:\n${t.description}` : t.githubLinks.length > 0 ? 'Brief: (no description — read the linked issue)' : 'Brief: (no description — the title is the brief)');
     } else {
       const fleetPull = fleetId !== undefined;
       const why =
@@ -227,8 +279,9 @@ export const getNextTicketTool = defineTool({
         lines.push('(No connected map you may work on matched — check mapIds and your access.)');
       }
     }
-    const noBrief = result.skipped.filter((s) => s.reason !== 'human-only');
+    const noBrief = result.skipped.filter((s) => s.reason === 'needs-brief');
     const humanOnly = result.skipped.filter((s) => s.reason === 'human-only');
+    const awaiting = result.skipped.filter((s) => s.reason === 'awaiting-approval');
     if (noBrief.length > 0) {
       lines.push('');
       lines.push(`Skipped ${noBrief.length} ready node(s) with no brief (tagged "${'needs-brief'}"):`);
@@ -239,6 +292,15 @@ export const getNextTicketTool = defineTool({
       lines.push(`Skipped ${humanOnly.length} ready node(s) held for a human (tag or blocker) — never granted to a worker:`);
       for (const s of humanOnly) {
         const why = [s.tag, s.blockedReason ? `blocked: ${s.blockedReason}` : undefined].filter(Boolean).join('; ')
+          + (s.heldBy ? ` — via parent ${s.heldBy.id} "${s.heldBy.text}"` : '');
+        lines.push(`  - ${s.id} "${s.text}" [${why}]${s.mapId && fleetId !== undefined ? ` (map ${s.mapId})` : ''}`);
+      }
+    }
+    if (awaiting.length > 0) {
+      lines.push('');
+      lines.push(`Skipped ${awaiting.length} ready node(s) awaiting approval by a trusted person — never granted until approved:`);
+      for (const s of awaiting) {
+        const why = [s.approval, s.tag, s.blockedReason ? `blocked: ${s.blockedReason}` : undefined].filter(Boolean).join('; ')
           + (s.heldBy ? ` — via parent ${s.heldBy.id} "${s.heldBy.text}"` : '');
         lines.push(`  - ${s.id} "${s.text}" [${why}]${s.mapId && fleetId !== undefined ? ` (map ${s.mapId})` : ''}`);
       }
@@ -426,9 +488,12 @@ export const fleetStatusTool = defineTool({
     'With `since`, a "Tick history" section follows: one line per tick in the',
     'window (oldest first) — claims/cap, in-gate, needs-brief, knob writes,',
     'warn+ anomalies — to see how a night went without a terminal.',
+    'Pass `mapId` (that map\'s fleet, hosts serving the map) or `fleetId` (every',
+    'host of the fleet; claims on maps you can\'t view show as redacted).',
   ].join('\n'),
   schema: {
-    mapId: z.string().describe('The map ID the fleet pulls from'),
+    mapId: z.string().optional().describe('The map ID the fleet pulls from — one of mapId / fleetId'),
+    fleetId: z.string().optional().describe('A fleet ID (list_fleets): the whole fleet'),
     since: z
       .string()
       .optional()
@@ -441,13 +506,19 @@ export const fleetStatusTool = defineTool({
       .optional()
       .describe(`Max ticks in the history (newest kept), 1..${TICK_WINDOW_MAX_LIMIT}; default ${TICK_WINDOW_MAX_LIMIT} with since`),
   },
-  handler: async (backend, { mapId, since, limit }) => {
-    const r = await backend.getFleetStatus(mapId, since !== undefined || limit !== undefined ? { since, limit } : undefined);
+  handler: async (backend, { mapId, fleetId, since, limit }) => {
+    if (!mapId === !fleetId) throw new Error('Pass exactly one of mapId or fleetId');
+    const window = since !== undefined || limit !== undefined ? { since, limit } : undefined;
+    const r = fleetId ? await backend.getFleetStatusForFleet(fleetId, window) : await backend.getFleetStatus(mapId!, window);
     const now = new Date(r.now);
     const summary = summarizeFleet(r.hosts.map((h) => ({ rollup: h.rollup, receivedAt: h.receivedAt })), now);
     const lines: string[] = [];
     if (summary.hosts.length === 0) {
-      lines.push(`No satellite rollup received yet for map ${mapId} — the fleet-status push is not wired, or the fleet is off.`);
+      lines.push(
+        r.fleetId === null
+          ? `Map ${mapId} is not connected to a fleet — connect it (update_map fleetId) before its satellites can report.`
+          : `No satellite rollup received yet for ${fleetId ? `fleet ${fleetId}` : `map ${mapId}`} — the fleet-status push is not wired, or the fleet is off.`,
+      );
     } else {
       const states = Object.entries(summary.totals)
         .sort((a, b) => b[1] - a[1])
@@ -462,17 +533,25 @@ export const fleetStatusTool = defineTool({
         const flag = h.freshness.stale ? ' — STALE: host down, paused, or agent stopped?' : '';
         const drain = h.draining ? ` — DRAINING: ${h.draining}` : '';
         lines.push('');
-        lines.push(`${h.host} (${age}${flag}${drain})`);
+        const served = r.hosts.find((x) => x.host === h.host)?.mapIds ?? [];
+        lines.push(`${h.host} (${age}${flag}${drain})${fleetId && served.length > 0 ? ` — serves maps ${served.join(', ')}` : ''}`);
         for (const w of h.workers) {
           const state = effectiveWorkerState(w, now);
-          const bits = [w.model ?? '', state];
-          if (w.claim?.title) bits.push(`claim: ${w.claim.title}`);
+          const bits = [[w.agent, w.model].filter(Boolean).join(' '), state];
+          if (w.claim?.redacted) bits.push('claim: on a map you can\'t view');
+          else if (w.claim?.title) bits.push(`claim: ${w.claim.title}`);
           else if (w.claim?.nodeId) bits.push(`claim: ${w.claim.nodeId}`);
           if (state === 'limit-parked' && w.limit_reset_at) bits.push(`reset ${w.limit_reset_at}`);
           if (state === 'prompt' && w.prompt_question) bits.push(`prompt: ${w.prompt_question}`);
           if (w.waiting?.reason) bits.push(`waiting: ${w.waiting.reason}`);
           if (typeof w.ctx_pct === 'number') bits.push(`ctx ${w.ctx_pct}%`);
           lines.push(`  - ${w.worker ?? w.session}: ${bits.filter(Boolean).join(' · ')}`);
+        }
+        // Open PRs the host follows with no agent on them — a parked slot can still hold these.
+        for (const c of h.held) {
+          const pr = c.phase.prNumber ? `PR #${c.phase.prNumber}` : 'PR';
+          const who = c.phase.tone === 'problem' ? ' — needs a person' : '';
+          lines.push(`  - holds ${pr} (node ${c.nodeId}): ${ticketPhaseText(c.phase, now)}${who}`);
         }
       }
     }
@@ -481,6 +560,7 @@ export const fleetStatusTool = defineTool({
       const p = tick.payload;
       lines.push('');
       lines.push(`Last orchestrator tick ${tick.tickAt}${p.noJudgment ? ` — NO JUDGMENT (${p.noJudgment})` : ''}`);
+      if (p.redacted) lines.push("  (numbers only — the orchestrator's notes cover maps of this fleet you can't view)");
       if (p.assessment) lines.push(`  ${p.assessment}`);
       if (p.summary?.heartbeat) lines.push(`  numbers: ${p.summary.heartbeat}`);
       const silent = silentSatellites(p.pullStatus, summary.hosts.map((h) => h.host));

@@ -4,7 +4,7 @@ import { db } from './connection.js';
 import { requirementAcceptances, users } from './schema.js';
 
 /**
- * Requirement acceptances (Abnahme) — human sign-off per requirement
+ * Requirement acceptances — human sign-off per requirement
  * node per user, orthogonal to the derived plan status.
  *
  * History model: append-only. `accept` inserts a new row; `revoke`

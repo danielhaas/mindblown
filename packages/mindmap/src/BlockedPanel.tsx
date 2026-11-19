@@ -21,14 +21,10 @@ function StalledDetail({ s }: { s: StalledLeaf }) {
   return <span style={{ color: '#92400e' }}>{describeStalled(s)}</span>;
 }
 
-export function BlockedPanel({ onClose }: { onClose: () => void }) {
+/** What the Blocked panel lists — also the header button's count, so the two always agree. */
+export function useBlockedLeaves() {
   const nodes = useMindmapStore((s) => s.nodes);
   const computed = useMindmapStore((s) => s.computed);
-  const selectNode = useMindmapStore((s) => s.selectNode);
-  const setFocusNode = useMindmapStore((s) => s.setFocusNode);
-  const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
-  const [mode, setMode] = useState<PanelMode>('cause');
-
   const workflow = useMindmapStore((s) => s.currentMap?.statusWorkflow);
   const { manual, depWaiting } = useMemo(() => {
     const manual: BlockedLeaf[] = [];
@@ -65,7 +61,18 @@ export function BlockedPanel({ onClose }: { onClose: () => void }) {
     return out;
   }, [stalledLeaves, manual, depWaiting, nodes, computed]);
 
-  const total = manual.length + depWaiting.length + stalled.length;
+  return { manual, depWaiting, stalled, total: manual.length + depWaiting.length + stalled.length };
+}
+
+/** `blocked` comes from the header's useBlockedLeaves(), so the panel opens with the button's count. */
+export function BlockedPanel({ onClose, blocked }: { onClose: () => void; blocked: ReturnType<typeof useBlockedLeaves> }) {
+  const nodes = useMindmapStore((s) => s.nodes);
+  const computed = useMindmapStore((s) => s.computed);
+  const selectNode = useMindmapStore((s) => s.selectNode);
+  const setFocusNode = useMindmapStore((s) => s.setFocusNode);
+  const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
+  const [mode, setMode] = useState<PanelMode>('cause');
+  const { manual, depWaiting, stalled, total } = blocked;
 
   // By cause and unblocker (#322) — the PM Cockpit's grouping (core
   // groupBlockers): one action for one person, not N free-text reasons.
@@ -95,9 +102,9 @@ export function BlockedPanel({ onClose }: { onClose: () => void }) {
     <div
       style={{
         width: PANEL_WIDTH,
-        // Das Property-Panel steht seit App.tsx:2184 daneben statt in derselben
-        // else-Kette, also können zwei Panels nebeneinander liegen. Ohne dies
-        // schrumpfen beide, sobald der Platz knapp wird.
+        // The property panel sits beside the work panel rather than in the
+        // same else-chain (see App.tsx), so two panels can be side by side.
+        // Without this, both shrink as soon as space runs short.
         flexShrink: 0,
         height: '100%',
         borderLeft: '1px solid #e2e8f0',

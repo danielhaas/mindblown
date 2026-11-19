@@ -1,6 +1,136 @@
 import { describe, it, expect } from 'vitest';
-import type { StatusDef } from '@mindblown/core';
-import { groupDone, groupByPriority, doneGroupBounds, cardBlockState, kanbanColumnId, startedLabel } from '../kanban.js';
+import type { Node, StatusDef } from '@mindblown/core';
+import { groupDone, groupByPriority, doneGroupBounds, cardBlockState, hiddenFromBoard, kanbanColumnId, needsBriefOnBoard, startedLabel, etaLabel, durationLabels, formatSpan, outsideGate, personHolds, nodeWaits, nothingWaits } from '../kanban.js';
+
+describe('needsBriefOnBoard — the pull queue\'s empty-brief guard', () => {
+  const issue = { id: 'l', provider: 'github', url: 'https://github.com/o/r/issues/1', externalId: 'o/r#1', isPullRequest: false, syncEnabled: true };
+  it('open cards with no description and no issue; a description or an issue is a brief; running work is not checked', () => {
+    expect(needsBriefOnBoard({ text: 'Locations', description: null, externalLinks: [] }, 'todo')).toBe(true);
+    expect(needsBriefOnBoard({ text: 'Locations', description: '  ', externalLinks: [] }, null)).toBe(true);
+    expect(needsBriefOnBoard({ text: 'Locations', description: 'Add a locations table', externalLinks: [] }, 'todo')).toBe(false);
+    expect(needsBriefOnBoard({ text: 'Locations', description: null, externalLinks: [issue] } as never, 'todo')).toBe(false);
+    expect(needsBriefOnBoard({ text: 'Locations', description: null, externalLinks: [] }, 'in_progress')).toBe(false);
+  });
+
+  it('a title of ten words or more is a brief on its own', () => {
+    const long = 'Done tickets should show how long they needed, next to the ETA';
+    expect(needsBriefOnBoard({ text: long, description: null, externalLinks: [] }, 'todo')).toBe(false);
+    expect(needsBriefOnBoard({ text: 'Show how long done tickets needed', description: null, externalLinks: [] }, 'todo')).toBe(true);
+  });
+
+  it('is the weakest state: Later, Waiting and Needs you win', () => {
+    const n = { status: 'todo', tags: [], blockedReason: null };
+    expect(cardBlockState(n, null, false, (id) => id, null, null, true)?.kind).toBe('brief');
+    expect(cardBlockState(n, null, false, (id) => id, null, 'Later', true)?.kind).toBe('later');
+    expect(cardBlockState(n, null, false, (id) => id, 'Needs a person', null, true)?.kind).toBe('human');
+  });
+});
+
+describe('hiddenFromBoard', () => {
+  const todo: StatusDef = { id: 'todo', name: 'Todo', category: 'todo', color: '#000', position: 0 };
+  it('hides a cancelled ticket unless the workflow has a Cancelled column', () => {
+    expect(hiddenFromBoard({ status: 'cancelled' }, [todo])).toBe(true);
+    expect(hiddenFromBoard({ status: 'Canceled' }, [todo])).toBe(true);
+    expect(hiddenFromBoard({ status: 'cancelled' }, [todo, { id: 'x', name: 'Cancelled', category: 'done', color: '#000', position: 1 }])).toBe(false);
+    expect(hiddenFromBoard({ status: 'todo' }, [todo])).toBe(false);
+    expect(hiddenFromBoard({ status: null }, [todo])).toBe(false);
+  });
+});
+
+describe('outsideGate — open tickets the fleet will not take', () => {
+  const workflow: StatusDef[] = [
+    { id: 'todo', name: 'Todo', category: 'todo', color: '#000', position: 0 },
+    { id: 'doing', name: 'Doing', category: 'in_progress', color: '#000', position: 1 },
+    { id: 'done', name: 'Done', category: 'done', color: '#000', position: 2 },
+  ];
+  const node = (id: string, extra: Record<string, unknown> = {}) =>
+    ({ id, text: id, parentId: 'root', childrenIds: [], status: 'todo', tags: [], versionId: null, ...extra }) as unknown as Node;
+  const nodes = [
+    node('root', { parentId: null, childrenIds: ['v1', 'v3', 'none', 'bug', 'epic', 'running', 'unset'] }),
+    node('v1', { versionId: 'V1' }),
+    node('v3', { versionId: 'V3' }),
+    node('none'),
+    node('bug', { tags: ['bug'] }),
+    node('epic', { versionId: 'V3', childrenIds: ['underEpic'] }),
+    node('underEpic', { parentId: 'epic' }),
+    node('running', { versionId: 'V3', status: 'doing' }),
+    node('unset', { versionId: 'V3', status: null }),
+  ];
+  const name = (id: string) => ({ V1: 'V1', V3: 'V3' })[id] ?? null;
+
+  it('marks todo and no-status leaves outside the gate, with the version they are in', () => {
+    const later = outsideGate(nodes, ['type:bug|version:V1'], workflow, name);
+    expect(Object.fromEntries(later)).toEqual({
+      v3: 'Later — the fleet takes bugs, V1; this ticket is V3',
+      none: 'Later — the fleet takes bugs, V1; this ticket is in no version',
+      underEpic: 'Later — the fleet takes bugs, V1; this ticket is V3',
+      unset: 'Later — the fleet takes bugs, V1; this ticket is V3',
+    });
+  });
+
+  it('an empty gate fences nothing; Later is the weakest state on a card', () => {
+    expect(outsideGate(nodes, [], workflow).size).toBe(0);
+    const n = node('x');
+    expect(cardBlockState(n, null, false, (id) => id, null, 'Later')).toEqual({ kind: 'later', detail: 'Later' });
+    expect(cardBlockState(n, null, false, (id) => id, 'Needs a person', 'Later')?.kind).toBe('human');
+    expect(cardBlockState(n, { manual: false, predecessorIds: ['a'] }, false, (id) => id, null, 'Later')?.kind).toBe('waiting');
+    expect(cardBlockState(n, null, true, (id) => id, null, 'Later')).toBeNull();
+  });
+});
+
+describe('durationLabels — took / planned', () => {
+  const t0 = '2026-10-20T10:00:00.000Z';
+  const plus = (min: number) => new Date(Date.parse(t0) + min * 60_000).toISOString();
+
+  it('a done ticket shows what it took and what was planned', () => {
+    expect(durationLabels({ startedAt: t0, completedAt: plus(70), expectedDoneAt: plus(45) }))
+      .toEqual({ took: 'took 1h 10m', planned: 'planned 45m', over: true });
+    expect(durationLabels({ startedAt: t0, completedAt: plus(30), expectedDoneAt: plus(45) }).over).toBe(false);
+  });
+
+  it('an in-progress ticket shows only the plan', () => {
+    expect(durationLabels({ startedAt: t0, completedAt: null, expectedDoneAt: plus(120) }))
+      .toEqual({ took: null, planned: 'planned 2h', over: false });
+  });
+
+  it('is empty without a start, and ignores an ETA before the start', () => {
+    expect(durationLabels({ startedAt: null, completedAt: plus(5), expectedDoneAt: plus(5) }))
+      .toEqual({ took: null, planned: null, over: false });
+    expect(durationLabels({ startedAt: t0, completedAt: null, expectedDoneAt: plus(-5) }).planned).toBeNull();
+  });
+
+  it('formats spans compactly', () => {
+    expect(formatSpan(0)).toBe('1m');
+    expect(formatSpan(59)).toBe('59m');
+    expect(formatSpan(180)).toBe('3h');
+    expect(formatSpan(60 * 52)).toBe('2d 4h');
+  });
+});
+
+describe('etaLabel', () => {
+  const now = new Date(2026, 9, 20, 12, 0); // local time — the label is local
+  const at = (y: number, mo: number, d: number, h: number, mi: number) => new Date(y, mo, d, h, mi).toISOString();
+
+  it('is the clock time today, with the date on another day', () => {
+    expect(etaLabel(at(2026, 9, 20, 15, 40), now)).toMatchObject({ short: 'ETA 15:40', overdue: false });
+    expect(etaLabel(at(2026, 9, 22, 9, 5), now)?.short).toBe('ETA Oct 22, 09:05');
+  });
+
+  it('reads overdue once past, by how much', () => {
+    expect(etaLabel(at(2026, 9, 20, 11, 50), now)).toMatchObject({ short: 'overdue 10m', overdue: true });
+    expect(etaLabel(at(2026, 9, 20, 9, 30), now)?.short).toBe('overdue 2h');
+    expect(etaLabel(at(2026, 9, 17, 12, 0), now)?.short).toBe('overdue 3d');
+  });
+
+  it('carries the exact time for the hover title', () => {
+    expect(etaLabel(at(2026, 9, 20, 15, 40), now)?.full).toMatch(/^ETA Oct 20, 2026/);
+  });
+
+  it('is null without an ETA', () => {
+    expect(etaLabel(null, now)).toBeNull();
+    expect(etaLabel('garbage', now)).toBeNull();
+  });
+});
 
 describe('startedLabel', () => {
   const now = new Date('2026-10-18T12:00:00Z');
@@ -135,5 +265,131 @@ describe('cardBlockState — the Blocked panel\'s rule', () => {
   it('nothing otherwise; done work never', () => {
     expect(cardBlockState(n({}), none, false, title)).toBeNull();
     expect(cardBlockState(n({ blockedReason: 'stale' }), { manual: true, predecessorIds: ['a1'] }, true, title)).toBeNull();
+  });
+  it('human: a person hold beats a dependency wait, a manual block beats both', () => {
+    const hold = 'Needs a person: tagged needs-human';
+    expect(cardBlockState(n({}), { manual: false, predecessorIds: ['a1'] }, false, title, hold))
+      .toEqual({ kind: 'human', detail: hold });
+    expect(cardBlockState(n({ blockedReason: 'legal' }), { manual: true, predecessorIds: [] }, false, title, hold)?.kind)
+      .toBe('blocked');
+    expect(cardBlockState(n({}), none, true, title, hold)).toBeNull();
+  });
+});
+
+describe('personHolds', () => {
+  const APPROVED = { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' } as const;
+  const workflow: StatusDef[] = [
+    { id: 'todo', name: 'Todo', category: 'todo', color: '#000', position: 0 },
+    { id: 'done', name: 'Done', category: 'done', color: '#000', position: 1 },
+  ];
+  const node = (id: string, extra: Record<string, unknown> = {}) =>
+    ({ id, text: id, parentId: 'root', childrenIds: [], status: 'todo', tags: [], blockedReason: null, approval: APPROVED, ...extra }) as unknown as Node;
+
+  it('a proposed or rejected stamp, on the ticket or an open parent; not a node without a stamp (#492)', () => {
+    const holds = personHolds(
+      [
+        node('root', { parentId: null, approval: null }),
+        node('prop', { approval: { ...APPROVED, state: 'proposed' } }),
+        node('rej', { approval: { ...APPROVED, state: 'rejected' } }),
+        node('stub', { approval: null }),
+        node('epic', { text: 'Follow-ups', approval: { ...APPROVED, state: 'proposed' } }),
+        node('under', { parentId: 'epic' }),
+      ],
+      workflow,
+    );
+    expect(Object.fromEntries(holds)).toEqual({
+      prop: 'Needs a person: waits for approval',
+      rej: 'Rejected: the fleet will not run it',
+      epic: 'Needs a person: waits for approval',
+      under: 'Needs a person: parent "Follow-ups" is proposed — waits for approval',
+    });
+  });
+
+  it('skip tags on the ticket or an open parent; not epics, not plain blockers, not under a done parent', () => {
+    const holds = personHolds(
+      [
+        node('root', { parentId: null }),
+        node('tagged', { tags: ['Needs-Human'] }),
+        node('skip', { tags: ['kira-skip'] }),
+        node('epic', { text: 'Epic: billing' }),
+        node('blocker', { blockedReason: 'waiting on legal' }),
+        node('decide', { text: 'Decide pricing', blockedReason: 'which tier?' }),
+        node('underDecide', { parentId: 'decide' }),
+        node('humanParent', { text: 'Contracts', tags: ['needs-human'] }),
+        node('underHuman', { parentId: 'humanParent' }),
+        node('doneParent', { status: 'done', tags: ['needs-human'] }),
+        node('underDone', { parentId: 'doneParent' }),
+        node('free'),
+      ],
+      workflow,
+    );
+    expect(Object.fromEntries(holds)).toEqual({
+      tagged: 'Needs a person: tagged Needs-Human',
+      skip: 'Needs a person: tagged kira-skip',
+      underDecide: 'Needs a person: parent "Decide pricing" is blocked: which tier?',
+      humanParent: 'Needs a person: tagged needs-human',
+      underHuman: 'Needs a person: parent "Contracts" is tagged needs-human',
+      doneParent: 'Needs a person: tagged needs-human',
+    });
+  });
+});
+
+describe('cards handed back to the fleet', () => {
+  it('fleet-fix / fleet-check show "Fleet", ahead of the blocker they carry', () => {
+    const blocked = { status: 'in_progress', blockedReason: 'Fleet worker x: the agent exited with 3.', tags: [] as string[] };
+    expect(cardBlockState(blocked, null, false, (id) => id)?.kind).toBe('blocked');
+    const check = cardBlockState({ ...blocked, tags: ['fleet-check'] }, null, false, (id) => id);
+    expect(check?.kind).toBe('fleet');
+    expect(check?.detail).toContain('the agent exited with 3.');
+    expect(cardBlockState({ status: 'in_progress', blockedReason: null, tags: ['fleet-fix'] }, null, false, (id) => id)?.kind).toBe('fleet');
+    expect(cardBlockState({ ...blocked, tags: ['fleet-check'] }, null, true, (id) => id)).toBeNull();
+  });
+});
+
+describe('nodeWaits — what the detail view puts on top (#610)', () => {
+  const APPROVED = { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' } as const;
+  const workflow: StatusDef[] = [
+    { id: 'todo', name: 'Todo', category: 'todo', color: '#000', position: 0 },
+    { id: 'blocked', name: 'Blocked', category: 'todo', color: '#000', position: 1 },
+    { id: 'done', name: 'Done', category: 'done', color: '#000', position: 2 },
+  ];
+  const node = (id: string, extra: Record<string, unknown> = {}) =>
+    ({ id, text: id, parentId: 'root', childrenIds: [], status: 'todo', tags: [], blockedReason: null, approval: APPROVED, description: 'A brief', externalLinks: [], ...extra }) as unknown as Node;
+  const root = node('root', { parentId: null, approval: null });
+  const waits = (n: Node, more: Node[] = []) => nodeWaits(n, [root, n, ...more], workflow);
+
+  it('nothing waiting: no section', () => {
+    expect(nothingWaits(waits(node('ok')))).toBe(true);
+  });
+
+  it('a proposed stamp → approval, not also "other"', () => {
+    const w = waits(node('p', { approval: { ...APPROVED, state: 'proposed' } }));
+    expect(w).toEqual({ approval: true, blocked: null, brief: false, other: null });
+  });
+
+  it('a blocker reason, the blocked tag or a blocked status → blocked, with the reason', () => {
+    expect(waits(node('b', { blockedReason: '  Needs a token ' })).blocked).toBe('Needs a token');
+    expect(waits(node('t', { tags: ['blocked'] })).blocked).toBe('');
+    expect(waits(node('s', { status: 'blocked' })).blocked).toBe('');
+  });
+
+  it('no brief → brief; only once the description is loaded', () => {
+    expect(waits(node('n', { description: null })).brief).toBe(true);
+    expect(waits(node('n', { description: undefined })).brief).toBe(false);
+  });
+
+  it('a skip tag or a parent\'s hold → other, with the parent that carries it', () => {
+    expect(waits(node('h', { tags: ['needs-human'] })).other).toEqual({ detail: 'Needs a person: tagged needs-human', heldBy: null });
+    const epic = node('epic', { text: 'Follow-ups', blockedReason: 'Waiting on Dan', childrenIds: ['under'] });
+    const under = node('under', { parentId: 'epic' });
+    expect(nodeWaits(under, [root, epic, under], workflow).other).toEqual({
+      detail: 'Needs a person: parent "Follow-ups" is blocked: Waiting on Dan',
+      heldBy: { id: 'epic', text: 'Follow-ups' },
+    });
+  });
+
+  it('done work and a ticket the fleet has back wait on nobody', () => {
+    expect(nothingWaits(waits(node('d', { status: 'done', blockedReason: 'x', approval: { ...APPROVED, state: 'proposed' } })))).toBe(true);
+    expect(nothingWaits(waits(node('f', { tags: ['fleet-check'], blockedReason: 'x' })))).toBe(true);
   });
 });

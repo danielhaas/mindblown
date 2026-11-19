@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { groupDone, groupByPriority, cardBlockState, kanbanColumnId, startedLabel } from '../kanban.js';
+import { groupDone, groupByPriority, cardBlockState, hiddenFromBoard, kanbanColumnId, startedLabel, etaLabel, durationLabels, outsideGate, personHolds } from '../kanban.js';
 import { computeIsBlocked, type NodeMap } from '@mindblown/core';
 import type { MindMap, StatusDef } from '@mindblown/core';
 import type { NodeWithComputed } from '../api.js';
@@ -44,6 +44,8 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
     setOpenGroups((o) => ({ ...o, [col]: { ...o[col], [g.key]: !isOpen(col, g) } }));
   // Same rule as the Blocked panel: computeIsBlocked over the whole map.
   const nodeMap: NodeMap = useMemo(() => new Map(nodes.map((n) => [n.id, n])) as NodeMap, [nodes]);
+  const holds = useMemo(() => personHolds(nodes, map.statusWorkflow), [nodes, map.statusWorkflow]);
+  const later = useMemo(() => outsideGate(nodes, map.dispatchGate ?? [], map.statusWorkflow), [nodes, map.dispatchGate, map.statusWorkflow]);
 
   const breadcrumbs = useMemo(() => {
     const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -65,6 +67,7 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
       // Parents are containers, not work items — a card for "Backend"
       // next to its own children only adds noise on a phone screen.
       if (n.childrenIds.length > 0) continue;
+      if (hiddenFromBoard(n, workflow)) continue;
       const columnId = kanbanColumnId(n, workflow);
       if (columnId === null) {
         unstatused.push(n);
@@ -140,15 +143,29 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                 computeIsBlocked(n, nodeMap).blockedBy,
                 col.status?.category === 'done',
                 (id) => nodeMap.get(id)?.text ?? id,
+                holds.get(n.id) ?? null,
+                later.get(n.id) ?? null,
               );
-              const started =
-                col.status?.category === 'in_progress' ? startedLabel(n.startedAt) : null;
+              const human = block?.kind === 'human';
+              const isLater = block?.kind === 'later' || block?.kind === 'fleet';
+              const inProgress = col.status?.category === 'in_progress';
+              const started = inProgress ? startedLabel(n.startedAt) : null;
+              const eta = inProgress ? etaLabel(n.expectedDoneAt) : null;
+              const { took, planned, over } = durationLabels(n);
               return (
                 <button
                   key={n.id}
                   className="mb-kanban-card"
                   onClick={() => onSelect(n.id)}
-                  style={block ? { background: '#e2e8f0', opacity: 0.7 } : undefined}
+                  style={
+                    human
+                      ? { background: '#fffbeb', borderLeft: '3px solid #f59e0b' }
+                      : isLater
+                        ? { background: '#eef2ff', borderLeft: '3px solid #a5b4fc', opacity: 0.85 }
+                        : block
+                          ? { background: '#e2e8f0', opacity: 0.7 }
+                          : undefined
+                  }
                 >
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                     <span
@@ -173,11 +190,18 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: '#64748b' }}>
                     <span>{pct}%</span>
                     {started && <span title={started.full}>· {started.short}</span>}
+                    {eta && (
+                      <span title={eta.full} style={eta.overdue ? { color: '#dc2626', fontWeight: 600 } : undefined}>
+                        · {eta.short}
+                      </span>
+                    )}
+                    {took && <span style={over ? { color: '#dc2626', fontWeight: 600 } : undefined}>· {took}</span>}
+                    {planned && <span>· {planned}</span>}
                     {n.assigneeIds.length > 0 && (
                       <span>· {n.assigneeIds.length}👤</span>
                     )}
                     {block && (
-                      <span style={{ color: '#475569', fontWeight: 600 }}>
+                      <span style={{ color: human ? '#92400e' : isLater ? '#3730a3' : '#475569', fontWeight: 600 }}>
                         · {block.detail.length > 64 ? `${block.detail.slice(0, 61)}…` : block.detail}
                       </span>
                     )}

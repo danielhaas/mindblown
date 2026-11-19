@@ -2,6 +2,7 @@
  * Data shapes returned by backend operations.
  * Mirror the server's API response envelopes (also used by packages/mcp/src/api.ts).
  */
+import type { TrustPolicy } from '@mindblown/core';
 
 export interface MapSummary {
   id: string;
@@ -17,6 +18,8 @@ export interface MapSummary {
   updatedAt: string;
   /** ISO timestamp when the map was archived; null/absent = active. */
   archivedAt?: string | null;
+  /** #491 — only on the reply to an update that set it (admin-only, never broadcast). */
+  trustPolicy?: TrustPolicy;
 }
 
 export interface NodeWithComputed {
@@ -49,6 +52,13 @@ export interface NodeWithComputed {
   }>;
   /** Forge PR mirror (webhook-maintained); absent/null when none. */
   linkedPr?: { number: number; repo: string; state: 'open' | 'closed' | 'merged'; draft?: boolean } | null;
+  /** Who asked for the node (#490); server-set, read-only. null = unknown. */
+  reportedBy?:
+    | { kind: 'user'; userId: string }
+    | { kind: 'forge'; provider: string; login: string }
+    | null;
+  /** The approval stamp (#492); server-set, read-only. Only approved nodes are dispatched. */
+  approval?: { state: 'proposed' | 'approved' | 'rejected'; merge: 'auto' | 'pr-only'; by: string | null; at: string } | null;
   collapsed: boolean;
   createdAt: string;
   updatedAt: string;
@@ -64,6 +74,8 @@ export interface NodeWithComputed {
   claimedAt: string | null;
   /** When work started (core Node field); optional — older servers omit it. */
   startedAt?: string | null;
+  /** The worker's own ETA (core Node field); optional — older servers omit it. */
+  expectedDoneAt?: string | null;
   computedEffort: number;
   computedProgress: number;
   healthSignal: string;
@@ -118,6 +130,17 @@ export interface MapDetail {
     fleetId?: string | null;
     fleetName?: string | null;
     fleetShare?: number;
+    /** The fleet's repo token may change CI workflows. */
+    fleetCanEditCi?: boolean;
+    /** The map's own pull-queue cap; 0 = on hold. */
+    maxActiveClaims?: number;
+    /** Repo binding, derived at read time (core MindMap.forgeKind / forgeProblem). */
+    forgeKind?: 'github' | 'gitea' | null;
+    forgeProblem?: { kind: 'unbound' | 'refused'; repo: string; message: string } | null;
+    githubRepoOwner?: string | null;
+    githubRepoName?: string | null;
+    /** Guided onboarding: setup checklist finished or dismissed; null = still open. */
+    setupCompletedAt?: string | null;
   };
   nodes: NodeWithComputed[];
 }

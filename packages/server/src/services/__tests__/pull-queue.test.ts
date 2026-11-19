@@ -40,6 +40,7 @@ let seq = 0;
 function makeNode(overrides: Partial<CoreNode> & { id: string }): CoreNode {
   seq += 1;
   return {
+    approval: { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' },
     mapId: 'map-1',
     parentId: 'root',
     childrenIds: [],
@@ -137,6 +138,30 @@ describe('cap gate', () => {
     expect(d.cap).toBe(2);
   });
 
+  it('a claim waiting on a person (blocker set) leaves its slot free', () => {
+    // fleet-worker holds the claim on a red-CI PR; it runs no agent until "Fleet can fix it".
+    const waiting = makeNode({ id: 'a', claimedBySession: 'w1', blockedReason: 'Fleet worker w1: CI failed on PR #7 (abc). Fix the branch or close the PR.' });
+    const d = select([waiting, makeNode({ id: 'b' })], { cap: 1 });
+    expect(d.reason).toBeUndefined();
+    expect(d.active).toBe(0);
+    expect(d.ranked.map((n) => n.id)).toEqual(['b']);
+  });
+
+  it('every other blocked claim still counts: a Stop (agent may still run), a fix asked for', () => {
+    const note = 'Fleet worker w1: CI failed on PR #7 (abc).';
+    const cases = [
+      makeNode({ id: 'a', claimedBySession: 'w1', blockedReason: 'Stopped by Dan: wrong approach' }),
+      makeNode({ id: 'a', claimedBySession: 'w1', blockedReason: note, tags: ['fleet-fix'] }),
+      makeNode({ id: 'a', claimedBySession: 'w1', blockedReason: note, tags: ['fleet-check'] }),
+      makeNode({ id: 'a', claimedBySession: 'w1', blockedReason: '   ' }),
+    ];
+    for (const held of cases) {
+      const d = select([held, makeNode({ id: 'b' })], { cap: 1 });
+      expect(d.reason).toBe('cap');
+      expect(d.active).toBe(1);
+    }
+  });
+
   it('grants below the cap', () => {
     const d = select(
       [makeNode({ id: 'a', claimedBySession: 'w1' }), makeNode({ id: 'b' })],
@@ -180,7 +205,8 @@ describe('dispatchGate', () => {
     const d = select([epic, inherited, explicit, other, unversioned], {
       gate: ['version:v1'],
     });
-    expect(d.ranked.map((n) => n.id).sort()).toEqual(['epic', 'explicit', 'inherited']);
+    // `epic` is a container (it has a child) — never ranked, only its leaf is.
+    expect(d.ranked.map((n) => n.id).sort()).toEqual(['explicit', 'inherited']);
   });
 
   it('type:bug + version:<id> AND together', () => {
@@ -539,7 +565,19 @@ describe('human-only guard (#266)', () => {
     expect(d.ranked.map((n) => n.id)).toEqual(['late']);
     const kidHold = d.humanOnly.find((h) => h.node.id === 'kid')!;
     expect(kidHold).toMatchObject({ tag: 'needs-human', blockedReason: null, heldBy: { id: 'epic', text: 'Node epic' } });
-    expect(d.humanOnly.find((h) => h.node.id === 'epic')!.heldBy).toBeNull();
+    // The container itself is not pullable, so it is not reported as held either.
+    expect(d.humanOnly.map((h) => h.node.id)).toEqual(['kid']);
+  });
+
+  it('never ranks a container, tagged epic or not — the leaves are the work', () => {
+    // "Phase 2.5: Make it fun" (25.10.2026): an untagged todo parent was granted.
+    const phase = makeNode({ id: 'phase', text: 'Phase 2.5: Make it fun', childrenIds: ['a', 'b'] });
+    const a = makeNode({ id: 'a', parentId: 'phase' });
+    const b = makeNode({ id: 'b', parentId: 'phase' });
+    const d = select([phase, a, b]);
+    expect(d.ranked.map((n) => n.id).sort()).toEqual(['a', 'b']);
+    expect(d.skipped).toEqual([]);
+    expect(d.humanOnly).toEqual([]);
   });
 });
 

@@ -14,8 +14,8 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
-import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult } from '@mindblown/tool-kit';
-import type { AskAnswerInput, FleetWithMaps, StalledLeaf } from '@mindblown/core';
+import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult } from '@mindblown/tool-kit';
+import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookSubscription } from '@mindblown/core';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -108,6 +108,8 @@ export interface MapSummary {
   createdAt: string;
   updatedAt: string;
   archivedAt?: string | null;
+  /** #491 — only on the reply to an update that set it. */
+  trustPolicy?: TrustPolicy;
 }
 
 export interface NodeWithComputed {
@@ -140,6 +142,8 @@ export interface NodeWithComputed {
   completedAt: string | null;
   /** Set when work on the node started (core Node field). */
   startedAt: string | null;
+  /** The worker's own ETA (core Node field). */
+  expectedDoneAt: string | null;
   revision: number;
   // Requirements register — non-null requirementId marks a requirement.
   requirementId: string | null;
@@ -172,6 +176,13 @@ export interface NodeWithComputed {
   // Orchestration substrate (#111) — surfaced for slot accounting (#153).
   claimedBySession: string | null;
   claimedAt: string | null;
+  /** Who asked for the node (#490); server-set, read-only. null = unknown. */
+  reportedBy?:
+    | { kind: 'user'; userId: string }
+    | { kind: 'forge'; provider: string; login: string }
+    | null;
+  /** The approval stamp (#492); server-set, read-only. Only approved nodes are dispatched. */
+  approval?: { state: 'proposed' | 'approved' | 'rejected'; merge: 'auto' | 'pr-only'; by: string | null; at: string } | null;
   computedEffort: number;
   computedProgress: number;
   healthSignal: string;
@@ -382,16 +393,28 @@ async function requestText(path: string): Promise<string> {
   const headers: Record<string, string> = {};
   if (ctx.token) headers['Authorization'] = `Bearer ${ctx.token}`;
 
+  // The error body is JSON ({ error: { code, message } }) even when the
+  // success body is not — surface its message ("Unknown time zone …").
+  const fail = (status: number, body: string, fallback: string): never => {
+    let parsed: { error?: { message?: string; code?: string } } = {};
+    try {
+      parsed = body ? JSON.parse(body) : {};
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(status, parsed.error?.message ?? fallback, parsed.error?.code);
+  };
+
   if (ctx.injector) {
     const res = await ctx.injector({ method: 'GET', url: path, headers });
     if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw new ApiError(res.statusCode, `HTTP ${res.statusCode}`);
+      return fail(res.statusCode, res.body ?? '', `HTTP ${res.statusCode}`);
     }
     return res.body ?? '';
   }
 
   const res = await fetch(`${ctx.baseUrl}${path}`, { headers });
-  if (!res.ok) throw new ApiError(res.status, res.statusText);
+  if (!res.ok) return fail(res.status, await res.text().catch(() => ''), res.statusText);
   return res.text();
 }
 
@@ -505,13 +528,19 @@ export function updateMap(
     profilePolicy?: ProfilePolicy | null;
     fleetId?: string | null;
     fleetShare?: number;
+    fleetCanEditCi?: boolean;
     autoImportNewIssues?: boolean;
+    githubInstallationId?: string | null;
+    githubRepoOwner?: string | null;
+    githubRepoName?: string | null;
     aiPolicy?: 'any' | 'local' | 'none';
     aiEstimateDrafts?: boolean;
     holidayJurisdiction?: string | null;
     holidayOverrides?: { add: string[]; remove: string[] };
     phases?: PhaseDef[];
     archived?: boolean;
+    setupCompleted?: boolean;
+    trustPolicy?: TrustPolicy | null;
   },
 ): Promise<MapSummary> {
   return request<MapSummary>(`/api/maps/${mapId}`, {
@@ -533,7 +562,7 @@ export function createFleet(name: string, maxActiveClaims?: number): Promise<Fle
   });
 }
 
-export function updateFleet(fleetId: string, fields: { name?: string; maxActiveClaims?: number }): Promise<FleetWithMaps> {
+export function updateFleet(fleetId: string, fields: { name?: string; maxActiveClaims?: number; autoCheckBlockers?: boolean }): Promise<FleetWithMaps> {
   return request<FleetWithMaps>(`/api/fleets/${encodeURIComponent(fleetId)}`, {
     method: 'PATCH',
     body: JSON.stringify(fields),
@@ -557,6 +586,26 @@ export async function freezeBaseline(
   );
   const b = map.baselines[map.baselines.length - 1];
   return { id: b.id, name: b.name, createdAt: b.createdAt, nodeCount: Object.keys(b.nodes ?? {}).length, dropped: map.droppedBaselines ?? [] };
+}
+
+/** The map (or a subtree) as a Markdown timeline (#637). */
+export function exportMarkdown(
+  mapId: string,
+  opts: { rootNodeId?: string; detail?: 'summary' | 'full'; timeZone?: string } = {},
+): Promise<string> {
+  const qs = new URLSearchParams();
+  if (opts.rootNodeId) qs.set('root', opts.rootNodeId);
+  if (opts.detail) qs.set('detail', opts.detail);
+  if (opts.timeZone) qs.set('tz', opts.timeZone);
+  const q = qs.toString();
+  return requestText(`/api/maps/${encodeURIComponent(mapId)}/export.md${q ? `?${q}` : ''}`);
+}
+
+/** Publish the timeline to the workspace's wiki (#637). */
+export function publishToWiki(
+  mapId: string,
+): Promise<{ documentId: string; documentUrl: string; created: boolean; publishedAt: string }> {
+  return request(`/api/maps/${encodeURIComponent(mapId)}/wiki/publish`, { method: 'POST', body: JSON.stringify({}) });
 }
 
 export function getSchedule(mapId: string, versionId?: string): Promise<ScheduleResult> {
@@ -700,6 +749,57 @@ export function rolloverCycle(fromCycleId: string, targetCycleId: string): Promi
     method: 'POST',
     body: JSON.stringify({ targetCycleId }),
   });
+}
+
+// ── Repository creation (the caller's own GitHub / Gitea sign-in) ──
+
+export function getGitHubInstallStatus(): Promise<{
+  connected: boolean;
+  identity: { githubLogin: string } | null;
+  installations: Array<{ installationId: string; accountLogin: string; accountType: string }>;
+  appConfigured: boolean;
+}> {
+  return request('/api/auth/github/status');
+}
+
+export function getGiteaAuthStatus(): Promise<{ configured: boolean; connected: boolean; identity: { login: string } | null }> {
+  return request('/api/auth/gitea/status');
+}
+
+export interface CreatedRepo {
+  fullName: string;
+  owner: string;
+  name: string;
+  private: boolean;
+  htmlUrl: string;
+}
+
+export function createGitHubRepository(input: {
+  installationId: string;
+  name: string;
+  private: boolean;
+  description?: string;
+}): Promise<CreatedRepo & { installationId: string; reachable: boolean; addAccessUrl?: string }> {
+  return request('/api/integrations/github/repositories', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function createGiteaRepository(input: { name: string; private: boolean; description?: string }): Promise<CreatedRepo> {
+  return request('/api/integrations/gitea/repositories', { method: 'POST', body: JSON.stringify(input) });
+}
+
+/** Is the caller admin on the map? The permissions list is admin-only, so its answer says. */
+export async function isMapAdmin(mapId: string): Promise<boolean> {
+  try {
+    await request(`/api/maps/${mapId}/permissions`);
+    return true;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 403) return false;
+    throw err;
+  }
+}
+
+export function bindGiteaRepo(workspaceId: string, owner: string, repo: string, mapId: string): Promise<{ id: string; repo: string }> {
+  return request('/api/integrations/gitea/bind', { method: 'POST', body: JSON.stringify({ workspaceId, owner, repo, mapId }) });
 }
 
 // ── GitHub Integration ─────────────────────────────────────────
@@ -1178,10 +1278,18 @@ export function aiBraindump(
   parentId: string,
   prose: string,
   maxDepth?: number,
+  answers?: Array<{ question: string; answer: string }>,
 ): Promise<{ tree: BraindumpNode[] }> {
   return request<{ tree: BraindumpNode[] }>('/api/ai/braindump', {
     method: 'POST',
-    body: JSON.stringify({ mapId, parentId, prose, maxDepth }),
+    body: JSON.stringify({ mapId, parentId, prose, maxDepth, answers }),
+  });
+}
+
+export function aiPlanQuestions(mapId: string, prose: string): Promise<{ questions: string[] }> {
+  return request<{ questions: string[] }>('/api/ai/braindump/questions', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, prose }),
   });
 }
 
@@ -1554,6 +1662,7 @@ export interface ReadyNodesResultApi {
   total: number;
   returned: number;
   sprintScope?: { mode: 'active' | 'all' | 'cycle'; cycles: Array<{ id: string; name: string }>; note?: string };
+  awaitingApproval: Array<{ id: string; text: string; approval: 'proposed' | 'rejected'; heldBy: { id: string; text: string } | null }>;
 }
 
 export interface ClaimNodeResultApi {
@@ -1675,9 +1784,27 @@ export function getFleetJournal(mapId: string, opts: { from?: string; to?: strin
   return request<FleetJournalResult>(`/api/maps/${mapId}/fleet-journal${qs ? `?${qs}` : ''}`);
 }
 
+/** fleet_status for a whole fleet (#479). */
+export function getFleetStatusForFleet(fleetId: string, opts: { since?: string; limit?: number } = {}): Promise<FleetStatusResult> {
+  const params = new URLSearchParams();
+  if (opts.since !== undefined) params.set('since', opts.since);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request<FleetStatusResult>(`/api/fleets/${fleetId}/fleet${qs ? `?${qs}` : ''}`);
+}
+
+/** fleet_journal across a fleet's maps (#479). */
+export function getFleetJournalForFleet(fleetId: string, opts: { from?: string; to?: string } = {}): Promise<FleetJournalResult> {
+  const params = new URLSearchParams();
+  if (opts.from !== undefined) params.set('from', opts.from);
+  if (opts.to !== undefined) params.set('to', opts.to);
+  const qs = params.toString();
+  return request<FleetJournalResult>(`/api/fleets/${fleetId}/fleet-journal${qs ? `?${qs}` : ''}`);
+}
+
 // ── Asks inbox (/leidang-asks) ─────────────────────────────────────
 
-export function listAsks(mapId: string, opts: AskListOptions = {}): Promise<AskListResult> {
+function askQuery(opts: AskListOptions): string {
   const params = new URLSearchParams();
   if (opts.status) params.set('status', opts.status);
   if (opts.hint) params.set('hint', opts.hint);
@@ -1685,7 +1812,16 @@ export function listAsks(mapId: string, opts: AskListOptions = {}): Promise<AskL
   if (opts.since) params.set('since', opts.since);
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   const qs = params.toString();
-  return request<AskListResult>(`/api/maps/${mapId}/asks${qs ? `?${qs}` : ''}`);
+  return qs ? `?${qs}` : '';
+}
+
+export function listAsks(mapId: string, opts: AskListOptions = {}): Promise<AskListResult> {
+  return request<AskListResult>(`/api/maps/${mapId}/asks${askQuery(opts)}`);
+}
+
+/** list_asks for a whole fleet (#479). */
+export function listAsksForFleet(fleetId: string, opts: AskListOptions = {}): Promise<AskListResult> {
+  return request<AskListResult>(`/api/fleets/${fleetId}/asks${askQuery(opts)}`);
 }
 
 export function answerAsk(mapId: string, askId: string, input: AskAnswerInput): Promise<AskAnswerResult> {
@@ -1695,10 +1831,71 @@ export function answerAsk(mapId: string, askId: string, input: AskAnswerInput): 
   });
 }
 
+/** answer_ask through the fleet (#479); `mapId` disambiguates a shared ask id ('' = fleet-level). */
+export function answerAskForFleet(fleetId: string, askId: string, input: AskAnswerInput, mapId?: string): Promise<AskAnswerResult> {
+  const qs = mapId !== undefined ? `?mapId=${encodeURIComponent(mapId)}` : '';
+  return request<AskAnswerResult>(`/api/fleets/${fleetId}/asks/${encodeURIComponent(askId)}/answer${qs}`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+/** fleet_check_blockers: every blocker row of the fleet → "Fleet can fix it". */
+export function fleetCheckBlockers(fleetId: string, by?: string): Promise<FleetCheckResult> {
+  return request<FleetCheckResult>(`/api/fleets/${fleetId}/asks/fleet-check`, { method: 'POST', body: JSON.stringify(by ? { by } : {}) });
+}
+
+/** list_pending_approvals (#494): one map, a fleet, or every map the key can view. */
+export function listPendingApprovals(scope: { mapId?: string; fleetId?: string }): Promise<PendingApprovalList> {
+  const base = scope.mapId ? `/api/maps/${scope.mapId}` : scope.fleetId ? `/api/fleets/${scope.fleetId}` : '/api';
+  return request<PendingApprovalList>(`${base}/approvals`);
+}
+
+/** waiting_on_humans: one fleet, or every fleet the key can see. */
+export function waitingOnHumans(fleetId?: string): Promise<WaitingOnHumansResult> {
+  return request<WaitingOnHumansResult>(fleetId ? `/api/fleets/${fleetId}/waiting-on-humans` : '/api/waiting-on-humans');
+}
+
+/** list_reporter_checks: one map, a fleet, or every map the key can view. */
+export function listReporterChecks(scope: { mapId?: string; fleetId?: string }): Promise<ReporterCheckList> {
+  const base = scope.mapId ? `/api/maps/${scope.mapId}` : scope.fleetId ? `/api/fleets/${scope.fleetId}` : '/api';
+  return request<ReporterCheckList>(`${base}/reporter-checks`);
+}
+
+/** mark_deployed: the map's project went live — ask the waiting reporters. */
+export function markDeployed(mapId: string): Promise<DeployedResult> {
+  return request<DeployedResult>(`/api/maps/${mapId}/deployed`, { method: 'POST', body: JSON.stringify({}) });
+}
+
+/** pr_summary: the node's PR, read live from the map's forge. */
+export function prSummary(mapId: string, nodeId: string): Promise<PrSummary> {
+  return request<PrSummary>(`/api/maps/${mapId}/nodes/${nodeId}/pr`);
+}
+
+/** merge_pr: a refusal is a 409 — returned as `merged: false`, not thrown. */
+export async function mergePr(mapId: string, nodeId: string, input: { expectedHeadSha: string; method?: string }): Promise<MergePrResult> {
+  try {
+    return await request<MergePrResult>(`/api/maps/${mapId}/nodes/${nodeId}/pr/merge`, { method: 'POST', body: JSON.stringify(input) });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 409 && err.code) {
+      return { merged: false, code: err.code as Extract<MergePrResult, { merged: false }>['code'], message: err.message };
+    }
+    throw err;
+  }
+}
+
+/** prs_waiting: one map, a fleet, or every map the key can view. */
+export function prsWaiting(scope: { mapId?: string; fleetId?: string }): Promise<PrsWaitingList> {
+  const base = scope.mapId ? `/api/maps/${scope.mapId}` : scope.fleetId ? `/api/fleets/${scope.fleetId}` : '/api';
+  return request<PrsWaitingList>(`${base}/prs/waiting`);
+}
+
 /** Release a parked ticket back into the queue (clear_blocker). */
 export interface UnblockNodeResultApi {
   node: { id: string; text: string; status: string | null; claimedBySession: string | null };
   statusReset: boolean;
+  /** Set when the `blocked` label could not be taken off the linked issue (#622). */
+  labelError?: string;
 }
 
 export async function unblockNode(mapId: string, nodeId: string): Promise<UnblockNodeResultApi> {
@@ -1709,6 +1906,7 @@ export async function unblockNode(mapId: string, nodeId: string): Promise<Unbloc
   return {
     node: { id: res.node.id, text: res.node.text, status: res.node.status, claimedBySession: res.node.claimedBySession ?? null },
     statusReset: res.statusReset,
+    ...(res.labelError ? { labelError: res.labelError } : {}),
   };
 }
 
@@ -1760,6 +1958,20 @@ export function readAttachment(
   return request<AttachmentText>(
     `/api/maps/${mapId}/nodes/${nodeId}/attachments/${encodeURIComponent(attachmentId)}/text${qs}`,
   );
+}
+
+// ── Repo docs (#550) ─────────────────────────────────────────────
+
+export function listRepoDocs(mapId: string): Promise<RepoDocsList> {
+  return request<RepoDocsList>(`/api/maps/${mapId}/docs`);
+}
+
+export function readRepoDoc(mapId: string, path: string): Promise<RepoDocText> {
+  return request<RepoDocText>(`/api/maps/${mapId}/docs/file?path=${encodeURIComponent(path)}`);
+}
+
+export function proposeRepoDocEdit(mapId: string, input: ProposeDocEditInput): Promise<ProposeDocEditResult> {
+  return request<ProposeDocEditResult>(`/api/maps/${mapId}/docs/propose`, { method: 'POST', body: JSON.stringify(input) });
 }
 
 export function conflictScan(
@@ -1830,4 +2042,34 @@ export function auditClosedIssues(
       body: JSON.stringify({ ...rest, dryRun: true }),
     },
   );
+}
+
+// ── Outgoing webhooks ──────────────────────────────────────────────
+
+export async function listWebhooks(mapId: string): Promise<WebhookSubscription[]> {
+  return (await request<{ webhooks: WebhookSubscription[] }>(`/api/maps/${mapId}/webhooks`)).webhooks;
+}
+
+export async function createWebhook(mapId: string, input: CreateWebhookInput): Promise<WebhookSubscription & { secret: string }> {
+  const res = await request<{ webhook: WebhookSubscription & { secret: string } }>(`/api/maps/${mapId}/webhooks`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  return res.webhook;
+}
+
+export async function updateWebhook(mapId: string, webhookId: string, patch: UpdateWebhookInput): Promise<WebhookSubscription> {
+  const res = await request<{ webhook: WebhookSubscription }>(`/api/maps/${mapId}/webhooks/${encodeURIComponent(webhookId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+  return res.webhook;
+}
+
+export function deleteWebhook(mapId: string, webhookId: string): Promise<{ deleted: boolean; id: string }> {
+  return request(`/api/maps/${mapId}/webhooks/${encodeURIComponent(webhookId)}`, { method: 'DELETE' });
+}
+
+export function pingWebhook(mapId: string, webhookId: string): Promise<WebhookPingResult> {
+  return request(`/api/maps/${mapId}/webhooks/${encodeURIComponent(webhookId)}/ping`, { method: 'POST' });
 }

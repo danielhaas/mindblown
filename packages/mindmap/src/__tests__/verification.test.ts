@@ -3,7 +3,7 @@ import type { Node } from '@mindblown/core';
 import { isDocumented, isHttpUrl, verificationOf } from '../verification.js';
 
 /**
- * `verificationOf` decides what the Prüfanleitungen view has to show for a
+ * `verificationOf` decides what the Guide view has to show for a
  * criterion; `isDocumented` decides whether the register's row carries the
  * marker that jumps there. The promise is "nothing written → no marker, the
  * register looks exactly as it did before" — a row that sprouts a marker
@@ -95,7 +95,7 @@ describe('verificationOf', () => {
 
 /**
  * The register's marker. It is the only thing the register says about the
- * Prüf-felder, so what it counts as "documented" is the whole contract.
+ * verification fields, so what it counts as "documented" is the whole contract.
  */
 describe('isDocumented', () => {
   it('is false when nothing is written', () => {
@@ -103,7 +103,7 @@ describe('isDocumented', () => {
     expect(isDocumented(node({ verificationText: '   ' }))).toBe(false);
   });
 
-  it('is true for a written Anleitung', () => {
+  it('is true for written how-to-verify text', () => {
     expect(isDocumented(node({ verificationText: '1. Einloggen' }))).toBe(true);
   });
 
@@ -113,7 +113,7 @@ describe('isDocumented', () => {
     expect(isDocumented(node({ verificationVideoUrl: 'https://v.example.com/a.mp4' }))).toBe(true);
   });
 
-  it('is false for a Prüf-Link alone', () => {
+  it('is false for a where-to-check link alone', () => {
     // The deep link answers "where do I click this up", not "how do I check
     // it", and it is deliberately not surfaced in the register at all: the
     // reader of the register is asking where something stands, and a link
@@ -130,7 +130,7 @@ describe('isDocumented', () => {
 
 /**
  * Both URL fields are free-text columns with no server-side validation, and
- * the Prüfanleitung is the only surface that renders them as an `href`.
+ * the Guide view is the only surface that renders them as an `href`.
  */
 describe('isHttpUrl', () => {
   it('accepts absolute http and https URLs', () => {

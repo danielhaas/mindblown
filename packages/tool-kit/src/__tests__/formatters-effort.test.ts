@@ -171,3 +171,18 @@ describe('formatMapTree — started', () => {
     expect(line('untouched')).not.toContain('started:');
   });
 });
+
+describe('formatMapTree — eta', () => {
+  it('shows the worker\'s ETA on open work, flags it once past, drops it when done', () => {
+    const root = stubNode({ id: 'root', text: 'Root', childrenIds: ['a', 'b', 'c'] });
+    const a = stubNode({ id: 'a', parentId: 'root', text: 'ahead', expectedDoneAt: '2999-01-01T00:00:00.000Z', computedProgress: 30 });
+    const b = stubNode({ id: 'b', parentId: 'root', text: 'late', expectedDoneAt: '2020-01-01T00:00:00.000Z', computedProgress: 30 });
+    const c = stubNode({ id: 'c', parentId: 'root', text: 'finished', expectedDoneAt: '2020-01-01T00:00:00.000Z', computedProgress: 100 });
+    const out = formatMapTree(detailWith([root, a, b, c]));
+    const line = (substr: string) => out.split('\n').find((l) => l.includes(substr))!;
+    expect(line('ahead')).toContain('eta: 2999-01-01T00:00:00.000Z');
+    expect(line('ahead')).not.toContain('overdue');
+    expect(line('late')).toContain('eta: 2020-01-01T00:00:00.000Z (overdue)');
+    expect(line('finished')).not.toContain('eta:');
+  });
+});

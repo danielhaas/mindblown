@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import type { MindMap, Node, StatusDef } from '@mindblown/core';
 import * as api from '../api.js';
 import type { NodeWithComputed } from '../api.js';
+import { useMindmapStore } from '../store.js';
+import { useTicketPhasesFor } from '../useTicketPhases.js';
+import { promptStop } from '../StopTicketButton.js';
+import { NeedsYouSection } from '../NeedsYouSection.js';
 
 interface Props {
   node: NodeWithComputed;
@@ -10,6 +14,10 @@ interface Props {
   onClose: () => void;
   /** Called with the server's updated node after any successful edit. */
   onChanged: (updated: Node) => void;
+  /** Open another node's sheet (the parent that holds this one). */
+  onOpenNode?: (id: string) => void;
+  /** Go to the Fleet tab, where the rest of a hold is resolved. */
+  onOpenFleet?: () => void;
 }
 
 const PRIORITIES = ['P0', 'P1', 'P2', 'P3'] as const;
@@ -44,7 +52,7 @@ function pathTo(node: NodeWithComputed, byId: Map<string, NodeWithComputed>): No
   return out;
 }
 
-export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged }: Props) {
+export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged, onOpenNode, onOpenFleet }: Props) {
   const s = statusOf(node, map.statusWorkflow);
   const isLeaf = node.childrenIds.length === 0;
   const ancestors = pathTo(node, byId).slice(1); // skip the root node
@@ -60,6 +68,9 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged }: P
   const pct = draftPct ?? Math.round(isLeaf ? node.percentComplete ?? 0 : node.computedProgress ?? 0);
 
   const [blockerDraft, setBlockerDraft] = useState<string | null>(null);
+  // A fleet agent working this ticket can be stopped from here (#549): Stop is a blocker.
+  const agentRunning = useTicketPhasesFor(map.id, map.fleetId ?? null).get(node.id)?.agentRunning ?? false;
+  const user = useMindmapStore((s) => s.user);
   const blockerInputRef = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => {
     if (blockerDraft !== null) blockerInputRef.current?.focus();
@@ -107,6 +118,42 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged }: P
 
   const workflow = [...map.statusWorkflow].sort((a, b) => a.position - b.position);
 
+  // The "Needs you" section reads the brief from the full node (#610).
+  const detailNode: Node = full ? { ...node, description: full.description, externalLinks: full.externalLinks } : node;
+  // Approve / reject / answer write on the server; this sheet has no socket, so re-read the node.
+  const refresh = () => {
+    api.fetchNode(map.id, node.id).then(onChanged, () => {});
+  };
+  const unblock = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const { node: updated } = await api.unblockNode(map.id, node.id);
+      onChanged(updated);
+      return true;
+    } catch (e) {
+      setSaveError((e as Error).message ?? 'Unblock failed');
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+  const saveBrief = async (text: string) => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const updated = await api.updateNode(map.id, node.id, { description: text });
+      setFull(updated);
+      onChanged(updated);
+      return true;
+    } catch (e) {
+      setSaveError((e as Error).message ?? 'Save failed');
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <>
       <div className="mb-sheet-backdrop" onClick={onClose} />
@@ -132,6 +179,19 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged }: P
           )}
 
           {saveError && <div className="mb-error">{saveError}</div>}
+
+          <NeedsYouSection
+            mapId={map.id}
+            node={detailNode}
+            nodes={byId}
+            workflow={map.statusWorkflow}
+            mobile
+            onUnblock={unblock}
+            onSaveBrief={saveBrief}
+            onRefresh={refresh}
+            onOpenNode={onOpenNode}
+            onOpenFleet={onOpenFleet}
+          />
 
           <div className="mb-detail-section">
             <div className="mb-detail-label">Status</div>
@@ -211,7 +271,14 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged }: P
             <div className="mb-detail-label">Blocked</div>
             {node.blockedReason ? (
               <div className="mb-blocker-box">
-                <div style={{ color: '#b91c1c', flex: 1 }}>{node.blockedReason}</div>
+                <div style={{ color: '#b91c1c', flex: 1 }}>
+                  {node.blockedReason}
+                  {agentRunning && (
+                    <div data-testid="mobile-stop-pending" style={{ fontSize: 12, fontWeight: 600, marginTop: 4 }}>
+                      Stopping the fleet agent…
+                    </div>
+                  )}
+                </div>
                 <button
                   className="mb-link"
                   disabled={saving}
@@ -246,9 +313,25 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged }: P
                 </div>
               </div>
             ) : (
-              <button className="mb-btn-soft" onClick={() => setBlockerDraft('')}>
-                Flag a blocker
-              </button>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {agentRunning && (
+                  <button
+                    className="mb-btn-soft"
+                    data-testid="mobile-stop-ticket"
+                    disabled={saving}
+                    style={{ color: '#b91c1c' }}
+                    onClick={() => {
+                      const blocker = promptStop(user);
+                      if (blocker !== null) void save({ blockedReason: blocker });
+                    }}
+                  >
+                    Stop the fleet agent
+                  </button>
+                )}
+                <button className="mb-btn-soft" onClick={() => setBlockerDraft('')}>
+                  Flag a blocker
+                </button>
+              </div>
             )}
           </div>
 

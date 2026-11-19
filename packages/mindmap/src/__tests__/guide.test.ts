@@ -12,7 +12,7 @@ import {
 } from '../guide.js';
 
 /**
- * The Anwenderansicht's derivation. Three promises are load-bearing and are
+ * The Guide view's derivation. Three promises are load-bearing and are
  * what these tests pin:
  *
  * 1. **Unbuilt criteria never disappear.** They dim; they do not vanish. A
@@ -302,7 +302,7 @@ describe('filterGuideChapters', () => {
     expect(filterGuideChapters(chapters(), '   ')).toHaveLength(2);
   });
 
-  it('matches the Kürzel and the title, case-insensitively', () => {
+  it('matches the requirement ID and the title, case-insensitively', () => {
     const byId = filterGuideChapters(chapters(), 'pen-02');
     expect(byId.flatMap((c) => c.entries.map((e) => e.requirementId))).toEqual(['PEN-02']);
     const byTitle = filterGuideChapters(chapters(), 'ERINNERUNG');

@@ -107,6 +107,9 @@ vi.mock('@mindblown/core', async () => {
   };
 });
 
+// The pull's AI-read lookup is not under test here (pull-next-claim-event.test.ts pins it).
+vi.mock('../approvalReview.js', () => ({ currentReviews: async () => new Map() }));
+
 import { claimNode, releaseNode } from '../orchestration.js';
 
 function nodeRow(overrides: Partial<{
@@ -309,6 +312,9 @@ describe('claim trail (change_events written by claim/release)', () => {
     mocks.txUpdateMock.mockResolvedValue([nodeRow({ claimedBySession: WORKER, claimedAt: new Date() })]);
 
     await claimNode('m1', 'n1', WORKER);
+    // The claimed row is chained after the released one (fire-and-forget, in order).
+    await vi.waitFor(() => expect(mocks.recordClaimedMock).toHaveBeenCalled());
+    expect(mocks.recordReleasedMock.mock.invocationCallOrder[0]).toBeLessThan(mocks.recordClaimedMock.mock.invocationCallOrder[0]);
 
     expect(mocks.recordReleasedMock).toHaveBeenCalledTimes(1);
     expect(mocks.recordReleasedMock).toHaveBeenCalledWith(

@@ -20,7 +20,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
-import { listInstallationRepositories } from './github-app.js';
+import { listInstallationRepositories, mintScopedRepoToken, mintInstallationToken, createGitHubRepository, listUserInstallations } from './github-app.js';
 import { GitHubCrossOriginPaginationError } from './github.js';
 
 const { privateKey } = generateKeyPairSync('rsa', {
@@ -163,5 +163,144 @@ describe('listInstallationRepositories', () => {
     );
 
     expect(calls.some((c) => c.includes('evil.example'))).toBe(false);
+  });
+});
+
+describe('mintScopedRepoToken (fleet worker, #507)', () => {
+  /** Answers the token endpoint with `statusFor(permissions)`; records each request's permissions. */
+  function stubMint(statusFor: (perms: Record<string, string>) => number) {
+    const asked: Array<Record<string, string>> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { body: string }) => {
+        const { permissions } = JSON.parse(init.body) as { permissions: Record<string, string> };
+        asked.push(permissions);
+        const status = statusFor(permissions);
+        return {
+          ok: status < 300,
+          status,
+          headers: new Headers(),
+          text: async () => '{"message":"The permissions requested are not granted to this installation."}',
+          json: async () => ({ token: 'ghs_scoped', expires_at: '2026-10-20T15:00:00Z' }),
+        };
+      }),
+    );
+    return asked;
+  }
+
+  it('asks for push + PR + CI read, scoped to the one repo', async () => {
+    const asked = stubMint(() => 201);
+    const t = await mintScopedRepoToken('inst-1', 'navy-app');
+    expect(t.token).toBe('ghs_scoped');
+    expect(asked).toEqual([{ contents: 'write', pull_requests: 'write', checks: 'read', statuses: 'read' }]);
+  });
+
+  it('an App without CI read (422) still gets a push + PR token', async () => {
+    const asked = stubMint((p) => (p.checks ? 422 : 201));
+    const t = await mintScopedRepoToken('inst-1', 'navy-app');
+    expect(t.token).toBe('ghs_scoped');
+    expect(asked).toEqual([
+      { contents: 'write', pull_requests: 'write', checks: 'read', statuses: 'read' },
+      { contents: 'write', pull_requests: 'write' },
+    ]);
+  });
+
+  it('a map that lets the fleet change CI asks for workflows write too', async () => {
+    const asked = stubMint(() => 201);
+    await mintScopedRepoToken('inst-1', 'xmirror', { workflows: true });
+    expect(asked).toEqual([{ contents: 'write', pull_requests: 'write', checks: 'read', statuses: 'read', workflows: 'write' }]);
+  });
+
+  it('an App without Workflows (422) gets the usual token', async () => {
+    const asked = stubMint((p) => (p.workflows ? 422 : 201));
+    const t = await mintScopedRepoToken('inst-1', 'xmirror', { workflows: true });
+    expect(t.token).toBe('ghs_scoped');
+    expect(asked).toEqual([
+      { contents: 'write', pull_requests: 'write', checks: 'read', statuses: 'read', workflows: 'write' },
+      { contents: 'write', pull_requests: 'write', checks: 'read', statuses: 'read' },
+    ]);
+  });
+
+  it('an App without push rights fails clearly (422 on both)', async () => {
+    stubMint(() => 422);
+    await expect(mintScopedRepoToken('inst-1', 'navy-app')).rejects.toMatchObject({ status: 422 });
+  });
+});
+
+describe('user-token helpers', () => {
+  function stubOnce(responses: Array<{ status: number; body: unknown; link?: string }>) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url: String(url), init });
+        const r = responses.shift()!;
+        return {
+          ok: r.status < 300,
+          status: r.status,
+          headers: new Headers(r.link ? { link: r.link } : {}),
+          json: async () => r.body,
+          text: async () => JSON.stringify(r.body),
+        };
+      }),
+    );
+    return calls;
+  }
+
+  it('createGitHubRepository posts to /user/repos, or /orgs/{org}/repos, with auto_init', async () => {
+    const calls = stubOnce([
+      { status: 201, body: { full_name: 'alice/a' } },
+      { status: 201, body: { full_name: 'acme/b' } },
+    ]);
+    await createGitHubRepository('ut', { name: 'a', private: true });
+    await createGitHubRepository('ut', { name: 'b', private: false, description: 'd', org: 'acme' });
+    expect(calls.map((c) => [c.url, c.init.method])).toEqual([
+      ['https://api.github.com/user/repos', 'POST'],
+      ['https://api.github.com/orgs/acme/repos', 'POST'],
+    ]);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ name: 'a', private: true, auto_init: true });
+    expect(JSON.parse(String(calls[1].init.body))).toEqual({ name: 'b', private: false, description: 'd', auto_init: true });
+  });
+
+  it('createGitHubRepository surfaces the status (422 = name taken)', async () => {
+    stubOnce([{ status: 422, body: { message: 'name already exists' } }]);
+    await expect(createGitHubRepository('ut', { name: 'a', private: true })).rejects.toMatchObject({ status: 422 });
+  });
+
+  it('listUserInstallations follows the next link', async () => {
+    const next = 'https://api.github.com/user/installations?per_page=100&page=2';
+    const calls = stubOnce([
+      { status: 200, body: { total_count: 2, installations: [{ id: 1 }] }, link: `<${next}>; rel="next"` },
+      { status: 200, body: { total_count: 2, installations: [{ id: 2 }] } },
+    ]);
+    expect((await listUserInstallations('ut')).map((i) => i.id)).toEqual([1, 2]);
+    expect(calls.map((c) => c.url)).toEqual(['https://api.github.com/user/installations?per_page=100', next]);
+  });
+
+  it("the server's own installation token never carries Administration", async () => {
+    const calls = stubOnce([
+      { status: 422, body: { message: 'permissions not granted' } },
+      { status: 201, body: { token: 'ghs_narrow', expires_at: new Date(Date.now() + 3600_000).toISOString() } },
+    ]);
+    expect(await mintInstallationToken('narrow-test-1')).toBe('ghs_narrow');
+    const asked = calls.map((c) => JSON.parse(String(c.init.body)).permissions);
+    expect(asked[0]).toEqual({ contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read', checks: 'read', statuses: 'read' });
+    expect(asked[1]).toEqual({ contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read' });
+  });
+
+  it('a suspended installation (403) throws GitHubApiError, so catch-up reads it as refused', async () => {
+    stubOnce([{ status: 403, body: { message: 'This installation has been suspended' } }]);
+    await expect(mintInstallationToken('suspended-1')).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('falls back to an issues-only token for an installation without contents/PR rights', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const calls = stubOnce([
+      { status: 422, body: {} },
+      { status: 422, body: {} },
+      { status: 201, body: { token: 'ghs_issues', expires_at: new Date(Date.now() + 3600_000).toISOString() } },
+    ]);
+    expect(await mintInstallationToken('narrow-test-2')).toBe('ghs_issues');
+    expect(JSON.parse(String(calls[2].init.body)).permissions).toEqual({ issues: 'write', metadata: 'read' });
   });
 });

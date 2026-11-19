@@ -170,6 +170,9 @@ export function useUrlState(): boolean {
   useEffect(() => {
     if (mapClaimed.current || currentMapId || loading) return;
     if (maps.length !== 1) return;
+    // The fleet page (?fleet=, #480) and the Approvals page have no map — don't open one over them.
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('fleet') || params.has('approvals')) return;
     mapClaimed.current = true;
     void useMindmapStore.getState().loadMap(maps[0].id);
   }, [maps, currentMapId, loading]);

@@ -81,6 +81,50 @@ describe('fleet_status tool', () => {
     expect(out).toContain('No orchestrator tick received yet');
   });
 
+  it('says the map has no fleet when the server reports fleetId null (#479)', async () => {
+    const out = await fleetStatusTool.handler(backendWith({ fleetId: null, hosts: [], ticks: [], now: NOW }), { mapId: 'm1' } as never);
+    expect(out).toContain('is not connected to a fleet');
+  });
+
+  it('with fleetId reads the whole fleet: served maps, agent badge, redacted claims (#479)', async () => {
+    const calls: unknown[][] = [];
+    const result: FleetStatusResult = {
+      fleetId: 'f1',
+      hosts: [
+        {
+          host: 'big',
+          generatedAt: ago(1),
+          receivedAt: ago(1),
+          mapIds: ['m1'],
+          rollup: {
+            v: 2,
+            host: 'big',
+            generated_at: ago(1),
+            maps: ['m1'],
+            workers: [
+              { session: 'big:w1', worker: 'w1', agent: 'qwen-code', model: 'qwen3.8', state: 'working', last_activity: ago(1), claim: { mapId: 'm1', title: 'Seen ticket' } },
+              { session: 'big:w2', worker: 'w2', state: 'working', last_activity: ago(1), claim: { redacted: true } },
+            ],
+          },
+        },
+      ],
+      ticks: [],
+      now: NOW,
+    };
+    const backend = {
+      getFleetStatusForFleet: async (...args: unknown[]) => {
+        calls.push(args);
+        return result;
+      },
+    } as unknown as ToolBackend;
+    const out = await fleetStatusTool.handler(backend, { fleetId: 'f1' } as never);
+    expect(calls).toEqual([['f1', undefined]]);
+    expect(out).toContain('big (1m ago) — serves maps m1');
+    expect(out).toContain('w1: qwen-code qwen3.8 · working · claim: Seen ticket');
+    expect(out).toContain("w2: working · claim: on a map you can't view");
+    await expect(fleetStatusTool.handler(backend, {} as never)).rejects.toThrow(/exactly one/);
+  });
+
   it('renders hosts with worker states, flags stale hosts, names silent satellites and the asks', async () => {
     const result: FleetStatusResult = {
       now: NOW,
@@ -142,5 +186,33 @@ describe('fleet_status tool', () => {
     expect(out).toContain('- #3287: deploy FM CT122');
     expect(out).toContain('gate RECOMMENDED (needs the human) → type:bug');
     expect(out).toContain('numbers: claims 0/12');
+  });
+
+  it('names the open PRs a parked slot still holds and which wait for a person', async () => {
+    const result: FleetStatusResult = {
+      now: NOW,
+      hosts: [
+        {
+          host: 'big-blower',
+          generatedAt: ago(1),
+          receivedAt: ago(1),
+          rollup: {
+            v: 2,
+            host: 'big-blower',
+            generated_at: ago(1),
+            workers: [{ session: 'big-blower:slot1:fleet-worker', worker: 'slot1', state: 'parked', last_activity: ago(1), claim: null }],
+            claims: [
+              { nodeId: 'n1', mapId: 'm1', phase: 'pr', ci: 'red', pr_number: 1038, phase_since: ago(90) },
+              { nodeId: 'n2', mapId: 'm1', phase: 'pr', ci: 'pending', pr_number: 1040, phase_since: ago(5) },
+            ],
+          },
+        },
+      ],
+      ticks: [],
+    };
+    const out = await fleetStatusTool.handler(backendWith(result), { mapId: 'm1' } as never);
+    expect(out).toContain('slot1: parked');
+    expect(out).toContain('- holds PR #1038 (node n1): CI red · 1h — needs a person');
+    expect(out).toContain('- holds PR #1040 (node n2): Waiting for CI · 5m\n');
   });
 });

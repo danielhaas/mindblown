@@ -9,7 +9,7 @@ import { scheduleEmbedNode } from '../ai/embeddings.js';
 import { updateGitHubIssue, getGitHubIssue } from '@mindblown/integrations';
 import { getGitHubContextForMap } from './integrations.js';
 import type { ExternalLink, DependencyType, Node as CoreNode } from '@mindblown/core';
-import { isForgeLink } from '@mindblown/core';
+import { isForgeLink, userReporter } from '@mindblown/core';
 
 // ── Auto-link helper (#58) ──────────────────────────────────────
 // Titles that begin with `#NNNN` are almost always referencing an existing
@@ -25,6 +25,7 @@ import { stampMirrorHash } from '../lib/descriptionMirror.js';
 import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
 import { readAttachmentText } from '../lib/attachmentText.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
+import { issueCloseHeld } from '../db/reporterChecks.js';
 
 /**
  * Ceiling for a file sent inline as base64 (`…/attachments/file`). 8 MB
@@ -156,7 +157,7 @@ export async function syncNodeToGitHub(node: CoreNode, changedFields: string[]):
 
   for (const link of githubLinks) {
     try {
-      const result = await updateGitHubIssue(node, link, ghCtx.forge);
+      const result = await updateGitHubIssue(node, link, ghCtx.forge, { holdClose: await issueCloseHeld(node.id) });
       if (result.holdReason) {
         console.log(
           `[github-sync] node ${node.id} → ${link.externalId}: issue state held (${result.holdReason})` +
@@ -222,6 +223,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       priority?: 'P0' | 'P1' | 'P2' | 'P3';
       startDate?: string;
       dueDate?: string;
+      expectedDoneAt?: string | null;
       autoProgress?: 'off' | 'children';
       priorityRank?: number | null;
       requirementId?: string | null;
@@ -254,6 +256,10 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    if (!isValidExpectedDoneAt(body.expectedDoneAt)) {
+      return reply.status(400).send({ error: EXPECTED_DONE_AT_ERROR });
+    }
+
     // `skipAutoLink` is not a column on the nodes table — strip it before
     // forwarding to the DB layer.
     const { skipAutoLink, ...nodeFields } = body;
@@ -263,6 +269,9 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         ...nodeFields,
         mapId: req.params.id,
         createdBy: userId,
+        // The authenticated caller, never the body (#490) — the spread
+        // above would otherwise forward a client-supplied reportedBy.
+        reportedBy: userReporter(req.userId),
       });
     } catch (err) {
       if (err instanceof RequirementIdConflictError) {
@@ -880,7 +889,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
           node: result.node,
         });
         syncNodeToGitHub(result.node, result.changedFields).catch(() => {});
-        return reply.send({ node: result.node, statusReset: result.statusReset });
+        return reply.send({
+          node: result.node,
+          statusReset: result.statusReset,
+          ...(result.labelWrite?.error ? { labelError: result.labelWrite.error } : {}),
+        });
       } catch (err) {
         if (err instanceof UnblockNotFoundError) {
           return reply.status(404).send({ error: { code: 'NODE_NOT_FOUND', message: err.message } });
@@ -937,6 +950,26 @@ type NodeUpdateResult =
   | { ok: false; status: number; error: { code: string; message: string; current?: unknown } };
 
 /**
+ * expectedDoneAt is an ETA: omitted, null (clear) or an ISO 8601 date-time
+ * with Z or an offset — the shape the MCP tools' zod datetime() accepts.
+ * The round trip through Date rejects calendar rollovers (Feb 30).
+ */
+const ISO_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+function isValidExpectedDoneAt(v: unknown): boolean {
+  if (v === undefined || v === null) return true;
+  if (typeof v !== 'string') return false;
+  const m = ISO_DATETIME.exec(v);
+  if (!m) return false;
+  const day = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return day.getUTCMonth() === +m[2] - 1 && day.getUTCDate() === +m[3];
+}
+
+const EXPECTED_DONE_AT_ERROR = {
+  code: 'VALIDATION_ERROR',
+  message: 'expectedDoneAt must be an ISO 8601 timestamp or null',
+};
+
+/**
  * One node update with everything the PUT route does around the write:
  * optimistic lock, root-text → map name, broadcast, re-embed, outbound
  * forge sync, title auto-link, change history and claim trail. Shared by
@@ -949,6 +982,10 @@ async function applyNodeUpdate(
   expectedRevision: number | undefined,
   userId: string | null,
 ): Promise<NodeUpdateResult> {
+  if (!isValidExpectedDoneAt(body.expectedDoneAt)) {
+    return { ok: false, status: 400, error: EXPECTED_DONE_AT_ERROR };
+  }
+
   // Snapshot current values of tracked fields before mutating so we can
   // diff them into the change log.
   const before = await nodeDb.getNode(nodeId);

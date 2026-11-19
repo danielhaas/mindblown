@@ -22,6 +22,8 @@ import {
   describeStalled,
   STALLED_AFTER_HOURS,
   type StalledLeaf,
+  type ForgeProblem,
+  parentHolds,
 } from '@mindblown/core';
 
 // The vocabulary lives in core so the MCP tool and the panel share it.
@@ -159,6 +161,17 @@ export interface LintOptions {
    * the change log by lib/stalled.ts). Omit to skip the stalled-unclaimed rule.
    */
   stalled?: StalledLeaf[];
+  /**
+   * Whether the map reaches the repo it names (lib/forgeProblem.ts):
+   * null = fine or no repo named. Omit to skip broken-repo-connection.
+   */
+  forgeProblem?: ForgeProblem | null;
+  /**
+   * Nodes an open ask on the map's Questions card is about (fleet asks'
+   * `unblocks.node_id`, stalled asks included). Omit to skip
+   * blocker-without-question — a map without a fleet has no card.
+   */
+  openAskNodeIds?: Set<string>;
   nodeId?: string;
   versionId?: string;
   cycleId?: string;
@@ -711,10 +724,10 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     severity: 'warn',
     title: `In progress, nobody working on it (no claim, no change for ${STALLED_AFTER_HOURS}+ h)`,
     why: 'A worker that dies mid-ticket leaves it in progress with no claim — the pull queue skips it (not todo) and the board shows it like live work, so nobody decides.',
-    fix: 'Park it for a person, or reopen it so the queue hands it out again.',
+    fix: 'Mark it done when it shipped, put it back in the queue (progress kept), or make the rest a person\'s step (needs-human). After a day it is also asked on the Questions card.',
     findings: (opts.stalled ?? [])
       .filter((s) => leafIds.has(s.nodeId))
-      .map((s) => finding(nodeById.get(s.nodeId)!, describeStalled(s, now), act('park', 'reopen'))),
+      .map((s) => finding(nodeById.get(s.nodeId)!, describeStalled(s, now), act('mark-done', 'requeue', 'needs-human'))),
     skipped: opts.stalled ? undefined : 'change history unavailable',
   });
 
@@ -764,6 +777,62 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     why: 'A copy counts the issue\'s work twice, shows it twice in every list and splits its progress between two places.',
     fix: 'Delete the copy (it lands in the trash), or unlink the issue from it if it is really separate work.',
     findings: duplicateFindings,
+  });
+
+  // 19. broken-repo-connection (map-level, #513) — the map names a repo it
+  // cannot reach, so every forge path for it has stopped without a word.
+  rules.push({
+    ruleId: 'broken-repo-connection',
+    severity: 'warn',
+    title: 'The map cannot reach its repo (map-level)',
+    why: 'Issue sync, catch-up, webhooks, triage and the fleet all stop silently for a map whose repo connection is gone or refused — the map keeps looking fine while nothing reaches it.',
+    fix: 'Reconnect the repo in the map\'s issue-tracker settings. If the map is done with that repo, dismiss the finding.',
+    findings: opts.forgeProblem ? [mapFinding(opts.forgeProblem.message)] : [],
+    skipped: opts.forgeProblem === undefined ? 'repo connection not checked' : undefined,
+  });
+
+  // 20. blocker-without-question — a manual blocker nobody is asked
+  // about. "Blocked" ended up meaning four things on Navy (21.10.2026): a
+  // question for Dan that never reached his card, a person's next step,
+  // a wait on another ticket, and a leftover. Only the first two need a
+  // person, and only an ask reaches one; a wait on a ticket is a
+  // dependency (it clears itself).
+  rules.push({
+    ruleId: 'blocker-without-question',
+    severity: 'warn',
+    title: 'Blocked, but nobody is asked',
+    why: 'A blocker holds the ticket (and everything below it) out of the queue, but only an ask on the Questions card reaches a person — the text alone waits until someone happens to open the node.',
+    fix: 'A question → ask it on the card (the fleet worker does this for its own tickets). A person\'s step → "For a person" (needs-human, the text becomes the next step). Waiting on another ticket → add a dependency and clear the blocker.',
+    findings: opts.openAskNodeIds
+      ? scopedNodes
+          .filter((n) => (n.blockedReason ?? '').trim() !== '' && !isDone(n) && !opts.openAskNodeIds!.has(n.id))
+          .map((n) => {
+            const reason = n.blockedReason!.trim();
+            return finding(n, `"${reason.length > 80 ? reason.slice(0, 77) + '…' : reason}"`, act('needs-human'));
+          })
+      : [],
+    skipped: opts.openAskNodeIds ? undefined : 'no Questions card (map not in a fleet)',
+  });
+
+  // 21. hold-on-parent — a skip tag or blocker on an open parent holds its
+  // whole subtree (core dispatchHold). Meant for "this epic waits", but the
+  // count is invisible: a needs-human tag on the Navy security-audit
+  // umbrella held all 18 findings overnight (21.10.2026).
+  const openLeaves = scopedNodes.filter((n) => (n.childrenIds?.length ?? 0) === 0 && !isDone(n));
+  // A parent that waits for approval (#492) holds its subtree on purpose: not this finding.
+  const holds = parentHolds(openLeaves, { nodeMap: nodeById, isDone: isDoneStatus }).filter((h) => h.tag !== null || h.blockedReason !== null);
+  rules.push({
+    ruleId: 'hold-on-parent',
+    severity: 'warn',
+    title: 'A tag or blocker on a parent holds every ticket below it',
+    why: 'The pull queue skips the whole subtree of a parent tagged needs-human (or kira-skip …) or carrying a blocker — nothing on the tickets themselves says so.',
+    fix: 'Put the tag or blocker on the tickets that really wait; remove it from the parent. Dismiss the finding when holding the whole subtree is intended.',
+    findings: holds.flatMap((h) => {
+      const parent = nodeById.get(h.id);
+      if (!parent) return [];
+      const why = h.tag ? `tag ${h.tag}` : 'a blocker';
+      return [finding(parent, `${why} holds ${h.count} open ticket${h.count === 1 ? '' : 's'} below it`)];
+    }),
   });
 
   // ── Apply dismissals ──

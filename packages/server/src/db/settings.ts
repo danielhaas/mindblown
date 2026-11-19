@@ -135,3 +135,19 @@ export async function setAiProviderSettings(
   }
   return normalized;
 }
+
+// ── Generic key/value access ──────────────────────────────────────
+
+/** The stored value for `key`; null when unset. */
+export async function getSystemSetting(key: string): Promise<unknown> {
+  const [row] = await db.select({ value: systemSettings.value }).from(systemSettings).where(eq(systemSettings.key, key)).limit(1);
+  return row ? row.value : null;
+}
+
+export async function setSystemSetting(key: string, value: unknown): Promise<void> {
+  const now = new Date();
+  await db
+    .insert(systemSettings)
+    .values({ key, value, updatedAt: now })
+    .onConflictDoUpdate({ target: systemSettings.key, set: { value, updatedAt: now } });
+}

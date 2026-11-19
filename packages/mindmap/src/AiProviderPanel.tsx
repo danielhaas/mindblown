@@ -194,6 +194,12 @@ export function AiProviderPanel() {
               model={config.models.anthropic}
               hint="Set ANTHROPIC_API_KEY on the server"
             />
+            {config.claudeOutage && (
+              <div style={{ marginTop: 8, color: '#b45309' }} data-testid="ai-claude-outage">
+                {config.claudeOutage.reason} — the local model answers instead until{' '}
+                {new Date(config.claudeOutage.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, then Claude is tried again.
+              </div>
+            )}
             {!config.preferenceHonored && (
               <div style={{ marginTop: 8, color: '#b45309' }}>
                 Selected backend isn’t configured — falling back to{' '}

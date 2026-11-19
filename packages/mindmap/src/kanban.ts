@@ -13,7 +13,24 @@
  * ── No-status groups ── see groupByPriority.
  */
 
-import { BLOCKED_TAG, type BlockedBy, type StatusDef } from '@mindblown/core';
+import {
+  BLOCKED_TAG,
+  buildIsDonePredicate,
+  buildTodoIds,
+  dispatchHold,
+  effectiveVersionId,
+  EPIC_HOLD_TAG,
+  FLEET_CHECK_TAG,
+  FLEET_FIX_TAG,
+  hasBrief,
+  matchesDispatchGate,
+  parseGateEntry,
+  type BlockedBy,
+  type Node,
+  type NodeMap,
+  type StatusDef,
+} from '@mindblown/core';
+import { localDateTime } from './localTime.js';
 
 /**
  * Which column a leaf's card sits in: the workflow step its status names
@@ -38,6 +55,17 @@ export function kanbanColumnId(
     return workflow.find((s) => s.category === 'done')?.id ?? null;
   }
   return null;
+}
+
+/**
+ * A cancelled ticket is off the board: a "cancelled" status the workflow
+ * has no column for landed in Unset and counted as ready there (Navy,
+ * 21.10.2026). A map whose workflow has a Cancelled column keeps showing it.
+ */
+export function hiddenFromBoard(node: { status: string | null }, workflow: readonly StatusDef[]): boolean {
+  if (!node.status || !/^cancel+ed$/i.test(node.status)) return false;
+  const status = node.status.toLowerCase();
+  return !workflow.some((s) => s.id === node.status || s.name.toLowerCase() === status);
 }
 
 export type DoneGroupKey = 'today' | 'week' | 'earlier';
@@ -149,10 +177,82 @@ export function startedLabel(
   return { short: `started ${ago}`, full: `Started ${full}` };
 }
 
+// ── ETA ──
+
+/**
+ * The worker's own ETA on an in-progress card (node.expectedDoneAt): "ETA
+ * 15:40" today, "ETA Oct 22, 15:40" on another day, "overdue 2h" once
+ * past; the exact time with its zone for the hover title. All on the
+ * viewer's clock — "today" ends at their midnight, not the server's.
+ * null without an ETA.
+ */
+export function etaLabel(
+  expectedDoneAt: string | null | undefined,
+  now: Date = new Date(),
+): { short: string; full: string; overdue: boolean } | null {
+  const t = expectedDoneAt ? Date.parse(expectedDoneAt) : NaN;
+  if (!Number.isFinite(t)) return null;
+  const eta = new Date(t);
+  const full = `ETA ${localDateTime(eta)}`;
+  if (t < now.getTime()) {
+    const minutes = Math.floor((now.getTime() - t) / 60_000);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    const late = minutes < 60 ? `${Math.max(1, minutes)}m` : hours < 24 ? `${hours}h` : `${days}d`;
+    return { short: `overdue ${late}`, full, overdue: true };
+  }
+  const time = eta.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  const sameDay = eta.toDateString() === now.toDateString();
+  const day = sameDay ? '' : `${eta.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}, `;
+  return { short: `ETA ${day}${time}`, full, overdue: false };
+}
+
+// ── Took / planned ──
+
+/** A span of minutes, compact: "45m", "2h 10m", "3h", "2d 4h". */
+export function formatSpan(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 60) return `${Math.max(1, m)}m`;
+  const hours = Math.floor(m / 60);
+  if (hours < 24) return m % 60 ? `${hours}h ${m % 60}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
+}
+
+function spanMinutes(from: string | null | undefined, to: string | null | undefined): number | null {
+  const a = from ? Date.parse(from) : NaN;
+  const b = to ? Date.parse(to) : NaN;
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return null;
+  return (b - a) / 60_000;
+}
+
+/**
+ * What the worker planned (startedAt → expectedDoneAt, its ETA) and, once
+ * done, what it took (startedAt → completedAt): "planned 45m", "took 1h 10m".
+ * `over` when it took longer than planned. Either side null when the
+ * timestamps for it are missing.
+ */
+export function durationLabels(node: {
+  startedAt: string | null | undefined;
+  completedAt?: string | null | undefined;
+  expectedDoneAt: string | null | undefined;
+}): { took: string | null; planned: string | null; over: boolean } {
+  const took = spanMinutes(node.startedAt, node.completedAt);
+  const planned = spanMinutes(node.startedAt, node.expectedDoneAt);
+  return {
+    took: took == null ? null : `took ${formatSpan(took)}`,
+    planned: planned == null ? null : `planned ${formatSpan(planned)}`,
+    over: took != null && planned != null && took > planned,
+  };
+}
+
 // ── Blocked ──
 
-/** What a card shows: a manual block, a dependency wait, or nothing. */
-export type CardBlock = { kind: 'blocked' | 'waiting'; detail: string } | null;
+/**
+ * What a card shows: a manual block, a hold for a person, a dependency
+ * wait, or nothing.
+ */
+export type CardBlock = { kind: 'fleet' | 'blocked' | 'human' | 'waiting' | 'later' | 'brief'; detail: string } | null;
 
 interface BlockableNode {
   status: string | null;
@@ -161,12 +261,105 @@ interface BlockableNode {
 }
 
 /**
+ * Tickets held for a person, keyed by id, with the hover text: a skip tag
+ * (needs-human, kira-skip …) on the ticket, or a skip tag or manual blocker
+ * on an open parent — `dispatchHold`, the rule the pull queue skips by —
+ * or a proposed / rejected approval stamp (#492). An epic leaf is held
+ * too, but for the fleet, not for a person: left out. So is a node with no
+ * stamp at all (the root, an optimistic stub before the server answers).
+ */
+export function personHolds(nodes: Node[], workflow: StatusDef[]): Map<string, string> {
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const ancestors = { nodeMap, isDone: buildIsDonePredicate(workflow) };
+  const holds = new Map<string, string>();
+  for (const n of nodes) {
+    const text = personHold(n, ancestors)?.detail;
+    if (text) holds.set(n.id, text);
+  }
+  return holds;
+}
+
+/** One node's `personHolds` entry, with the open ancestor that carries it (null = the ticket itself). */
+function personHold(
+  n: Node,
+  ancestors: { nodeMap: NodeMap; isDone: (status: string | null) => boolean },
+): { detail: string; heldBy: { id: string; text: string } | null } | null {
+  const hold = dispatchHold(n, ancestors);
+  if (!hold) return null;
+  if (hold.heldBy) {
+    const why = hold.tag
+      ? `is tagged ${hold.tag}`
+      : hold.blockedReason
+        ? `is blocked: ${hold.blockedReason.trim()}`
+        : `is ${hold.approval} — waits for approval`;
+    return { detail: `Needs a person: parent "${hold.heldBy.text}" ${why}`, heldBy: hold.heldBy };
+  }
+  if (hold.tag && hold.tag !== EPIC_HOLD_TAG) return { detail: `Needs a person: tagged ${hold.tag}`, heldBy: null };
+  if (hold.approval && n.approval) {
+    return { detail: hold.approval === 'rejected' ? 'Rejected: the fleet will not run it' : 'Needs a person: waits for approval', heldBy: null };
+  }
+  return null;
+}
+
+/**
+ * What a ticket's detail view puts on top (#610): the things that hold it
+ * for a person, each with the action that resolves it. Same rules as the
+ * card badge (`cardBlockState`, `personHolds`), so the section shows when
+ * — and only when — the card says Blocked, Needs you or Needs brief.
+ *
+ *   - approval: its own stamp is proposed → Approve / Edit & approve / Reject;
+ *   - blocked: a manual blocker (reason, blocked tag or status) → Unblock;
+ *     the reason, '' when only the tag or status says so;
+ *   - brief: the pull queue refuses it for want of a brief → write one.
+ *     Only when the description and links are known (not undefined —
+ *     the mobile board loads nodes without them);
+ *   - other: any other hold for a person (a skip tag, a parent's hold, a
+ *     rejected stamp) — the reason, and the parent that carries it.
+ *
+ * Done work and a ticket the fleet already has back (Fleet fixing /
+ * checking) wait on nobody. Open questions come from the asks inbox, not
+ * from the node — the section fetches those itself.
+ */
+export interface NodeWaits {
+  approval: boolean;
+  blocked: string | null;
+  brief: boolean;
+  other: { detail: string; heldBy: { id: string; text: string } | null } | null;
+}
+
+export function nodeWaits(node: Node, nodes: Node[] | NodeMap, workflow: StatusDef[]): NodeWaits {
+  const none: NodeWaits = { approval: false, blocked: null, brief: false, other: null };
+  const isDone = buildIsDonePredicate(workflow);
+  if (isDone(node.status)) return none;
+  if (node.tags.includes(FLEET_FIX_TAG) || node.tags.includes(FLEET_CHECK_TAG)) return none;
+  const nodeMap: NodeMap = nodes instanceof Map ? nodes : new Map(nodes.map((n) => [n.id, n]));
+  const reason = (node.blockedReason ?? '').trim();
+  const blocked = reason !== '' || node.tags.includes(BLOCKED_TAG) || (node.status ?? '').toLowerCase() === 'blocked' ? reason : null;
+  const approval = node.approval?.state === 'proposed';
+  const hold = personHold(node, { nodeMap, isDone });
+  // The own proposed stamp has its buttons; a blocker held on the ticket itself is `blocked`.
+  const other = hold && !(approval && !hold.heldBy) ? hold : null;
+  const category = node.status ? (workflow.find((w) => w.id === node.status || w.name.toLowerCase() === node.status!.toLowerCase())?.category ?? null) : null;
+  const slim = node as Partial<Node>;
+  const brief = slim.description !== undefined && slim.externalLinks !== undefined && needsBriefOnBoard(node, category);
+  return { approval, blocked, brief, other };
+}
+
+/** Nothing waits on a person: the detail view shows no extra section. */
+export function nothingWaits(w: NodeWaits): boolean {
+  return !w.approval && w.blocked === null && !w.brief && w.other === null;
+}
+
+/**
  * The Blocked panel's rule (core computeIsBlocked), so the board and the
  * panel always show the same set:
  *   - blocked: a blocked reason (manual), plus the two other markers the
  *     fleet's park path writes — the `blocked` tag and a status named
  *     "blocked";
- *   - waiting: a finish-to-start predecessor that is not 100% done.
+ *   - human: held for a person (`personHolds`), passed in as its hover text;
+ *   - waiting: a finish-to-start predecessor that is not 100% done;
+ *   - later: outside the dispatch gate (`outsideGate`), passed in as its hover text;
+ *   - brief: no description and no linked issue (`needsBriefOnBoard`).
  * Done work is never shown as blocked.
  */
 export function cardBlockState(
@@ -174,8 +367,18 @@ export function cardBlockState(
   blockedBy: Pick<BlockedBy, 'manual' | 'predecessorIds'> | null | undefined,
   isDone: boolean,
   titleOf: (id: string) => string,
+  personHold: string | null = null,
+  laterNote: string | null = null,
+  needsBrief = false,
 ): CardBlock {
   if (isDone) return null;
+  // Handed back with "Fleet can fix it" (mindblown#539/#540): the fleet has
+  // it, not a person — until the worker reports back.
+  if (node.tags.includes(FLEET_FIX_TAG)) return { kind: 'fleet', detail: 'Fleet fixing — the worker reworks its PR (CI log or conflict); it merges once CI is green' };
+  if (node.tags.includes(FLEET_CHECK_TAG)) {
+    const reason = (node.blockedReason ?? '').trim();
+    return { kind: 'fleet', detail: `Fleet checking — next in the queue, to get past: ${reason || 'its blocker'}` };
+  }
   const manual =
     Boolean(blockedBy?.manual) ||
     (node.blockedReason ?? '').trim() !== '' ||
@@ -185,9 +388,67 @@ export function cardBlockState(
     const reason = (node.blockedReason ?? '').trim();
     return { kind: 'blocked', detail: reason ? `Blocked: ${reason}` : 'Blocked' };
   }
+  if (personHold) return { kind: 'human', detail: personHold };
   const preds = blockedBy?.predecessorIds ?? [];
   if (preds.length > 0) {
     return { kind: 'waiting', detail: `Waiting on: ${preds.map(titleOf).join(', ')}` };
   }
+  if (laterNote) return { kind: 'later', detail: laterNote };
+  if (needsBrief) return { kind: 'brief', detail: NEEDS_BRIEF_NOTE };
   return null;
+}
+
+const NEEDS_BRIEF_NOTE = 'Needs a brief — no description, no linked issue and a short title, so the fleet will not take it';
+
+/**
+ * An open ticket the pull queue refuses for want of a brief (core
+ * `hasBrief`): no description, no linked issue, a short title. Only in a todo-category or
+ * the no-status column — running work already has its worker. Needs the
+ * full node: a board loaded with `?omit=description` (mobile) cannot tell.
+ */
+export function needsBriefOnBoard(
+  node: Pick<Node, 'text' | 'description' | 'externalLinks'>,
+  columnCategory: string | null,
+): boolean {
+  if (columnCategory !== null && columnCategory !== 'todo') return false;
+  return !hasBrief(node);
+}
+
+/**
+ * Open tickets the fleet will not take because the map's dispatch gate
+ * fences them out — a later version, or no version while the gate names
+ * one (21.10.2026: Navy's Unset and V3/V4 cards looked ready, the fleet sat
+ * idle). Keyed by id, with the hover text. Only todo-category or no-status
+ * tickets: the gate decides what is pulled, not what is already running.
+ * An empty gate fences nothing.
+ */
+export function outsideGate(
+  nodes: Node[],
+  gate: readonly string[],
+  workflow: StatusDef[],
+  versionName: (id: string) => string | null = () => null,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if (gate.length === 0) return out;
+  const nodeMap = new Map(nodes.map((n) => [n.id, n])) as NodeMap;
+  const todoIds = buildTodoIds(workflow);
+  const term = (t: string): string => {
+    const p = parseGateEntry(t);
+    return p.kind === 'bugs' ? 'bugs' : p.kind === 'version' ? (versionName(p.versionId) ?? 'a version') : t;
+  };
+  const takes = gate
+    .map((g) => {
+      const p = parseGateEntry(g);
+      return p.kind === 'any' ? p.options.map((o) => term(o.raw)).join(', ') : term(g);
+    })
+    .join(' and ');
+  for (const n of nodes) {
+    if (n.parentId === null || n.childrenIds.length > 0) continue;
+    if (n.status !== null && !todoIds.has(n.status)) continue;
+    if (matchesDispatchGate(n, [...gate], nodeMap)) continue;
+    const v = effectiveVersionId(n.id, nodeMap);
+    const is = v ? (versionName(v) ?? 'another version') : 'in no version';
+    out.set(n.id, `Later — the fleet takes ${takes}; this ticket is ${is}`);
+  }
+  return out;
 }

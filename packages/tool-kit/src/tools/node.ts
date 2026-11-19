@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { defineTool } from '../spec.js';
-import { formatClaim } from '../formatters.js';
+import { formatApproval, formatClaim, formatReporter } from '../formatters.js';
+
+/** An ETA given as minutes from now, as the ISO timestamp the server stores. */
+export function etaFromMinutes(minutes: number, now: Date = new Date()): string {
+  return new Date(now.getTime() + minutes * 60_000).toISOString();
+}
 
 export const createNodeTool = defineTool({
   name: 'create_node',
@@ -21,6 +26,18 @@ export const createNodeTool = defineTool({
     status: z.string().optional().describe("Status (must match map's status workflow)"),
     dueDate: z.string().optional().describe('Due date (ISO 8601)'),
     startDate: z.string().optional().describe('Start date (ISO 8601)'),
+    expectedDoneAt: z
+      .string()
+      .datetime({ offset: true })
+      .optional()
+      .describe('Your ETA for this node (ISO 8601 with offset): when you expect to be done. Cannot be combined with etaMinutes.'),
+    etaMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(60 * 24 * 30)
+      .optional()
+      .describe('Your ETA as minutes from now (stored as expectedDoneAt, computed on the clock of the machine running the tool). Cannot be combined with expectedDoneAt.'),
     versionId: z.string().optional().describe('Version ID to assign this node to'),
     tags: z.array(z.string()).optional().describe('Tags to set on the new node'),
     scopes: z
@@ -59,7 +76,7 @@ export const createNodeTool = defineTool({
       .enum(['must', 'should', 'could'])
       .nullable()
       .optional()
-      .describe('MoSCoW requirement priority (Muss/Soll/Kann). Only meaningful alongside requirementId.'),
+      .describe('MoSCoW requirement priority (must/should/could). Only meaningful alongside requirementId.'),
     requirementText: z
       .string()
       .nullable()
@@ -76,7 +93,7 @@ export const createNodeTool = defineTool({
       .string()
       .nullable()
       .optional()
-      .describe('How to verify this requirement (Prüfanleitung): markdown with numbered steps, expected result and test data, written for a non-technical reviewer. Shown on the review surface next to accept/reject. Not synced to the issue tracker.'),
+      .describe('How to verify this requirement: markdown with numbered steps, expected result and test data, written for a non-technical reviewer. Shown on the review surface next to accept/reject. Not synced to the issue tracker.'),
     verificationUrl: z
       .string()
       .nullable()
@@ -93,11 +110,15 @@ export const createNodeTool = defineTool({
       .optional()
       .describe('Still image shown in the video player before playback starts (the <video> poster). Only used when verificationVideoUrl is also set. Without it the player shows the recording\'s own first frame, which for a screen capture is usually a blank page.'),
   },
-  handler: async (backend, { mapId, parentId, text, ...fields }) => {
+  handler: async (backend, { mapId, parentId, text, etaMinutes, ...fields }) => {
+    if (etaMinutes !== undefined && fields.expectedDoneAt !== undefined) {
+      throw new Error('Pass either etaMinutes or expectedDoneAt, not both');
+    }
     const cleanFields: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(fields)) {
       if (v !== undefined) cleanFields[k] = v;
     }
+    if (etaMinutes !== undefined) cleanFields.expectedDoneAt = etaFromMinutes(etaMinutes);
     const node = await backend.createNode(mapId, parentId, text, cleanFields);
     const base = `Created node "${text}" (id: ${node.id}) under parent ${parentId}`;
     // Flag missing estimate so agents/users don't forget to size new work —
@@ -133,6 +154,19 @@ export const updateNodeTool = defineTool({
     priority: z.enum(['P0', 'P1', 'P2', 'P3']).nullable().optional().describe('Priority'),
     dueDate: z.string().nullable().optional().describe('Due date (ISO 8601)'),
     startDate: z.string().nullable().optional().describe('Start date (ISO 8601)'),
+    expectedDoneAt: z
+      .string()
+      .datetime({ offset: true })
+      .nullable()
+      .optional()
+      .describe('Your ETA for this node (ISO 8601 with offset): when you expect to be done. Shown on the Kanban card, "overdue" once past. null clears it. Cannot be combined with etaMinutes.'),
+    etaMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(60 * 24 * 30)
+      .optional()
+      .describe('Your ETA as minutes from now (stored as expectedDoneAt, computed on the clock of the machine running the tool). Set it when you start a ticket and again when your estimate changes. Cannot be combined with expectedDoneAt.'),
     tags: z
       .array(z.string())
       .optional()
@@ -188,7 +222,7 @@ export const updateNodeTool = defineTool({
       .enum(['must', 'should', 'could'])
       .nullable()
       .optional()
-      .describe('MoSCoW requirement priority (Muss/Soll/Kann). null clears it.'),
+      .describe('MoSCoW requirement priority (must/should/could). null clears it.'),
     requirementText: z
       .string()
       .nullable()
@@ -205,7 +239,7 @@ export const updateNodeTool = defineTool({
       .string()
       .nullable()
       .optional()
-      .describe('How to verify this requirement (Prüfanleitung): markdown with numbered steps, expected result and test data, for a non-technical reviewer. Safe to edit freely — never pushed to the issue tracker. null clears it.'),
+      .describe('How to verify this requirement: markdown with numbered steps, expected result and test data, for a non-technical reviewer. Safe to edit freely — never pushed to the issue tracker. null clears it.'),
     verificationUrl: z
       .string()
       .nullable()
@@ -229,12 +263,16 @@ export const updateNodeTool = defineTool({
         "Free-form scope tags declaring what work this node touches. Used by conflict_scan to surface in-flight nodes that might conflict with this node when it's dispatched. Examples: 'apps/workflows', 'model:Mandate', 'migration:workflows', 'frontend:contacts'. Empty array clears all scopes.",
       ),
   },
-  handler: async (backend, { mapId, nodeId, clearLinkedPr, ...fields }) => {
+  handler: async (backend, { mapId, nodeId, clearLinkedPr, etaMinutes, ...fields }) => {
+    if (etaMinutes !== undefined && fields.expectedDoneAt !== undefined) {
+      throw new Error('Pass either etaMinutes or expectedDoneAt, not both');
+    }
     const cleanFields: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(fields)) {
       if (v !== undefined) cleanFields[k] = v;
     }
     if (clearLinkedPr) cleanFields.linkedPr = null;
+    if (etaMinutes !== undefined) cleanFields.expectedDoneAt = etaFromMinutes(etaMinutes);
     if (Object.keys(cleanFields).length === 0) return 'No fields to update.';
     await backend.updateNode(mapId, nodeId, cleanFields);
     return `Updated node ${nodeId}: ${Object.keys(cleanFields).join(', ')}`;
@@ -319,7 +357,7 @@ export const moveNodeTool = defineTool({
 export const flagBlockerTool = defineTool({
   name: 'flag_blocker',
   description:
-    'Mark a node as blocked, recording the reason. This is the canonical "this is stuck" primitive — sets `blockedReason` so the node shows up in blocked_digest, risk_scan, and the blocked rollup propagates to ancestors; the status is left alone. Use this when something external is holding work back (waiting on a vendor, legal review, a decision, an upstream team). Undo: clear_blocker releases the ticket back to the queue (status → todo unless done/claimed — NOT the mirror image of this call); update_node with blockedReason: null clears only the reason and keeps the status.',
+    'Mark a node as blocked, recording the reason. This is the canonical "this is stuck" primitive — sets `blockedReason` so the node shows up in blocked_digest, risk_scan, and the blocked rollup propagates to ancestors; the status is left alone. Use this when something external is holding work back (waiting on a vendor, legal review, a decision, an upstream team). NOT for: a step only a person can do (a phone check, a store upload, a key) — tag the node needs-human instead and put the step in the description; waiting on another ticket — add_dependency (it clears itself). A blocker on a parent holds every ticket below it out of the queue. A question for a person should also reach them as an ask (fleet workers do this for their tickets); plan_lint flags blockers nobody is asked about (blocker-without-question). On a ticket a fleet worker is running right now (get_wip_status shows "Agent working" / "Fixing"), this is also the Stop: the worker stops its agent within about a minute, releases the claim and keeps your blocker; the partial work is discarded, and clearing the blocker requeues the ticket with its description as it is then — so to change a running ticket, flag_blocker, edit the description, then clear_blocker. Undo: clear_blocker releases the ticket back to the queue (status → todo unless done/claimed — NOT the mirror image of this call); update_node with blockedReason: null clears only the reason and keeps the status.',
   schema: {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node ID to flag as blocked'),
@@ -329,8 +367,13 @@ export const flagBlockerTool = defineTool({
       .describe('Short human-readable reason for the block (e.g. "waiting on legal review", "vendor SLA pending"). This is what surfaces in digests.'),
   },
   handler: async (backend, { mapId, nodeId, reason }) => {
-    await backend.updateNode(mapId, nodeId, { blockedReason: reason });
-    return `Flagged ${nodeId} as blocked: "${reason}".`;
+    const node = await backend.updateNode(mapId, nodeId, { blockedReason: reason });
+    const done = `Flagged ${nodeId} as blocked: "${reason}".`;
+    const children = node.childrenIds?.length ?? 0;
+    if (children === 0) return done;
+    // A blocker on a container holds its whole subtree out of the queue —
+    // on 25.10.2026 one on "Phase 2.5" idled four workers (dispatchHold).
+    return `${done}\nWarning: this node has ${children} child node(s) — the blocker holds every ticket below it out of the queue. If only one child is stuck, clear_blocker here and flag that child instead.`;
   },
 });
 
@@ -349,7 +392,8 @@ export const clearBlockerTool = defineTool({
       : result.node.claimedBySession
         ? `status left at ${result.node.status ?? 'none'} — still claimed by "${result.node.claimedBySession}", so NOT pullable; release_node first if that worker is gone`
         : `status left at ${result.node.status ?? 'none'}`;
-    return `Released "${result.node.text}" (${nodeId}): blockedReason cleared, "blocked" tag removed, ${status}.`;
+    const done = `Released "${result.node.text}" (${nodeId}): blockedReason cleared, "blocked" tag removed, ${status}.`;
+    return result.labelError ? `${done}\nWarning: the "blocked" label is still on the linked issue — removing it failed: ${result.labelError}` : done;
   },
 });
 
@@ -548,12 +592,16 @@ export const searchNodesTool = defineTool({
         ? ' ' + n.externalLinks.map((l) => `[${l.externalId}]`).join(' ')
         : '';
       const claim = ' ' + formatClaim(n.claimedBySession, n.claimedAt);
+      const reporter = formatReporter(n.reportedBy);
+      const reported = reporter ? ` reported: ${reporter}` : '';
+      const approval = formatApproval(n.approval);
+      const approvalStr = approval ? ` approval: ${approval}` : '';
       const kids = n.childrenIds?.length ?? 0;
       const kidsStr = kids > 0 ? ` (${kids} child${kids === 1 ? '' : 'ren'})` : '';
       const phase = n.phaseId
         ? ` (phase: ${phaseNameById.get(n.phaseId) ?? n.phaseId})`
         : '';
-      return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}${phase}${kidsStr}${links}${claim}`;
+      return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}${phase}${kidsStr}${links}${claim}${reported}${approvalStr}`;
     });
 
     return `Found ${matches.length} node(s) matching "${query}":\n${lines.join('\n')}`;

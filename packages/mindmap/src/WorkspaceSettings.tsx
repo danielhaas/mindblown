@@ -14,6 +14,7 @@ import type { GitHubInstallStatus, GitHubRepoInfo } from './api.js';
 import { useMindmapStore } from './store.js';
 import { RegistrationPolicyPanel } from './RegistrationPolicyPanel.js';
 import { ChangePasswordPanel } from './ChangePasswordPanel.js';
+import { DigestMailPanel } from './DigestMailPanel.js';
 import { AdminPasswordResetPanel } from './AdminPasswordResetPanel.js';
 import { ClaudeConnectPanel } from './ClaudeConnectPanel.js';
 import { SettingsApiKeys } from './SettingsApiKeys.js';
@@ -22,6 +23,9 @@ import { forgeLabel } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
 import { MapAiPolicyPanel } from './MapAiPolicyPanel.js';
 import { MapArchivePanel } from './MapArchivePanel.js';
+import { MapFleetPanel } from './MapFleetPanel.js';
+import { MapTrustPolicyPanel } from './MapTrustPolicyPanel.js';
+import { RepoCombobox } from './RepoCombobox.js';
 
 export function WorkspaceSettings({
   onClose,
@@ -31,7 +35,9 @@ export function WorkspaceSettings({
   mapId?: string | null;
 }) {
   const [status, setStatus] = useState<GitHubInstallStatus | null>(null);
-  const [repos, setRepos] = useState<GitHubRepoInfo[]>([]);
+  // Every installation's repos, each tagged with the installation that
+  // reaches it — a repo is saved with its own installation, not the first.
+  const [repos, setRepos] = useState<(GitHubRepoInfo & { installationId: string })[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
@@ -58,12 +64,16 @@ export function WorkspaceSettings({
       setStatus(s);
 
       if (s.connected && s.installations.length > 0) {
-        try {
-          const r = await getGitHubRepositories(s.installations[0].installationId);
-          setRepos(r.repositories);
-        } catch {
-          // Repos may fail but connection status is still valid
-        }
+        const lists = await Promise.all(s.installations.map(async (inst) => {
+          try {
+            const r = await getGitHubRepositories(inst.installationId);
+            return r.repositories.map((repo) => ({ ...repo, installationId: inst.installationId }));
+          } catch {
+            // One installation's repos may fail; the others still list.
+            return [];
+          }
+        }));
+        setRepos(lists.flat());
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load status');
@@ -105,8 +115,9 @@ export function WorkspaceSettings({
     setSaving(true);
     setError(null);
     try {
-      const installationId = status?.installations[0]?.installationId ?? null;
       if (selectedRepo) {
+        const installationId = repos.find((r) => r.fullName === selectedRepo)?.installationId
+          ?? map?.githubInstallationId ?? null;
         const [owner, name] = selectedRepo.split('/');
         await updateMap(mapId, {
           githubInstallationId: installationId,
@@ -128,7 +139,7 @@ export function WorkspaceSettings({
     } finally {
       setSaving(false);
     }
-  }, [mapId, selectedRepo, status, onClose]);
+  }, [mapId, selectedRepo, repos, map, onClose]);
 
   return (
     <div
@@ -318,27 +329,17 @@ export function WorkspaceSettings({
                       Repository for this map
                     </h4>
                     <div style={{ display: 'flex', gap: 8 }}>
-                      <select
+                      <RepoCombobox
+                        options={repos.map((repo) => ({
+                          value: repo.fullName,
+                          fullName: repo.fullName,
+                          suffix: repo.private ? '(private)' : undefined,
+                        }))}
                         value={selectedRepo}
-                        onChange={(e) => setSelectedRepo(e.target.value)}
-                        style={{
-                          flex: 1,
-                          padding: '8px 12px',
-                          borderRadius: 8,
-                          border: '1px solid #e2e8f0',
-                          fontSize: 13,
-                          fontFamily: 'inherit',
-                          color: '#1e293b',
-                          background: '#fff',
-                        }}
-                      >
-                        <option value="">No repo linked</option>
-                        {repos.map((repo) => (
-                          <option key={repo.id} value={repo.fullName}>
-                            {repo.fullName}{repo.private ? ' (private)' : ''}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={setSelectedRepo}
+                        noneLabel="No repo linked"
+                        style={{ flex: 1 }}
+                      />
                       <button
                         onClick={handleSaveRepo}
                         disabled={saving || selectedRepo === currentRepo}
@@ -427,6 +428,9 @@ export function WorkspaceSettings({
           {/* Account password — shown only in workspace-wide view */}
           {!mapId && <ChangePasswordPanel />}
 
+          {/* Daily mail with open questions — shown only in workspace-wide view */}
+          {!mapId && <DigestMailPanel />}
+
           {/* Registration policy — shown only in workspace-wide view */}
           {!mapId && <RegistrationPolicyPanel />}
 
@@ -435,6 +439,12 @@ export function WorkspaceSettings({
 
           {/* AI chat provider — shown only in workspace-wide view */}
           {!mapId && <AiProviderPanel />}
+
+          {/* Fleet connection (#480) — shown only for a map */}
+          {mapId && <MapFleetPanel />}
+
+          {/* Who may run the fleet (#491) — shown only for a map, to its admins */}
+          {mapId && <MapTrustPolicyPanel />}
 
           {/* Per-map AI policy (#375) — shown only for a map */}
           {mapId && <MapAiPolicyPanel />}

@@ -24,6 +24,8 @@ export interface JournalWindow {
 
 /** One change_events row, as far as the journal reads it. */
 export interface JournalEventRow {
+  /** Set by a fleet-wide loader (#479); entries built from the row carry it. */
+  mapId?: string;
   eventType: string;
   nodeId: string | null;
   userId: string | null;
@@ -35,6 +37,8 @@ export interface JournalEventRow {
 
 /** One node row, as far as the journal reads it. */
 export interface JournalNodeRow {
+  /** Set by a fleet-wide loader (#479); entries about the node carry it. */
+  mapId?: string;
   id: string;
   text: string;
   status: string | null;
@@ -60,6 +64,8 @@ export interface JournalInput {
   nodes: JournalNodeRow[];
   versions: { id: string; name: string }[];
   users: { id: string; name: string }[];
+  /** Fleets the claim trail names (#481: `fleetId` on claim/release rows) — their names go next to the session. */
+  fleets?: { id: string; name: string }[];
   /** Set by the loader when a read limit cut the events or ticks — the lists are then the NEWEST part of the window. */
   truncated?: { events: boolean; ticks: boolean };
 }
@@ -68,16 +74,23 @@ export interface JournalWorker {
   session: string;
   host: string | null;
   worker: string | null;
+  /** The fleet that held the claim (#481), when the trail recorded one. */
+  fleet?: string;
 }
 
-export interface JournalClaim extends JournalWorker {
+/** Which project an entry is about — present when the journal spans a fleet's maps (#479). */
+export interface JournalMapRef {
+  mapId?: string;
+}
+
+export interface JournalClaim extends JournalWorker, JournalMapRef {
   nodeId: string;
   text: string;
   via: 'pull' | 'claim' | 'unknown';
   at: string;
 }
 
-export interface JournalRelease extends JournalWorker {
+export interface JournalRelease extends JournalWorker, JournalMapRef {
   nodeId: string;
   text: string;
   reason: string;
@@ -91,7 +104,7 @@ export interface JournalIssue {
   url: string;
 }
 
-export interface JournalDelivered {
+export interface JournalDelivered extends JournalMapRef {
   nodeId: string;
   text: string;
   completedAt: string;
@@ -103,7 +116,7 @@ export interface JournalDelivered {
   versionName: string | null;
 }
 
-export interface JournalCreated {
+export interface JournalCreated extends JournalMapRef {
   nodeId: string;
   text: string;
   createdAt: string;
@@ -115,14 +128,14 @@ export interface JournalCreated {
   issues: JournalIssue[];
 }
 
-export interface JournalBlocked {
+export interface JournalBlocked extends JournalMapRef {
   nodeId: string;
   text: string;
   at: string;
   reason: string | null;
 }
 
-export interface JournalKnobWrite {
+export interface JournalKnobWrite extends JournalMapRef {
   at: string;
   field: string;
   oldValue: unknown;
@@ -237,6 +250,16 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
   const versionName = new Map(input.versions.map((v) => [v.id, v.name]));
   const userName = new Map(input.users.map((u) => [u.id, u.name]));
   const textOf = (id: string) => nodeById.get(id)?.text ?? '(deleted node)';
+  // Only a fleet-wide loader sets mapId; a single-map journal keeps its old shape.
+  const mapRef = (mapId: string | undefined): JournalMapRef => (mapId ? { mapId } : {});
+  const nodeMap = (e: JournalEventRow, id: string) => mapRef(e.mapId ?? nodeById.get(id)?.mapId);
+  const fleetName = new Map((input.fleets ?? []).map((f) => [f.id, f.name]));
+  // The session, plus the fleet that held it when the row names one (#481).
+  const workerOf = (session: string, v: Record<string, unknown>): JournalWorker => {
+    const w = splitSession(session);
+    const name = fleetName.get(str(v.fleetId) ?? '');
+    return name ? { ...w, fleet: name } : w;
+  };
 
   const events = [...input.events].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
@@ -255,20 +278,20 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
     if (e.eventType === 'node.claimed' && e.nodeId) {
       const session = str(v.session);
       if (!session) continue;
-      const w = splitSession(session);
+      const w = workerOf(session, v);
       lastClaim.set(e.nodeId, w);
       if (inside) {
         const via = v.via === 'pull' || v.via === 'claim' ? v.via : 'unknown';
-        claims.push({ ...w, nodeId: e.nodeId, text: textOf(e.nodeId), via, at: e.createdAt });
+        claims.push({ ...w, ...nodeMap(e, e.nodeId), nodeId: e.nodeId, text: textOf(e.nodeId), via, at: e.createdAt });
       }
     } else if (e.eventType === 'node.released' && e.nodeId) {
       const session = str(v.session);
       if (!session) continue;
-      const w = splitSession(session);
+      const w = workerOf(session, v);
       const reason = str(v.reason) ?? 'release';
       if (reason === 'done') doneRelease.set(e.nodeId, w);
       else if (inside) {
-        releases.push({ ...w, nodeId: e.nodeId, text: textOf(e.nodeId), reason, note: str(v.note), heldMinutes: num(v.heldMinutes), at: e.createdAt });
+        releases.push({ ...w, ...nodeMap(e, e.nodeId), nodeId: e.nodeId, text: textOf(e.nodeId), reason, note: str(v.note), heldMinutes: num(v.heldMinutes), at: e.createdAt });
       }
     } else if (e.eventType === 'node.pr_merged' && e.nodeId) {
       const number = num(v.prNumber);
@@ -278,6 +301,7 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
       prMerged.set(e.nodeId, { number, url, repo, mergedAt: e.createdAt });
     } else if (e.eventType === 'map.field_changed' && inside) {
       knobWrites.push({
+        ...mapRef(e.mapId),
         at: e.createdAt,
         field: e.fieldName ?? '?',
         oldValue: e.oldValue,
@@ -289,7 +313,7 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
       // One entry per node even when status and blockedReason land as two rows of one PUT.
       const last = blocked[blocked.length - 1];
       if (last && last.nodeId === e.nodeId && Date.parse(e.createdAt) - Date.parse(last.at) < 5_000) continue;
-      blocked.push({ nodeId: e.nodeId, text: textOf(e.nodeId), at: e.createdAt, reason: nodeById.get(e.nodeId)?.blockedReason ?? null });
+      blocked.push({ ...nodeMap(e, e.nodeId), nodeId: e.nodeId, text: textOf(e.nodeId), at: e.createdAt, reason: nodeById.get(e.nodeId)?.blockedReason ?? null });
     }
   }
 
@@ -309,6 +333,7 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
         }
       }
       return {
+        ...mapRef(n.mapId),
         nodeId: n.id,
         text: n.text,
         completedAt: n.completedAt as string,
@@ -325,6 +350,7 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
   const created: JournalCreated[] = input.nodes
     .filter((n) => inWindow(n.createdAt, from, to))
     .map((n) => ({
+      ...mapRef(n.mapId),
       nodeId: n.id,
       text: n.text,
       createdAt: n.createdAt,

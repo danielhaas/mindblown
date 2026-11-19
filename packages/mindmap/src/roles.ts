@@ -20,6 +20,7 @@
  * for the occupant; the lens itself stays a client preference.
  */
 import type { ActiveView } from './store.js';
+import { localDay } from './localTime.js';
 
 export type ViewRole = 'stakeholder' | 'pm' | 'developer' | 'all';
 
@@ -59,6 +60,7 @@ export const ALL_VIEWS: ActiveView[] = [
   'hill',
   'workload',
   'files',
+  'docs',
 ];
 
 export const ALL_PANELS: PanelKey[] = [
@@ -88,7 +90,8 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
     // today?" — literally).
     // Files: the shared shelf — specs, exports, screenshots — for whoever
     // works the plan. Not for the stakeholder lens, which stays two tabs.
-    tabs: ['cockpit', 'fleet', 'releases', 'list', 'kanban', 'mindmap', 'files'],
+    // Docs (#550): the repo's specs and READMEs — read by whoever works the plan.
+    tabs: ['cockpit', 'fleet', 'releases', 'list', 'kanban', 'mindmap', 'files', 'docs'],
     panels: ['blocked', 'triage', 'sprint', 'planHealth', 'property', 'mapChat', 'aiChat'],
   },
   developer: {
@@ -104,7 +107,7 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
     // Plan health (Dan, 2026-09-28): since the sync pack, "is my done
     // ticket really done — issue closed, PR behind it?" is a developer
     // question, so the panel is theirs too.
-    tabs: ['list', 'kanban', 'mindmap', 'fleet', 'files'],
+    tabs: ['list', 'kanban', 'mindmap', 'fleet', 'files', 'docs'],
     panels: ['blocked', 'planHealth', 'property', 'mapChat'],
   },
   all: {
@@ -158,7 +161,7 @@ export function pickCurrentCycle<C extends { id: string; startDate: string; endD
   cycles: C[],
   today: Date = new Date(),
 ): C | null {
-  const t = today.toISOString().slice(0, 10);
+  const t = localDay(today);
   const containing = cycles
     .filter((c) => c.startDate.slice(0, 10) <= t && t <= c.endDate.slice(0, 10))
     .sort((a, b) => b.startDate.localeCompare(a.startDate) || (a.status === 'active' ? -1 : 1));

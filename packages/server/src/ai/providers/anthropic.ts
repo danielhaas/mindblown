@@ -14,6 +14,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { specToAnthropicTool } from '@mindblown/tool-kit';
+import { aiEnabled } from '../client.js';
 import type {
   ChatProvider,
   CompletionOptions,
@@ -33,7 +34,12 @@ function getClient(): Anthropic {
     if (!anthropicAvailable) {
       throw new Error('Anthropic provider unavailable — set ANTHROPIC_API_KEY');
     }
-    _client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+    // With a local model behind Claude (fallback.ts), fail fast instead of
+    // the SDK's default 2 retries × 10-minute timeout: the local model is
+    // the better retry. Alone, Claude keeps the SDK's patience.
+    _client = new Anthropic(
+      aiEnabled ? { apiKey: ANTHROPIC_API_KEY, maxRetries: 1, timeout: 120_000 } : { apiKey: ANTHROPIC_API_KEY },
+    );
   }
   return _client;
 }
@@ -106,7 +112,10 @@ export const anthropicProvider: ChatProvider = {
         tools,
         messages: toAnthropicMessages(opts.messages),
       },
-      opts.signal ? { signal: opts.signal } : undefined,
+      // The stream's timeout covers the wait for response headers only. With a
+      // local model behind Claude, give up after 60 s so the chat's 120 s turn
+      // watchdog doesn't abort first (an abort never falls back).
+      { ...(opts.signal ? { signal: opts.signal } : {}), ...(aiEnabled ? { timeout: 60_000 } : {}) },
     );
 
     // Per-block accumulators for tool_use input JSON, keyed by content-block index.

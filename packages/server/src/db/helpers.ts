@@ -10,6 +10,7 @@ export function dbFleetToCore(row: Record<string, unknown>): Fleet {
     name: get('name', 'name') as string,
     ownerId: get('ownerId', 'owner_id') as string,
     maxActiveClaims: (get('maxActiveClaims', 'max_active_claims') as number) ?? 0,
+    autoCheckBlockers: (get('autoCheckBlockers', 'auto_check_blockers') as boolean) ?? false,
     createdAt: iso(get('createdAt', 'created_at')),
     updatedAt: iso(get('updatedAt', 'updated_at')),
   };
@@ -58,6 +59,9 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     startedAt: (get('startedAt', 'started_at') instanceof Date
       ? (get('startedAt', 'started_at') as Date).toISOString()
       : (get('startedAt', 'started_at') as string)) ?? null,
+    expectedDoneAt: (get('expectedDoneAt', 'expected_done_at') instanceof Date
+      ? (get('expectedDoneAt', 'expected_done_at') as Date).toISOString()
+      : (get('expectedDoneAt', 'expected_done_at') as string)) ?? null,
     requirementId: (get('requirementId', 'requirement_id') as string) ?? null,
     requirementPriority:
       (get('requirementPriority', 'requirement_priority') as CoreNode['requirementPriority']) ?? null,
@@ -83,6 +87,8 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
       ? (get('updatedAt', 'updated_at') as Date).toISOString()
       : (get('updatedAt', 'updated_at') as string)),
     createdBy: get('createdBy', 'created_by') as string,
+    reportedBy: (get('reportedBy', 'reported_by') as CoreNode['reportedBy']) ?? null,
+    approval: (get('approval', 'approval') as CoreNode['approval']) ?? null,
     revision: (get('revision', 'revision') as number) ?? 1,
     deletedAt: (get('deletedAt', 'deleted_at') instanceof Date
       ? (get('deletedAt', 'deleted_at') as Date).toISOString()
@@ -123,6 +129,7 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     profilePolicy: (get('profilePolicy', 'profile_policy') as MindMap['profilePolicy']) ?? null,
     fleetId: (get('fleetId', 'fleet_id') as string | null) ?? null,
     fleetShare: (get('fleetShare', 'fleet_share') as number) ?? 1,
+    fleetCanEditCi: (get('fleetCanEditCi', 'fleet_can_edit_ci') as boolean) ?? false,
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()
       : (get('createdAt', 'created_at') as string)),
@@ -133,6 +140,9 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     archivedAt: (get('archivedAt', 'archived_at') instanceof Date
       ? (get('archivedAt', 'archived_at') as Date).toISOString()
       : (get('archivedAt', 'archived_at') as string)) ?? null,
+    setupCompletedAt: (get('setupCompletedAt', 'setup_completed_at') instanceof Date
+      ? (get('setupCompletedAt', 'setup_completed_at') as Date).toISOString()
+      : (get('setupCompletedAt', 'setup_completed_at') as string)) ?? null,
     githubInstallationId: (get('githubInstallationId', 'github_installation_id') as string) ?? null,
     githubRepoOwner: (get('githubRepoOwner', 'github_repo_owner') as string) ?? null,
     githubRepoName: (get('githubRepoName', 'github_repo_name') as string) ?? null,

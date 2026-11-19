@@ -22,11 +22,22 @@ import {
   type IssuesListQuery,
   type ListPullRequestsQuery,
   type MilestoneRef,
+  type CreatePullRequestInput,
+  type PutFileInput,
+  type PutFileResult,
+  type RepoTree,
   type RequestOptions,
   type UpdateIssueInput,
+  type ForgeCheck,
+  type ForgePullRequestDetail,
+  type ForgePullRequestFile,
+  type MergePullRequestInput,
+  type RepoMergeSettings,
 } from './types.js';
+import { blobBytes, contentsPath, encodeRef, toBase64, treeFiles, type RawBlob, type RawPutFile, type RawTree } from './contents.js';
 import { FORGE_REQUEST_TIMEOUT_MS, GITHUB_API_BASE, GITHUB_WEB_BASE } from './constants.js';
 import { walkIssueScan } from './pagination.js';
+import { checkRunCheck, commitStatusCheck, githubMergeMethod, pullRequestDetail, pullRequestFiles, type RawCheckRun, type RawCommitStatus, type RawPullRequest } from './pullRequests.js';
 
 export { GITHUB_API_BASE, GITHUB_WEB_BASE, GITHUB_ENDPOINT } from './constants.js';
 
@@ -275,6 +286,72 @@ export class GitHubForge implements ForgeClient {
       `/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100`,
     );
     return rows.map((f) => f.filename);
+  }
+
+  async getPullRequestDetail(owner: string, repo: string, prNumber: number): Promise<ForgePullRequestDetail> {
+    return pullRequestDetail(await this.requestJson<RawPullRequest>(`/repos/${owner}/${repo}/pulls/${prNumber}`));
+  }
+
+  async listPullRequestFileStats(owner: string, repo: string, prNumber: number): Promise<ForgePullRequestFile[]> {
+    return pullRequestFiles(
+      await this.requestJson<Array<{ filename: string; additions: number; deletions: number }>>(`/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100`),
+    );
+  }
+
+  /** Check runs (Actions and other apps) plus classic commit statuses — GitHub keeps them apart. */
+  async listCommitChecks(owner: string, repo: string, sha: string): Promise<ForgeCheck[]> {
+    const [runs, combined] = await Promise.all([
+      this.requestJson<{ check_runs: RawCheckRun[] }>(`/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100`),
+      this.requestJson<{ statuses: RawCommitStatus[] | null }>(`/repos/${owner}/${repo}/commits/${sha}/status?per_page=100`),
+    ]);
+    return [...(runs.check_runs ?? []).map(checkRunCheck), ...(combined.statuses ?? []).map(commitStatusCheck)];
+  }
+
+  async getRepoMergeSettings(owner: string, repo: string): Promise<RepoMergeSettings> {
+    const raw = await this.requestJson<{ default_branch: string; allow_squash_merge?: boolean; allow_merge_commit?: boolean; allow_rebase_merge?: boolean }>(`/repos/${owner}/${repo}`);
+    return { defaultBranch: raw.default_branch, defaultMethod: githubMergeMethod(raw) };
+  }
+
+  async mergePullRequest(owner: string, repo: string, prNumber: number, input: MergePullRequestInput): Promise<void> {
+    await this.requestJson(`/repos/${owner}/${repo}/pulls/${prNumber}/merge`, {
+      method: 'PUT',
+      body: { merge_method: input.method, sha: input.headSha },
+    });
+  }
+
+  // ── Repo contents ───────────────────────────────────────────────
+
+  async getRepoTree(owner: string, repo: string, ref: string): Promise<RepoTree> {
+    const raw = await this.requestJson<RawTree>(`/repos/${owner}/${repo}/git/trees/${encodeRef(ref)}?recursive=1`);
+    return { sha: raw.sha, files: treeFiles(raw), truncated: !!raw.truncated };
+  }
+
+  async getBlob(owner: string, repo: string, sha: string): Promise<Uint8Array> {
+    return blobBytes(await this.requestJson<RawBlob>(`/repos/${owner}/${repo}/git/blobs/${sha}`));
+  }
+
+  // ── Repo writes ─────────────────────────────────────────────────
+
+  async createBranch(owner: string, repo: string, name: string, from: string): Promise<void> {
+    const head = await this.requestJson<{ object: { sha: string } }>(`/repos/${owner}/${repo}/git/ref/heads/${encodeRef(from)}`);
+    await this.requestJson(`/repos/${owner}/${repo}/git/refs`, { method: 'POST', body: { ref: `refs/heads/${name}`, sha: head.object.sha } });
+  }
+
+  async deleteBranch(owner: string, repo: string, name: string): Promise<void> {
+    await this.requestJson(`/repos/${owner}/${repo}/git/refs/heads/${encodeRef(name)}`, { method: 'DELETE' });
+  }
+
+  async putFile(owner: string, repo: string, input: PutFileInput): Promise<PutFileResult> {
+    const res = await this.requestJson<RawPutFile>(contentsPath(owner, repo, input.path), {
+      method: 'PUT',
+      body: { message: input.message, content: toBase64(input.content), sha: input.blobSha, branch: input.branch },
+    });
+    return { blobSha: res.content.sha, commitSha: res.commit.sha };
+  }
+
+  async createPullRequest(owner: string, repo: string, input: CreatePullRequestInput): Promise<{ number: number; url: string }> {
+    const pr = await this.requestJson<{ number: number; html_url: string }>(`/repos/${owner}/${repo}/pulls`, { method: 'POST', body: input });
+    return { number: pr.number, url: pr.html_url };
   }
 
   // ── URLs ────────────────────────────────────────────────────────

@@ -2,17 +2,22 @@ import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
 import { computeTree, schedule, criticalPath, capacityCriticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
+import { buildTimelineMarkdown, TimelineOptionError } from '../export/timeline.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
-import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
+import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap, TrustPolicy } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
 import * as fleetService from '../services/fleets.js';
+import { authorizeFleetCiChange, authorizeMapRepoBinding } from '../services/mapRepoBinding.js';
+import * as trustService from '../services/trustPolicy.js';
+import { isFleetUser } from '../db/fleets.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
 import * as versionDb from '../db/versions.js';
 import * as cycleDb from '../db/cycles.js';
 import { computeReleaseForecast } from '../lib/releaseForecast.js';
 import { computeMapSchedule } from '../lib/mapSchedule.js';
 import { getMapForgeKind } from '../lib/githubContext.js';
+import { forgeProblemForMap } from '../lib/forgeProblem.js';
 import { stalledOrEmpty } from '../lib/stalled.js';
 import { snapshotReleaseForecastForMap } from '../lib/releaseSnapshots.js';
 import { measureMapVelocity } from '../lib/velocityMeasure.js';
@@ -158,6 +163,11 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
         error: { code: 'VALIDATION_ERROR', message: 'name and workspaceId are required' },
       });
     }
+    // A fleet's key reaches only its connected maps (#481); a map it
+    // created would make it admin of something outside that.
+    if (req.userId && (await isFleetUser(req.userId))) {
+      return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'A fleet key cannot create maps' } });
+    }
 
     // Resolve 'default' workspaceId to the first available workspace
     let { workspaceId } = body;
@@ -256,14 +266,17 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     // "Gitea" where it used to say "GitHub" (labels, inbox, settings).
     // Also derived: in-progress leaves nobody is working on (core findStalled),
     // for the Blocked panel, the Cockpit and blocked_digest.
-    const [forgeKind, fleetName, stalled] = await Promise.all([
+    // And whether the repo the map names is reachable (#513) — a failed
+    // check must not fail the map load, so it reads as "no problem known".
+    const [forgeKind, fleetName, stalled, forgeProblem] = await Promise.all([
       getMapForgeKind(req.params.id),
       fleetService.fleetNameOf(data.map.fleetId),
       stalledOrEmpty(data.map, data.nodes),
+      forgeProblemForMap(data.map).catch(() => null),
     ]);
 
     return reply.send({
-      map: { ...data.map, forgeKind, fleetName },
+      map: { ...data.map, forgeKind, fleetName, forgeProblem },
       nodes: nodesWithComputed,
       stalled,
     });
@@ -282,11 +295,11 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     return reply.send({ stalled: await stalledOrEmpty(data.map, data.nodes) });
   });
 
-  // ── GET /api/maps/:id/requirements-export — Anforderungsdokument ──
+  // ── GET /api/maps/:id/requirements-export — requirements document ──
   //
   // Renders the requirements register as a document mirroring the
-  // hand-maintained Anforderungsdokument format: chapters = the
-  // requirement nodes' parents (Bereiche) in depth-first tree order,
+  // hand-maintained requirements document format: chapters = the
+  // requirement nodes' parents (areas) in depth-first tree order,
   // one table row per requirement with derived status, S/M/L/XL effort
   // buckets. ?format=md (default, text/markdown) or ?format=docx
   // (Word download for business consumers). Rendering lives in
@@ -378,7 +391,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
         );
         reply.header(
           'content-disposition',
-          `attachment; filename="anforderungsdokument-${register.generatedAt}.docx"`,
+          `attachment; filename="requirements-${register.generatedAt}.docx"`,
         );
         return reply.send(buf);
       }
@@ -389,6 +402,35 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       }
       reply.header('content-type', 'text/markdown; charset=utf-8');
       return reply.send(renderMarkdown(register));
+    },
+  );
+
+  // ── GET /api/maps/:id/export.md — the map as a Markdown timeline (#637) ──
+  //
+  // For readers outside the project: one section per milestone (the root's
+  // children, or ?root=<nodeId>'s) in schedule order, what each waits on,
+  // a summary table on top. ?detail=summary (default) | full; ?tz=<IANA>
+  // stamps "generated" on the viewer's clock (#595).
+  app.get<{ Params: { id: string }; Querystring: { root?: string; detail?: string; tz?: string } }>(
+    '/api/maps/:id/export.md',
+    async (req, reply) => {
+      const data = await mapDb.getMap(req.params.id);
+      if (!data) {
+        return reply.status(404).send({
+          error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+        });
+      }
+      let markdown: string;
+      try {
+        markdown = buildTimelineMarkdown(data, { rootNodeId: req.query.root, detail: req.query.detail, timeZone: req.query.tz });
+      } catch (err) {
+        if (err instanceof TimelineOptionError) {
+          return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: err.message } });
+        }
+        throw err;
+      }
+      reply.header('content-type', 'text/markdown; charset=utf-8');
+      return reply.send(markdown);
     },
   );
 
@@ -419,6 +461,20 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     if (fleetDenied) {
       return reply.status(fleetDenied.status).send({ error: { code: fleetDenied.code, message: fleetDenied.message } });
     }
+    const repoDenied =
+      (await authorizeMapRepoBinding(userId, req.params.id, body)) ?? (await authorizeFleetCiChange(userId, req.params.id, body));
+    if (repoDenied) {
+      return reply.status(repoDenied.status).send({ error: { code: repoDenied.code, message: repoDenied.message } });
+    }
+    // Trust policy (#491): admin only, checked before anything is written.
+    let trust: { policy: TrustPolicy | null } | undefined;
+    if (body.trustPolicy !== undefined) {
+      const checked = await trustService.checkTrustPolicyInput(userId, req.params.id, body.trustPolicy);
+      if (!('policy' in checked)) {
+        return reply.status(checked.status).send({ error: { code: checked.code, message: checked.message } });
+      }
+      trust = checked;
+    }
     const updated = await mapDb.updateMap(req.params.id, body, userId);
     if (!updated) {
       return reply.status(404).send({
@@ -429,7 +485,30 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     // cap from a cron while a PM has the cockpit open, and the cockpit must
     // not keep showing the pre-write value. Map row only — no nodes.
     broadcast(req.params.id, { type: 'map:updated', map: updated });
+    if (trust) {
+      // Echoed to the admin who sent it; never on the broadcast.
+      const saved = await trustService.setTrustPolicy(req.params.id, trust.policy, userId);
+      return reply.send({ ...updated, trustPolicy: saved?.policy });
+    }
     return reply.send(updated);
+  });
+
+  // ── GET /api/maps/:id/trust-policy — Who may run the fleet (#491) ──
+  // Admin only. `isDefault`: nothing saved yet, the policy is computed.
+  app.get<{ Params: { id: string } }>('/api/maps/:id/trust-policy', async (req, reply) => {
+    const perm = await permDb.getPermission(req.params.id, req.userId!);
+    if (!permDb.hasPermission(perm, 'admin')) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Only map admins can see who may run the fleet' },
+      });
+    }
+    const result = await trustService.getTrustPolicy(req.params.id);
+    if (!result) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+      });
+    }
+    return reply.send(result);
   });
 
   // ── DELETE /api/maps/:id — Delete map ─────────────────────────
@@ -605,6 +684,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           priorityRank: null,
           completedAt: null,
           startedAt: null,
+          expectedDoneAt: null,
           requirementId: null,
           requirementPriority: null,
           requirementText: null,
@@ -620,6 +700,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           createdAt: now,
           updatedAt: now,
           createdBy: parent.createdBy,
+          reportedBy: null,
+          approval: null,
           revision: 1,
           deletedAt: null,
         };

@@ -16,13 +16,16 @@
  * message and every 60 s as a backstop.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { summarizeFleet, effectiveWorkerState, silentSatellites, estimateServerNow, summarizeTick } from '@mindblown/core';
-import type { FleetWorkerStatus, HostSummary, Node, TickSummary } from '@mindblown/core';
+import { summarizeFleet, effectiveWorkerState, silentSatellites, estimateServerNow, summarizeTick, ticketPhaseText } from '@mindblown/core';
+import type { FleetWorkerStatus, HeldClaim, HostSummary, Node, TickSummary } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { FleetResponse } from './api.js';
 import { Link } from './DigestView.js';
 import { formatAge } from './dispatch.js';
+import { projectLabel, scopeTarget, useFleetScope } from './fleetScope.js';
+import type { FleetScope } from './fleetScope.js';
+import { StopTicketButton } from './StopTicketButton.js';
 
 const CLOCK_MS = 30_000;
 const POLL_MS = 60_000;
@@ -52,6 +55,10 @@ export function FleetTelemetry() {
   const fleetRev = useMindmapStore((s) => s.fleetRev);
   const nodes = useMindmapStore((s) => s.nodes);
   const selectNode = useMindmapStore((s) => s.selectNode);
+  // This project or the whole fleet (#480); without a provider, this map.
+  const scope = useFleetScope();
+  const target = scopeTarget(scope, currentMapId);
+  const targetKey = target ? JSON.stringify(target) : '';
   // data + fetchedAt live in ONE state so the server time and the moment it
   // was fetched can never come from different fetches (that pairing
   // double-counted the page's uptime and painted every host red).
@@ -71,10 +78,10 @@ export function FleetTelemetry() {
   }, []);
 
   useEffect(() => {
-    if (!currentMapId) return;
+    if (!target) return;
     let cancelled = false;
     api
-      .fetchFleet(currentMapId)
+      .fetchFleet(target)
       .then((r) => {
         if (cancelled) return;
         setLoaded({ data: r, fetchedAt: Date.now() });
@@ -84,7 +91,12 @@ export function FleetTelemetry() {
     return () => {
       cancelled = true;
     };
-  }, [currentMapId, fleetRev, poll]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- targetKey is `target` by value
+  }, [targetKey, fleetRev, poll]);
+  // The switch flipped: the old scope's hosts must not stand in for the new one's until the fetch lands.
+  useEffect(() => {
+    setLoaded(null);
+  }, [targetKey]);
 
   // Re-evaluated on every clock tick, so a fleet that went silent turns
   // stale on screen without anyone pushing.
@@ -169,6 +181,7 @@ export function FleetTelemetry() {
                 }
                 nodes={nodes}
                 selectNode={selectNode}
+                scope={scope}
               />
             ))}
           </ul>
@@ -178,22 +191,24 @@ export function FleetTelemetry() {
       <div style={{ marginTop: 8 }}>
         {tick ? <TickBlock tick={tick} now={now} /> : <div style={{ color: '#94a3b8', fontSize: 12 }}>No orchestrator tick received yet.</div>}
       </div>
-      <TickHistory mapId={currentMapId} fleetRev={fleetRev} now={now} />
+      <TickHistory target={target} targetKey={targetKey} fleetRev={fleetRev} now={now} />
     </div>
   );
 }
 
 type NodeIndex = Record<string, Pick<Node, 'text'>>;
 
-function HostRow({ host: h, now, open, onToggle, nodes, selectNode }: {
+function HostRow({ host: h, now, open, onToggle, nodes, selectNode, scope }: {
   host: HostSummary;
   now: Date;
   open: boolean;
   onToggle: () => void;
   nodes: NodeIndex;
   selectNode: (id: string) => void;
+  scope: FleetScope | null;
 }) {
   const age = `${Math.round(h.freshness.ageMin)}m`;
+  const waitsForYou = h.held.filter((c) => c.phase.tone === 'problem').length;
   return (
     <li style={{ marginTop: 4 }}>
       <Link onClick={onToggle}>
@@ -207,10 +222,18 @@ function HostRow({ host: h, now, open, onToggle, nodes, selectNode }: {
         {' '}· {Object.entries(h.counts).map(([s, n]) => `${s} ${n}`).join(', ') || 'no workers'}
         {h.freshness.stale && h.workers.length > 0 ? ' (last seen)' : ''}
       </span>
+      {waitsForYou > 0 && (
+        <span style={{ ...pill, background: '#fee2e2', color: '#991b1b', marginLeft: 6 }} data-testid="held-waiting">
+          {waitsForYou} PR{waitsForYou === 1 ? '' : 's'} waiting for you
+        </span>
+      )}
       {open && (
         <ul style={{ margin: '2px 0 4px 14px', paddingLeft: 12, fontSize: 12, lineHeight: 1.7 }}>
           {h.workers.map((w) => (
-            <WorkerRow key={w.session} w={w} now={now} nodes={nodes} selectNode={selectNode} />
+            <WorkerRow key={w.session} w={w} now={now} nodes={nodes} selectNode={selectNode} scope={scope} hostStale={h.freshness.stale} />
+          ))}
+          {h.held.map((c) => (
+            <HeldRow key={c.nodeId} c={c} now={now} nodes={nodes} selectNode={selectNode} scope={scope} />
           ))}
         </ul>
       )}
@@ -218,20 +241,64 @@ function HostRow({ host: h, now, open, onToggle, nodes, selectNode }: {
   );
 }
 
-function WorkerRow({ w, now, nodes, selectNode }: { w: FleetWorkerStatus; now: Date; nodes: NodeIndex; selectNode: (id: string) => void }) {
+/** An open PR the host follows with no agent on it — a "parked" slot can still hold one. */
+function HeldRow({ c, now, nodes, selectNode, scope }: {
+  c: HeldClaim;
+  now: Date;
+  nodes: NodeIndex;
+  selectNode: (id: string) => void;
+  scope: FleetScope | null;
+}) {
+  const local = !scope || !c.mapId || c.mapId === scope.mapId;
+  const title = local ? nodes[c.nodeId]?.text : undefined;
+  const project = projectLabel(scope, c.mapId ?? undefined);
+  const problem = c.phase.tone === 'problem';
+  return (
+    <li data-testid="held-claim">
+      <span style={{ color: '#64748b' }}>holds {c.phase.prNumber ? `PR #${c.phase.prNumber}` : 'a PR'}</span>
+      {' '}— {project && <span style={projectTag}>{project}</span>}
+      {title ? <Link onClick={() => selectNode(c.nodeId)}>{title}</Link> : <span style={{ color: '#94a3b8' }}>{c.nodeId.slice(0, 8)}</span>}
+      <span style={{ color: problem ? '#991b1b' : '#64748b' }}>
+        {' '}· {ticketPhaseText(c.phase, now)}{problem ? ' — needs a person' : ''}
+      </span>
+    </li>
+  );
+}
+
+function WorkerRow({ w, now, nodes, selectNode, scope, hostStale }: {
+  w: FleetWorkerStatus;
+  now: Date;
+  nodes: NodeIndex;
+  selectNode: (id: string) => void;
+  scope: FleetScope | null;
+  /** A stale host's rows are its last word, not what runs now: no Stop on them. */
+  hostStale: boolean;
+}) {
   const state = effectiveWorkerState(w, now);
   const style = STATE_STYLE[state] ?? { bg: '#f1f5f9', color: '#475569' };
   const claimId = w.claim?.nodeId;
-  const claimTitle = w.claim?.title ?? (claimId ? nodes[claimId]?.text : undefined);
+  // Only this map's nodes are in the store: a claim on another project shows its pushed title, unlinked.
+  const local = !scope || !w.claim?.mapId || w.claim.mapId === scope.mapId;
+  const claimTitle = w.claim?.title ?? (claimId && local ? nodes[claimId]?.text : undefined);
+  const project = projectLabel(scope, w.claim?.mapId);
   return (
     <li>
       <span title={w.session}>{w.worker ?? w.session}</span>
+      {/* Which agent runs it (#480) — a fleet can mix Claude Code, Qwen Code, … */}
+      {w.agent && <span style={{ ...pill, ...agentPill, marginLeft: 4 }} data-testid="agent-badge">{w.agent}</span>}
       {w.model && <span style={{ color: '#94a3b8' }}> {w.model}</span>}{' '}
       <span style={{ ...pill, ...style }}>{state}</span>
+      {/* A claim on another project the viewer can't see (#479): the server removed its title. */}
+      {w.claim?.redacted && <span style={{ color: '#94a3b8' }}> — busy on a project you can&apos;t view</span>}
       {claimTitle && (
         <span>
-          {' '}— {claimId && nodes[claimId] ? <Link onClick={() => selectNode(claimId)}>{claimTitle}</Link> : claimTitle}
+          {' '}— {project && <span style={projectTag}>{project}</span>}
+          {claimId && local && nodes[claimId] ? <Link onClick={() => selectNode(claimId)}>{claimTitle}</Link> : claimTitle}
         </span>
+      )}
+      {/* A worker "working" holds a claim whose agent runs (starting, working, fixing) — Stop it (#549). Only this map's tickets. */}
+      {claimId && local && nodes[claimId] && (
+        <StopTicketButton nodeId={claimId} phase={{ agentRunning: state === 'working' && !hostStale }} style={{ marginLeft: 6 }} />
       )}
       {state === 'limit-parked' && w.limit_reset_at && <span style={{ color: '#9a3412' }}> · reset {localHHMM(w.limit_reset_at)}</span>}
       {state === 'prompt' && w.prompt_question && <span style={{ color: '#1e40af' }}> · asks: {w.prompt_question}</span>}
@@ -255,6 +322,9 @@ function TickBlock({ tick, now }: { tick: FleetResponse['ticks'][number]; now: D
         {p.noJudgment && <span style={{ color: '#b45309' }}> · no judgment this tick ({p.noJudgment})</span>}
         {p.summary?.heartbeat && <span style={{ color: '#94a3b8' }}> · {p.summary.heartbeat}</span>}
       </div>
+      {p.redacted && (
+        <div style={{ color: '#94a3b8', marginTop: 2 }}>Numbers only — the orchestrator&apos;s notes cover maps of this fleet you can&apos;t view.</div>
+      )}
       {p.assessment && <div style={{ color: '#475569', marginTop: 2 }}>{p.assessment}</div>}
       {anomalies.length > 0 && (
         <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
@@ -299,7 +369,7 @@ type HistoryPreset = keyof typeof HISTORY_PRESETS;
  * expanded. A socket push (`fleetRev`) refetches while open so a tick
  * landing mid-read shows up.
  */
-function TickHistory({ mapId, fleetRev, now }: { mapId: string | null; fleetRev: number; now: Date }) {
+function TickHistory({ target, targetKey, fleetRev, now }: { target: api.FleetTarget | null; targetKey: string; fleetRev: number; now: Date }) {
   const [open, setOpen] = useState(false);
   const [preset, setPreset] = useState<HistoryPreset>('24h');
   const [history, setHistory] = useState<{ data: FleetResponse; preset: HistoryPreset } | null>(null);
@@ -311,13 +381,13 @@ function TickHistory({ mapId, fleetRev, now }: { mapId: string | null; fleetRev:
   nowRef.current = now;
 
   useEffect(() => {
-    if (!open || !mapId) return;
+    if (!open || !target) return;
     let cancelled = false;
     const { hours, limit } = HISTORY_PRESETS[preset];
     const since = new Date(nowRef.current.getTime() - hours * 3_600_000).toISOString();
     setLoading(true);
     api
-      .fetchFleet(mapId, { since, limit })
+      .fetchFleet(target, { since, limit })
       .then((r) => {
         if (cancelled) return;
         setHistory({ data: r, preset });
@@ -328,7 +398,11 @@ function TickHistory({ mapId, fleetRev, now }: { mapId: string | null; fleetRev:
     return () => {
       cancelled = true;
     };
-  }, [open, mapId, preset, fleetRev]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- targetKey is `target` by value
+  }, [open, targetKey, preset, fleetRev]);
+  useEffect(() => {
+    setHistory(null);
+  }, [targetKey]);
 
   const rows = useMemo<TickSummary[]>(() => (history ? [...history.data.ticks].reverse().map(summarizeTick) : []), [history]);
   const shown = history?.preset === preset ? history : null;
@@ -449,3 +523,6 @@ const th: React.CSSProperties = { padding: '1px 6px', fontWeight: 600, borderBot
 const td: React.CSSProperties = { padding: '1px 6px', verticalAlign: 'top' };
 
 const pill: React.CSSProperties = { display: 'inline-block', padding: '0 7px', borderRadius: 999, fontSize: 11, fontWeight: 600 };
+const agentPill: React.CSSProperties = { background: '#eef2ff', color: '#3730a3', fontWeight: 500 };
+/** `[Beta]` in front of a claim on another project of the fleet (#480). */
+export const projectTag: React.CSSProperties = { display: 'inline-block', padding: '0 6px', marginRight: 4, borderRadius: 4, background: '#f1f5f9', color: '#475569', fontSize: 11, fontWeight: 600 };

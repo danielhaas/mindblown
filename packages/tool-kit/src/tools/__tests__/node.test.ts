@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { createNodeTool, updateNodeTool, restoreNodeTool, listRecentlyDeletedTool, searchNodesTool, clearBlockerTool } from '../node.js';
+import { createNodeTool, updateNodeTool, restoreNodeTool, listRecentlyDeletedTool, searchNodesTool, clearBlockerTool, flagBlockerTool, etaFromMinutes } from '../node.js';
 import type { ToolBackend } from '../../backend.js';
 import type { MapDetail, NodeWithComputed } from '../../types.js';
 
@@ -74,6 +74,8 @@ function makeRecordingBackend(): {
     createFleet: async () => { throw new Error('not implemented'); },
     updateFleet: async () => { throw new Error('not implemented'); },
     freezeBaseline: async () => { throw new Error('not implemented'); },
+    exportMarkdown: async () => { throw new Error('not implemented'); },
+    publishToWiki: async () => { throw new Error('not implemented'); },
     createNode: async (mapId, parentId, text, fields) => {
       state.lastCreate = { mapId, parentId, text, fields };
       return stubNode;
@@ -104,6 +106,18 @@ function makeRecordingBackend(): {
     conflictScan: async () => { throw new Error('not implemented'); },
     getFleetStatus: async () => { throw new Error('not implemented'); },
     getFleetJournal: async () => { throw new Error('not implemented'); },
+    getFleetStatusForFleet: async () => { throw new Error('not implemented'); },
+    getFleetJournalForFleet: async () => { throw new Error('not implemented'); },
+    listAsksForFleet: async () => { throw new Error('not implemented'); },
+    answerAskForFleet: async () => { throw new Error('not implemented'); },
+    fleetCheckBlockers: async () => { throw new Error('not implemented'); },
+    listPendingApprovals: async () => { throw new Error('not implemented'); },
+    listReporterChecks: async () => { throw new Error('not used'); },
+    waitingOnHumans: async () => { throw new Error('not used'); },
+    markDeployed: async () => { throw new Error('not used'); },
+    prSummary: async () => { throw new Error('not used'); },
+    mergePr: async () => { throw new Error('not used'); },
+    prsWaiting: async () => { throw new Error('not used'); },
     auditClosedIssues: async () => { throw new Error('not implemented'); },
     listAsks: async () => { throw new Error('not implemented'); },
     answerAsk: async () => { throw new Error('not implemented'); },
@@ -111,6 +125,14 @@ function makeRecordingBackend(): {
     attachFile: async () => { throw new Error('not implemented'); },
     removeAttachment: async () => { throw new Error('not implemented'); },
     readAttachment: async () => { throw new Error('not implemented'); },
+    listRepoDocs: async () => { throw new Error('not implemented'); },
+    readRepoDoc: async () => { throw new Error('not implemented'); },
+    proposeRepoDocEdit: async () => { throw new Error('not implemented'); },
+    listWebhooks: async () => { throw new Error('not implemented'); },
+    createWebhook: async () => { throw new Error('not implemented'); },
+    updateWebhook: async () => { throw new Error('not implemented'); },
+    deleteWebhook: async () => { throw new Error('not implemented'); },
+    pingWebhook: async () => { throw new Error('not implemented'); },
   };
   return {
     backend,
@@ -981,7 +1003,7 @@ describe('requirement fields', () => {
     });
   });
 
-  // The MCP setter is how the Prüfanleitung, the deep link and the demo
+  // The MCP setter is how the how-to-verify text, the deep link and the demo
   // video actually get onto a requirement — an agent-written register with
   // no way to set the video field leaves the review surface half-empty.
   //
@@ -1313,6 +1335,46 @@ describe('clear_blocker tool', () => {
     expect(out).toContain('status reset to todo');
     expect(out).toContain('"blocked" tag removed');
   });
+
+  it('returns its normal message when the issue label came off, and warns when it did not (#622)', async () => {
+    const rec = makeRecordingBackend();
+    const out = await clearBlockerTool.handler(rec.backend, { mapId: 'm1', nodeId: 'n-blocked' } as never);
+    expect(out).toBe('Released "stub" (n-blocked): blockedReason cleared, "blocked" tag removed, status reset to todo — pullable again.');
+
+    const failing = {
+      ...rec.backend,
+      unblockNode: async (_m: string, nodeId: string) => ({
+        node: { id: nodeId, text: 'stub', status: 'todo', claimedBySession: null },
+        statusReset: true,
+        labelError: 'Forge API error 500',
+      }),
+    } as ToolBackend;
+    const warned = await clearBlockerTool.handler(failing, { mapId: 'm1', nodeId: 'n-blocked' } as never);
+    expect(warned.split('\n')[0]).toBe(out);
+    expect(warned).toContain('the "blocked" label is still on the linked issue');
+    expect(warned).toContain('Forge API error 500');
+  });
+});
+
+describe('flag_blocker tool', () => {
+  it('sets only blockedReason and says nothing more on a leaf', async () => {
+    const rec = makeRecordingBackend();
+    const out = await flagBlockerTool.handler(rec.backend, { mapId: 'm1', nodeId: 'leaf', reason: 'waiting on legal' } as never);
+    expect(rec.lastUpdate).toEqual({ mapId: 'm1', nodeId: 'leaf', fields: { blockedReason: 'waiting on legal' } });
+    expect(out).toBe('Flagged leaf as blocked: "waiting on legal".');
+  });
+
+  it('warns that a blocker on a container holds its subtree (Phase 2.5, 25.10.2026)', async () => {
+    const rec = makeRecordingBackend();
+    const backend = {
+      ...rec.backend,
+      updateNode: async () => ({ id: 'phase', childrenIds: ['a', 'b', 'c'] }) as unknown as NodeWithComputed,
+    } as ToolBackend;
+    const out = await flagBlockerTool.handler(backend, { mapId: 'm1', nodeId: 'phase', reason: 'cannot do a container' } as never);
+    expect(out).toContain('Flagged phase as blocked');
+    expect(out).toContain('3 child node(s)');
+    expect(out).toContain('flag that child instead');
+  });
 });
 
 describe('search_nodes tool — issue references (#348)', () => {
@@ -1399,5 +1461,45 @@ describe('estimateSource round trip (#318)', () => {
     expect(recorder.lastCreate?.fields).toMatchObject({ effortEstimate: 2, estimateSource: 'ai' });
     await updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', estimateSource: null } as never);
     expect(recorder.lastUpdate?.fields).toEqual({ estimateSource: null });
+  });
+});
+
+describe('expectedDoneAt / etaMinutes — the worker\'s ETA', () => {
+  it('create_node and update_node accept an ISO timestamp with offset and forward it', async () => {
+    for (const tool of [createNodeTool, updateNodeTool]) {
+      const schema = z.object(tool.schema);
+      const base = { mapId: 'm', nodeId: 'n', parentId: 'p', text: 't' };
+      expect(schema.parse({ ...base, expectedDoneAt: '2026-10-20T15:40:00+02:00' }).expectedDoneAt).toBe('2026-10-20T15:40:00+02:00');
+      expect(() => schema.parse({ ...base, expectedDoneAt: 'in an hour' })).toThrow();
+    }
+    expect(z.object(updateNodeTool.schema).parse({ mapId: 'm', nodeId: 'n', expectedDoneAt: null }).expectedDoneAt).toBeNull();
+    const recorder = makeRecordingBackend();
+    await createNodeTool.handler(recorder.backend, { mapId: 'm1', parentId: 'p1', text: 'x', expectedDoneAt: '2026-10-20T13:40:00Z' } as never);
+    expect(recorder.lastCreate?.fields).toMatchObject({ expectedDoneAt: '2026-10-20T13:40:00Z' });
+    await updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', expectedDoneAt: null } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ expectedDoneAt: null });
+  });
+
+  it('update_node etaMinutes becomes expectedDoneAt, minutes from now', async () => {
+    const recorder = makeRecordingBackend();
+    const before = Date.now();
+    await updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', etaMinutes: 45 } as never);
+    const eta = Date.parse(recorder.lastUpdate?.fields.expectedDoneAt as string);
+    expect(eta).toBeGreaterThanOrEqual(before + 45 * 60_000);
+    expect(eta).toBeLessThanOrEqual(Date.now() + 45 * 60_000);
+    expect(recorder.lastUpdate?.fields).not.toHaveProperty('etaMinutes');
+  });
+
+  it('update_node rejects etaMinutes together with expectedDoneAt, and non-positive minutes', async () => {
+    const recorder = makeRecordingBackend();
+    await expect(
+      updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', etaMinutes: 30, expectedDoneAt: null } as never),
+    ).rejects.toThrow(/either/);
+    expect(recorder.lastUpdate).toBeNull();
+    expect(() => z.object(updateNodeTool.schema).parse({ mapId: 'm', nodeId: 'n', etaMinutes: 0 })).toThrow();
+  });
+
+  it('etaFromMinutes adds the minutes to now', () => {
+    expect(etaFromMinutes(90, new Date('2026-10-20T12:00:00Z'))).toBe('2026-10-20T13:30:00.000Z');
   });
 });

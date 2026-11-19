@@ -6,6 +6,7 @@ import {
   giteaUserForge,
   listGiteaUserRepos,
   refreshGiteaAccessToken,
+  createGiteaUserRepo,
 } from '../gitea-oauth.js';
 import { fakeTransport } from './forge-contract.js';
 
@@ -71,5 +72,15 @@ describe('Gitea OAuth2 helpers (#369)', () => {
     expect(repos.map((r) => r.full_name)).toEqual(['dan/a', 'dan/b']);
     expect(t.calls[1].url).toBe('https://git.example/api/v1/user/repos?limit=50');
     expect(t.calls[2].url).toBe(page2);
+  });
+
+  it('creates a repo in the user account, seeded with a README', async () => {
+    const t = fakeTransport();
+    const forge = giteaUserForge('https://git.example', 'at', t.fetchImpl);
+    t.respond({ status: 201, body: { id: 3, full_name: 'dan/new', name: 'new', owner: { login: 'dan' }, private: true, html_url: 'u', description: null } });
+    const repo = await createGiteaUserRepo(forge, { name: 'new', private: true });
+    expect(repo.full_name).toBe('dan/new');
+    expect(t.calls[0]).toMatchObject({ url: 'https://git.example/api/v1/user/repos', method: 'POST' });
+    expect(JSON.parse(t.calls[0].body!)).toEqual({ name: 'new', private: true, auto_init: true });
   });
 });

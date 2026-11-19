@@ -376,7 +376,9 @@ export type IssueStateHoldReason =
   /** The landing probe found an open PR that claims to close this issue. */
   | 'pr_in_flight'
   /** The landing probe itself failed — we refuse to close on no evidence. */
-  | 'probe_failed';
+  | 'probe_failed'
+  /** The reporter is checking the fix; they (or a person) close the issue. */
+  | 'reporter_check';
 
 export interface UpdateIssueResult {
   issue: GitHubIssue;
@@ -400,6 +402,12 @@ export interface UpdateIssueResult {
 }
 
 export interface UpdateIssueOptions {
+  /**
+   * The reporter is checking the deployed fix (server services/reporterCheck.ts):
+   * a done node does not close the issue — the reporter or a person does.
+   * The state is left out of the patch, as for any other hold.
+   */
+  holdClose?: boolean;
   /**
    * Injection seam for the landing probe (tests, and callers that
    * already hold the answer). Defaults to the live
@@ -494,6 +502,8 @@ export async function updateGitHubIssue(
   if (!looksDone) {
     patchBody.state = 'open';
     stateAction = 'reopened';
+  } else if (options.holdClose) {
+    holdReason = 'reporter_check';
   } else {
     const action = issueCloseAction(node.linkedPr, externalLink, node.completedAt);
     if (action.kind === 'close') {
@@ -589,7 +599,7 @@ export async function closeGitHubIssue(
 }
 
 /**
- * Post a comment on an issue — the «Entscheid (Dan, Datum): …» line the
+ * Post a comment on an issue — the «Decision (Dan, date): …» line the
  * asks inbox writes, same body `leidang-asks-apply` posts via `gh`.
  */
 export async function commentOnGitHubIssue(
@@ -763,6 +773,25 @@ export function processWebhook(
 export function extractClosingIssueRefs(text: string): number[] {
   // \b so "disclose #5" doesn't read as "close #5".
   const pattern = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b/gi;
+  const refs = new Set<number>();
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    refs.add(parseInt(match[1], 10));
+  }
+  return [...refs];
+}
+
+/**
+ * Non-closing issue references from PR body/title text: `Refs #42`,
+ * `Ref #42`, `References #42` (case-insensitive, optional colon). The
+ * fleet's own convention is "Refs #N, not Closes #N" — the worker closes
+ * the issue itself — so a merged PR carrying only `Refs` is still the
+ * delivery of that ticket and the merge handler attributes it to the
+ * node (node.pr_merged) without transitioning or closing anything. A
+ * bare `#42` mention is not a reference.
+ */
+export function extractReferencedIssueRefs(text: string): number[] {
+  const pattern = /\bref(?:s|erences?)?:?\s+#(\d+)\b/gi;
   const refs = new Set<number>();
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {

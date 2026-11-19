@@ -33,7 +33,7 @@ vi.mock('../forge.js', async () => {
   };
 });
 
-import { getGitHubContextForMap, getMapForgeKind } from '../githubContext.js';
+import { getForgeBindingForMap, getGitHubContextForMap, getMapForgeKind } from '../githubContext.js';
 
 const giteaRow = {
   id: 'i1',
@@ -70,5 +70,28 @@ describe('PAT/OAuth binding is per map (#421)', () => {
     mapRow = { githubInstallationId: 'inst', githubRepoOwner: 'acme', githubRepoName: 'app', workspaceId: 'ws' };
     expect(await getGitHubContextForMap('m4')).toMatchObject({ owner: 'acme', repo: 'app', token: 'app' });
     expect(await getMapForgeKind('m4')).toBe('github');
+  });
+});
+
+describe('getForgeBindingForMap — the binding Plan health checks (#513)', () => {
+  it('a row-bound map gets the repo and a key that changes when the row is re-connected', async () => {
+    mapRow = { githubInstallationId: null, githubRepoOwner: 'dan', githubRepoName: 'product', workspaceId: 'ws' };
+    const first = await getForgeBindingForMap('m1');
+    expect(first?.repo).toMatchObject({ forge: 'gitea', owner: 'dan', name: 'product' });
+    integrationRows = [{ ...giteaRow, updatedAt: new Date(giteaRow.updatedAt.getTime() + 1000) }];
+    const after = await getForgeBindingForMap('m1');
+    expect(after?.bindingKey).toMatch(/^row:i1:/);
+    expect(after?.bindingKey).not.toBe(first?.bindingKey);
+  });
+
+  it('an App map is bound through its installation, with no row at all', async () => {
+    integrationRows = [];
+    mapRow = { githubInstallationId: 'inst', githubRepoOwner: 'acme', githubRepoName: 'app', workspaceId: 'ws' };
+    expect(await getForgeBindingForMap('m4')).toMatchObject({ repo: { forge: 'github', owner: 'acme', name: 'app' }, bindingKey: 'app:inst' });
+  });
+
+  it('a map naming a repo no row binds (the crm2/Sonarpipe case) is unbound', async () => {
+    mapRow = { githubInstallationId: null, githubRepoOwner: 'dan', githubRepoName: 'Sonarpipe', workspaceId: 'ws' };
+    expect(await getForgeBindingForMap('m5')).toBeNull();
   });
 });

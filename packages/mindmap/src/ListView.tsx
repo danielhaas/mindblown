@@ -4,6 +4,8 @@ import { isForgeLink } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { ForgeIcon } from './icons/ForgeIcon.js';
 import { pickCurrentCycle } from './roles.js';
+import { fetchSchedule } from './api.js';
+import { scheduleSpans } from './scheduleSpans.js';
 
 // ── Constants ──────────────────────────────────────────────────
 
@@ -158,6 +160,24 @@ const disabledCell: React.CSSProperties = {
   cursor: 'default',
 };
 
+// ── Date cell: manual date, else the scheduler's projection ────
+
+function DateCell({ manual, projected }: { manual: string | null | undefined; projected: string | undefined }) {
+  if (manual) return <span style={{ fontSize: 11, color: '#475569' }}>{manual}</span>;
+  if (projected) {
+    return (
+      <span
+        data-testid="projected-date"
+        title="Projected by the scheduler"
+        style={{ fontSize: 11, color: '#94a3b8', fontStyle: 'italic' }}
+      >
+        {projected}
+      </span>
+    );
+  }
+  return <span style={{ fontSize: 11, color: '#cbd5e1' }}>-</span>;
+}
+
 // ── Main component ─────────────────────────────────────────────
 
 export function ListView() {
@@ -173,7 +193,6 @@ export function ListView() {
   const toggleCollapse = useMindmapStore((s) => s.toggleCollapse);
   const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
   const focusNodeId = useMindmapStore((s) => s.focusNodeId);
-  const maxDepth = useMindmapStore((s) => s.maxDepth);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
   const activePhaseFilter = useMindmapStore((s) => s.activePhaseFilter);
@@ -204,6 +223,22 @@ export function ListView() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [editingCell, setEditingCell] = useState<{ nodeId: string; field: string } | null>(null);
 
+  // Scheduler projection (#641) — the same GET /schedule the Gantt draws.
+  // An empty Start/Due cell shows the projected date instead of "-".
+  const currentMapId = currentMap?.id ?? null;
+  const [projected, setProjected] = useState<Map<string, { start: string; end: string }>>(() => new Map());
+  useEffect(() => {
+    if (!currentMapId) {
+      setProjected(new Map());
+      return;
+    }
+    let cancelled = false;
+    fetchSchedule(currentMapId)
+      .then((d) => { if (!cancelled) setProjected(scheduleSpans(d)); })
+      .catch(() => { if (!cancelled) setProjected(new Map()); });
+    return () => { cancelled = true; };
+  }, [currentMapId, nodes]);
+
   const debounce = useDebouncedCallback(DEBOUNCE_MS);
   const tableRef = useRef<HTMLDivElement>(null);
 
@@ -226,9 +261,11 @@ export function ListView() {
     }
   }, [selectedIds, selectedNodeId, selectNode]);
 
-  // ── Flatten tree (respects drill-down) ──────────────────────────
+  // ── Flatten tree (respects drill-down and collapse) ─────────────
 
   const flatRows = useMemo(() => {
+    // Not the mindmap's Depth limit (#641) — getVisibleNodes leaves it
+    // off by default. Collapse still applies: the row chevron toggles it.
     const visibleNodes = getVisibleNodes();
     if (visibleNodes.length === 0) return [];
 
@@ -248,7 +285,7 @@ export function ListView() {
     }
 
     return rows;
-  }, [nodes, rootNodeId, computed, getVisibleNodes, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter, activePhaseFilter]);
+  }, [nodes, rootNodeId, computed, getVisibleNodes, focusNodeId, activeVersionFilter, activeCycleFilter, activePhaseFilter]);
 
   // ── Filter ────────────────────────────────────────────────────
 
@@ -396,17 +433,17 @@ export function ListView() {
           break;
         }
         case 'startDate':
-          cmp = (a.node.startDate ?? '').localeCompare(b.node.startDate ?? '');
+          cmp = (a.node.startDate ?? projected.get(a.node.id)?.start ?? '').localeCompare(b.node.startDate ?? projected.get(b.node.id)?.start ?? '');
           break;
         case 'dueDate':
-          cmp = (a.node.dueDate ?? '').localeCompare(b.node.dueDate ?? '');
+          cmp = (a.node.dueDate ?? projected.get(a.node.id)?.end ?? '').localeCompare(b.node.dueDate ?? projected.get(b.node.id)?.end ?? '');
           break;
       }
       return cmp * dir;
     });
 
     return sorted;
-  }, [filteredRows, sortKey, sortDir, mapPhases]);
+  }, [filteredRows, sortKey, sortDir, mapPhases, projected]);
 
   // ── Group ─────────────────────────────────────────────────────
 
@@ -978,9 +1015,7 @@ export function ListView() {
               style={{ ...cellInput, fontSize: 11 }}
             />
           ) : (
-            <span style={{ fontSize: 11, color: node.startDate ? '#475569' : '#cbd5e1' }}>
-              {node.startDate ?? '-'}
-            </span>
+            <DateCell manual={node.startDate} projected={projected.get(node.id)?.start} />
           )}
         </div>
 
@@ -1002,9 +1037,7 @@ export function ListView() {
               style={{ ...cellInput, fontSize: 11 }}
             />
           ) : (
-            <span style={{ fontSize: 11, color: node.dueDate ? '#475569' : '#cbd5e1' }}>
-              {node.dueDate ?? '-'}
-            </span>
+            <DateCell manual={node.dueDate} projected={projected.get(node.id)?.end} />
           )}
         </div>
 

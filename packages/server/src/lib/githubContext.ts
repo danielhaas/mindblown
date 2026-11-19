@@ -27,16 +27,20 @@
 import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { integrations, maps } from '../db/schema.js';
-import { GITHUB_ENDPOINT, type ForgeClient, type ForgeEndpoint } from '@mindblown/integrations';
+import { GITHUB_ENDPOINT, mintScopedRepoToken, type ForgeClient, type ForgeEndpoint } from '@mindblown/integrations';
+import type { TicketRepo } from '@mindblown/tool-kit';
 import {
   FORGE_PROVIDERS,
   cachedForgeEndpointForMap,
   forgeEndpointFromIntegration,
   forgeFromInstallation,
   forgeFromIntegration,
+  isServableIntegrationConfig,
+  pickForgeRow,
   rememberForgeEndpointForMap,
   type ForgeIntegrationConfig,
 } from './forge.js';
+import { appBindingKey, rowBindingKey } from '../sync/forgeRefusals.js';
 
 export interface ForgeMapContext {
   owner: string;
@@ -50,9 +54,15 @@ export interface ForgeMapContext {
 /** @deprecated use `ForgeMapContext` */
 export type GitHubMapContext = ForgeMapContext;
 
+/**
+ * A workspace's forge row: the one for `owner/repo` when given, else the
+ * newest enabled one. Rule in `pickForgeRow` (one row per repo).
+ */
 export async function getForgeIntegration(
   workspaceId: string,
-): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
+  owner?: string | null,
+  repo?: string | null,
+): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig; updatedAt: Date | null } | null> {
   const rows = await db
     .select()
     .from(integrations)
@@ -62,16 +72,14 @@ export async function getForgeIntegration(
         inArray(integrations.provider, FORGE_PROVIDERS),
       ),
     );
-  // A workspace can hold a disabled leftover next to the live row (a
-  // disconnected GitHub PAT from July sat beside the new Gitea row on
-  // 2026-09-24 and, being first, hid it — "GitHub not configured"). Pick
-  // the ENABLED row, newest first; never the first row the DB happens to
-  // return.
-  const row = rows
-    .filter((r) => r.enabled)
-    .sort((a, b) => (b.updatedAt?.getTime?.() ?? 0) - (a.updatedAt?.getTime?.() ?? 0))[0];
+  const row = pickForgeRow(rows, owner || repo ? { owner, repo } : {});
   if (!row) return null;
-  return { id: row.id, provider: row.provider, config: row.config as unknown as ForgeIntegrationConfig };
+  return {
+    id: row.id,
+    provider: row.provider,
+    config: row.config as unknown as ForgeIntegrationConfig,
+    updatedAt: row.updatedAt ?? null,
+  };
 }
 
 interface MapBindingRow {
@@ -79,6 +87,7 @@ interface MapBindingRow {
   githubRepoOwner: string | null;
   githubRepoName: string | null;
   workspaceId: string;
+  fleetCanEditCi: boolean;
 }
 
 async function loadMapBinding(mapId: string): Promise<MapBindingRow | undefined> {
@@ -88,6 +97,7 @@ async function loadMapBinding(mapId: string): Promise<MapBindingRow | undefined>
       githubRepoOwner: maps.githubRepoOwner,
       githubRepoName: maps.githubRepoName,
       workspaceId: maps.workspaceId,
+      fleetCanEditCi: maps.fleetCanEditCi,
     })
     .from(maps)
     .where(eq(maps.id, mapId));
@@ -95,17 +105,14 @@ async function loadMapBinding(mapId: string): Promise<MapBindingRow | undefined>
 }
 
 /**
- * The workspace's forge row, if it binds THIS map: the map names the
- * row's repo. A map without a repo of its own is unbound (#421).
+ * The workspace's forge row for THIS map's repo. A map without a repo of
+ * its own is unbound (#421).
  */
 async function patIntegrationForMap(
   map: MapBindingRow,
-): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
+): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig; updatedAt: Date | null } | null> {
   if (!map.githubRepoOwner || !map.githubRepoName) return null;
-  const integration = await getForgeIntegration(map.workspaceId);
-  if (!integration) return null;
-  const cfg = integration.config;
-  return cfg.owner === map.githubRepoOwner && cfg.repo === map.githubRepoName ? integration : null;
+  return getForgeIntegration(map.workspaceId, map.githubRepoOwner, map.githubRepoName);
 }
 
 /**
@@ -170,6 +177,74 @@ export async function getGitHubContextForMap(
 
 /** Forge-neutral name for `getGitHubContextForMap` — same function. */
 export const getForgeContextForMap = getGitHubContextForMap;
+
+/** Where a map's code lives, from its endpoint — no token. */
+export function ticketRepo(endpoint: ForgeEndpoint, owner: string, name: string): TicketRepo {
+  const web = endpoint.webBaseUrl.replace(/\/+$/, '');
+  return {
+    forge: endpoint.kind === 'gitea' ? 'gitea' : 'github',
+    owner,
+    name,
+    webUrl: `${web}/${owner}/${name}`,
+    cloneUrl: `${web}/${owner}/${name}.git`,
+    apiBaseUrl: endpoint.apiBaseUrl,
+  };
+}
+
+/**
+ * The map's repo for a worker (#507), resolved like `getForgeContextForMap`
+ * but without minting a token: the App binding first, else the workspace
+ * row that binds this map. null = no repo connected.
+ */
+export async function getForgeRepoForMap(mapId: string): Promise<TicketRepo | null> {
+  return (await getForgeBindingForMap(mapId))?.repo ?? null;
+}
+
+/**
+ * `getForgeRepoForMap` plus which credential serves the repo (#513) —
+ * the key catch-up records a refused fetch under, so Plan health blames
+ * the binding that failed, and a reconnect (new row timestamp) clears it.
+ */
+export async function getForgeBindingForMap(mapId: string): Promise<{ repo: TicketRepo; bindingKey: string } | null> {
+  const map = await loadMapBinding(mapId);
+  if (!map) return null;
+  if (map.githubInstallationId && map.githubRepoOwner && map.githubRepoName) {
+    return {
+      repo: ticketRepo(GITHUB_ENDPOINT, map.githubRepoOwner, map.githubRepoName),
+      bindingKey: appBindingKey(map.githubInstallationId),
+    };
+  }
+  const integration = await patIntegrationForMap(map);
+  if (!integration || !isServableIntegrationConfig(integration.config)) return null;
+  const endpoint = forgeEndpointFromIntegration(integration);
+  if (!endpoint) return null;
+  return {
+    repo: ticketRepo(endpoint, integration.config.owner, integration.config.repo),
+    bindingKey: rowBindingKey(integration),
+  };
+}
+
+/**
+ * The repo and a token for a fleet worker (#507) — the same binding
+ * `getForgeRepoForMap` reports, so the pull and the credentials never
+ * disagree (no PAT fallback when an App mint fails). An App-bound map
+ * gets a fresh token narrowed to this one repo (contents + pull requests,
+ * plus workflows when the map lets the fleet change CI);
+ * a PAT/OAuth row can't be narrowed, so its token goes out as is.
+ */
+export async function getFleetRepoCredentials(mapId: string): Promise<{ repo: TicketRepo; token: string } | null> {
+  const map = await loadMapBinding(mapId);
+  if (!map) return null;
+  if (map.githubInstallationId && map.githubRepoOwner && map.githubRepoName) {
+    const minted = await mintScopedRepoToken(map.githubInstallationId, map.githubRepoName, { workflows: map.fleetCanEditCi });
+    return { repo: ticketRepo(GITHUB_ENDPOINT, map.githubRepoOwner, map.githubRepoName), token: minted.token };
+  }
+  const integration = await patIntegrationForMap(map);
+  if (!integration || !isServableIntegrationConfig(integration.config)) return null;
+  const forge = await forgeFromIntegration(integration);
+  if (!forge) return null;
+  return { repo: ticketRepo(forge.endpoint, integration.config.owner, integration.config.repo), token: forge.token };
+}
 
 /**
  * The forge endpoint a map's binding points at, WITHOUT minting a token —

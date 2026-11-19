@@ -1,5 +1,5 @@
 /**
- * "Datei wählen → hochladen → URL zurückbekommen", as one button.
+ * "Choose file → upload → get URL back", as one button.
  *
  * Kept apart from PropertyPanel so the upload affordance can be dropped
  * next to any URL field (and into the reviewer-facing view, which a

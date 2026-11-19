@@ -9,6 +9,7 @@ import {
   parseAskDocument,
   planAskWrites,
   prependDecision,
+  replaceNextStep,
   decisionLine,
   decisionCommentBody,
   sortAsks,
@@ -62,6 +63,11 @@ describe('parseAskDocument', () => {
     expect(doc!.meta.tick).toBe('20260903T0800Z');
   });
 
+  it('a fleet-wide document keeps the same id on two maps apart, and the map_id on the item (#479)', () => {
+    const doc = parseAskDocument({ items: [ask({ id: '#1', map_id: 'a' }), ask({ id: '#1', map_id: 'b' }), ask({ id: '#1', map_id: 'a' }), ask({ id: '#1' })] });
+    expect(doc!.items.map((i) => [i.id, i.map_id])).toEqual([['#1', 'a'], ['#1', 'b'], ['#1', undefined]]);
+  });
+
   it('rejects anything without items[]', () => {
     expect(parseAskDocument({ meta: {} })).toBeNull();
     expect(parseAskDocument(null)).toBeNull();
@@ -79,14 +85,24 @@ describe('parseAskDocument', () => {
 
 describe('decision text', () => {
   it('is the apply script\'s line, on the issue and in the node', () => {
-    expect(decisionLine('Dan', 'skip', DATE)).toBe('Entscheid (Dan, 2026-09-03): skip');
-    expect(decisionCommentBody('Dan', 'skip', DATE)).toBe('**Entscheid (Dan, 2026-09-03): skip**\n\n_via /leidang-asks_');
+    expect(decisionLine('Dan', 'skip', DATE)).toBe('Decision (Dan, 2026-09-03): skip');
+    expect(decisionCommentBody('Dan', 'skip', DATE)).toBe('**Decision (Dan, 2026-09-03): skip**\n\n_via /leidang-asks_');
   });
 
   it('prepends to a string description and to an empty one', () => {
     expect(prependDecision('old text', 'L')).toBe('**L**\n\nold text');
     expect(prependDecision(null, 'L')).toBe('**L**');
     expect(prependDecision('', 'L')).toBe('**L**');
+  });
+
+  it('a step\'s decision takes the place of its next-step lines at the top (#619)', () => {
+    const desc = '**Next step (a person): allow it?**\n\n**Next step (a person): older**\n\nBody.\n\n**Next step (a person): further down stays**';
+    expect(replaceNextStep(desc, 'D')).toBe('**D**\n\nBody.\n\n**Next step (a person): further down stays**');
+    expect(replaceNextStep('**Next step (a person): x**', 'D')).toBe('**D**');
+    expect(replaceNextStep(null, 'D')).toBe('**D**');
+    const p = (text: string) => ({ type: 'paragraph', content: [{ type: 'text', text }] });
+    const out = replaceNextStep({ type: 'doc', content: [p('Next step (a person): x'), p('Body')] }, 'D') as { content: unknown[] };
+    expect(out.content).toEqual([{ type: 'paragraph', content: [{ type: 'text', text: 'D', marks: [{ type: 'bold' }] }] }, p('Body')]);
   });
 
   it('inserts a bold paragraph into a ProseMirror doc instead of corrupting it', () => {
@@ -185,6 +201,6 @@ describe('reading', () => {
     ];
     const d = digestAsks(rows, '2026-09-03T00:00:00Z');
     expect(d).toEqual({ answered: 1, later: 1, delegated: 1, tickets: ['#6823'], requeued: ['n1n1n1n1'], delegated_to: ['#3→Rita'], workerPending: [] });
-    expect(formatAskDigest(d, '2026-09-03')).toBe('/leidang-asks 2026-09-03: 1 beantwortet, 1 vertagt, 1 delegiert · Tickets #6823 · wieder pullbar: n1n1n1n1 · delegiert: #3→Rita');
+    expect(formatAskDigest(d, '2026-09-03')).toBe('/leidang-asks 2026-09-03: 1 answered, 1 deferred, 1 delegated · tickets #6823 · requeued: n1n1n1n1 · delegated: #3→Rita');
   });
 });

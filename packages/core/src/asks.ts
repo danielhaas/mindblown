@@ -6,9 +6,11 @@
  * the same question into one record keyed on its ticket, and pushes the
  * whole open set here every tick. MindBlown does NOT re-derive the list
  * from its own blocked nodes — that would be a second list that disagrees
- * with the terminal round. What this module owns is the reading (counts,
- * ordering, the "keine Frage" folds) and the write plan of an answer,
- * which mirrors `bin/leidang-asks-apply` line for line.
+ * with the terminal round. One exception: stalled work (core stalled.ts,
+ * `buildStalledAsk`) — no worker holds it, so no collector can ask. What this module owns is the reading (counts,
+ * ordering, the "no question" folds) and the write plan of an answer,
+ * which mirrors `bin/leidang-asks-apply` line for line. (The digest text
+ * is English here; the Python twin still prints German.)
  */
 
 export const ASK_ANSWERERS = ['Dan', 'Rita', 'Susi', 'Dana', 'Thomas', 'Kunde'] as const;
@@ -29,6 +31,12 @@ export const ASK_NO_QUESTION_HINTS: readonly AskHint[] = ['already-decided', 'pa
 /** One collected question — the collector's item verbatim (the contract). */
 export interface Ask {
   id: string;
+  /**
+   * The project this ask is about, set by a fleet-wide collector (#479)
+   * pushing to /api/fleets/:id/asks. Absent = fleet-level (no project).
+   * A push through /api/maps/:id/asks belongs to that map regardless.
+   */
+  map_id?: string;
   ticket: number | null;
   requirement: string | null;
   title: string | null;
@@ -84,7 +92,16 @@ export interface AskAnswerInput {
   milestone?: string;
   noRequeue?: boolean;
   delegateTo?: string;
+  /**
+   * A step row's free-text answer is a decision (#619); this is what
+   * happens to the ticket after it: `fleet` (default) hands it back,
+   * `done` closes it, `mine` keeps the step with the text as its next step.
+   */
+  next?: StepFollowUp;
 }
+
+/** What a decision on a step row does to the ticket — see AskAnswerInput.next. */
+export type StepFollowUp = 'fleet' | 'done' | 'mine';
 
 /** One planned or executed write, as the ledger records it. */
 export interface AskWrite {
@@ -106,6 +123,8 @@ export interface AskWrite {
 /** A stored ask: the collector item plus MindBlown's answer state. */
 export interface AskRow {
   ask: Ask;
+  /** The project the ask is about; null = fleet-level (#479). Absent from pre-#479 servers. */
+  mapId?: string | null;
   status: AskStatus;
   /** When the collector last included this question. */
   pushedAt: string;
@@ -175,6 +194,7 @@ export function parseAsk(raw: unknown): Ask | null {
     moot: o.moot === true,
     ...(o.stale === true ? { stale: true } : {}),
     ...(typeof o.ticket_state === 'string' ? { ticket_state: o.ticket_state } : {}),
+    ...(typeof o.map_id === 'string' && o.map_id !== '' ? { map_id: o.map_id } : {}),
   };
 }
 
@@ -187,8 +207,10 @@ export function parseAskDocument(raw: unknown): AskDocument | null {
   const seen = new Set<string>();
   for (const it of o.items) {
     const a = parseAsk(it);
-    if (!a || seen.has(a.id)) continue;
-    seen.add(a.id);
+    // Unique per (id, map): a fleet-wide collector may carry `#12` of two projects (#479).
+    const key = `${a?.id}\u0000${a?.map_id ?? ''}`;
+    if (!a || seen.has(key)) continue;
+    seen.add(key);
     items.push(a);
   }
   const meta = (o.meta && typeof o.meta === 'object' ? o.meta : {}) as AskDocumentMeta;
@@ -197,9 +219,9 @@ export function parseAskDocument(raw: unknown): AskDocument | null {
 
 // ── the answer, as text ────────────────────────────────────────────
 
-/** `Entscheid (Dan, 2026-09-03): …` — the same line on the issue and in the node. */
+/** `Decision (Dan, 2026-09-03): …` — the same line on the issue and in the node. */
 export function decisionLine(by: string, decision: string, date: string): string {
-  return `Entscheid (${by}, ${date}): ${decision}`;
+  return `Decision (${by}, ${date}): ${decision}`;
 }
 
 /** Body of the GitHub comment `leidang-asks-apply` posts. */
@@ -227,6 +249,35 @@ export function prependDecision(description: unknown, line: string): unknown {
     }
   }
   return `**${line}**`;
+}
+
+const NEXT_STEP_LINE = /^\*\*Next step \(a person\):[^\n]*\*\*[ \t]*(?:\n[ \t]*)*/;
+
+function pmText(node: unknown): string {
+  const n = node as { text?: unknown; content?: unknown[] };
+  return typeof n?.text === 'string' ? n.text : Array.isArray(n?.content) ? n.content.map(pmText).join('') : '';
+}
+
+/**
+ * Put a decision where the step's "Next step (a person): …" lines were
+ * (#619): the step is answered, so its lines at the top go and the
+ * decision takes their place. Lines further down are the node's text.
+ */
+export function replaceNextStep(description: unknown, line: string): unknown {
+  if (typeof description === 'string') {
+    let rest = description;
+    while (NEXT_STEP_LINE.test(rest)) rest = rest.replace(NEXT_STEP_LINE, '');
+    return prependDecision(rest, line);
+  }
+  if (description && typeof description === 'object') {
+    const doc = description as { type?: string; content?: unknown[] };
+    if (doc.type === 'doc' && Array.isArray(doc.content)) {
+      let i = 0;
+      while (i < doc.content.length && /^\s*Next step \(a person\):/.test(pmText(doc.content[i]))) i++;
+      return prependDecision({ ...doc, content: doc.content.slice(i) }, line);
+    }
+  }
+  return prependDecision(description, line);
 }
 
 // ── the write plan ─────────────────────────────────────────────────
@@ -317,6 +368,49 @@ export function sortAsks<T extends { ask: Ask }>(rows: T[]): T[] {
   );
 }
 
+/** A question split for reading: the lead, the numbered sub-questions, and what follows them. */
+export interface QuestionParts {
+  lead: string;
+  items: string[];
+  tail: string;
+}
+
+const ITEM_LINE = /^(?:\(\d{1,2}\)|\d{1,2}[.)]|[-*•])\s+/;
+const INLINE_MARKER = /\((\d{1,2})\)\s+/g;
+
+/**
+ * Agents write several sub-questions into one paragraph — "…needs your call
+ * on four things. (1) The path … (2) Android … (3) iOS … (4) Keycloak …" —
+ * which the card printed as one block (21.10.2026). Numbered or bulleted
+ * lines, or inline "(1) … (2) …" counting up from 1, become items; anything
+ * else stays one paragraph.
+ */
+export function questionParts(text: string): QuestionParts {
+  const t = (text ?? '').trim();
+  const lines = t.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const itemIdx = lines.flatMap((l, i) => (ITEM_LINE.test(l) ? [i] : []));
+  if (itemIdx.length >= 2) {
+    const first = itemIdx[0];
+    const last = itemIdx[itemIdx.length - 1];
+    const items: string[] = [];
+    for (let i = first; i <= last; i++) {
+      if (ITEM_LINE.test(lines[i])) items.push(lines[i].replace(ITEM_LINE, ''));
+      else items[items.length - 1] += ` ${lines[i]}`; // a wrapped item line
+    }
+    return { lead: lines.slice(0, first).join('\n'), items, tail: lines.slice(last + 1).join('\n') };
+  }
+  // Inline "(1) … (2) …": only markers counting up from 1, so "(3 tickets)" or a stray "(2)" stay text.
+  const seq: RegExpExecArray[] = [];
+  for (const m of t.matchAll(INLINE_MARKER)) {
+    if (Number(m[1]) === seq.length + 1) seq.push(m as RegExpExecArray);
+  }
+  if (seq.length >= 2) {
+    const items = seq.map((m, i) => t.slice(m.index! + m[0].length, i + 1 < seq.length ? seq[i + 1].index : undefined).trim());
+    return { lead: t.slice(0, seq[0].index).trim(), items, tail: '' };
+  }
+  return { lead: t, items: [], tail: '' };
+}
+
 /** Not a question for the answerer: the text already is the decision, or Dan parked it himself. */
 export function isNoQuestion(ask: Ask): boolean {
   return (ASK_NO_QUESTION_HINTS as readonly string[]).includes(ask.hint);
@@ -383,10 +477,10 @@ export function digestAsks(rows: AskRow[], since?: string | null): AskDigest {
 /** One line, as the Pushover digest reads it. */
 export function formatAskDigest(d: AskDigest, runLabel: string): string {
   return (
-    `/leidang-asks ${runLabel}: ${d.answered} beantwortet, ${d.later} vertagt, ${d.delegated} delegiert` +
-    (d.tickets.length ? ` · Tickets ${d.tickets.join(', ')}` : '') +
-    (d.requeued.length ? ` · wieder pullbar: ${d.requeued.join(', ')}` : ' · wieder pullbar: keine') +
-    (d.delegated_to.length ? ` · delegiert: ${d.delegated_to.join(', ')}` : '') +
-    (d.workerPending.length ? ` · Worker-Notiz ausstehend: ${d.workerPending.join(', ')}` : '')
+    `/leidang-asks ${runLabel}: ${d.answered} answered, ${d.later} deferred, ${d.delegated} delegated` +
+    (d.tickets.length ? ` · tickets ${d.tickets.join(', ')}` : '') +
+    (d.requeued.length ? ` · requeued: ${d.requeued.join(', ')}` : ' · requeued: none') +
+    (d.delegated_to.length ? ` · delegated: ${d.delegated_to.join(', ')}` : '') +
+    (d.workerPending.length ? ` · worker note pending: ${d.workerPending.join(', ')}` : '')
   );
 }

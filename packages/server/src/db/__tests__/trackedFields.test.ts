@@ -3,12 +3,12 @@
  *
  * The list of tracked fields is a plain Set, so a field can only be
  * "audited" or "invisible" — there is no partial state and no error when a
- * field is missing, which is why the omission of the Abnahme fields went
+ * field is missing, which is why the omission of the acceptance fields went
  * unnoticed. These cases assert on the emitted events rather than on the
- * Set's membership: the point is that an edit to the Prüfanleitung leaves a
+ * Set's membership: the point is that an edit to the how-to-verify text leaves a
  * row behind, not that a string appears in a list.
  *
- * Why it matters for the Abnahme surface specifically: the verdicts are
+ * Why it matters for the acceptance surface specifically: the verdicts are
  * append-only, but the text a reviewer signed off against was not. Without
  * these events the register can say who accepted a requirement and cannot
  * say what the requirement told him to check at the time.
@@ -35,7 +35,7 @@ const MAP_ID = 'mmmm-mmmm';
 const NODE_ID = 'nnnn-nnnn';
 const USER_ID = 'uuuu-uuuu';
 
-const ANLEITUNG = '1. Als Treuhänder einloggen\n2. Mandat öffnen';
+const HOW_TO_VERIFY = '1. Als Treuhänder einloggen\n2. Mandat öffnen';
 
 /** The field/old/new triples the log would have written. */
 function loggedFields(): LoggedRow[] {
@@ -51,14 +51,14 @@ beforeEach(() => {
   insertMock.mockClear();
 });
 
-describe('recordFieldChanges — Abnahme fields', () => {
-  it('records an event when the Prüfanleitung text is rewritten', async () => {
+describe('recordFieldChanges — acceptance fields', () => {
+  it('records an event when the how-to-verify text is rewritten', async () => {
     await recordFieldChanges(
       MAP_ID,
       NODE_ID,
       USER_ID,
-      { verificationText: ANLEITUNG },
-      { verificationText: ANLEITUNG + '\n3. Badge prüfen' },
+      { verificationText: HOW_TO_VERIFY },
+      { verificationText: HOW_TO_VERIFY + '\n3. Badge prüfen' },
     );
 
     // Both values, not just the field name: reconstructing what was signed
@@ -66,8 +66,8 @@ describe('recordFieldChanges — Abnahme fields', () => {
     expect(loggedFields()).toEqual([
       {
         fieldName: 'verificationText',
-        oldValue: ANLEITUNG,
-        newValue: ANLEITUNG + '\n3. Badge prüfen',
+        oldValue: HOW_TO_VERIFY,
+        newValue: HOW_TO_VERIFY + '\n3. Badge prüfen',
       },
     ]);
   });
@@ -95,27 +95,27 @@ describe('recordFieldChanges — Abnahme fields', () => {
   });
 
   it('records the first write, when the field goes from unset to set', async () => {
-    // Annotating a requirement that never had a Prüfanleitung is the common
+    // Annotating a requirement that never had how-to-verify text is the common
     // case; null → text must not be mistaken for "nothing changed".
     await recordFieldChanges(
       MAP_ID,
       NODE_ID,
       USER_ID,
       { verificationText: null },
-      { verificationText: ANLEITUNG },
+      { verificationText: HOW_TO_VERIFY },
     );
     expect(loggedFields()).toEqual([
-      { fieldName: 'verificationText', oldValue: null, newValue: ANLEITUNG },
+      { fieldName: 'verificationText', oldValue: null, newValue: HOW_TO_VERIFY },
     ]);
   });
 
-  it('stays silent when the Abnahme fields are untouched', async () => {
+  it('stays silent when the acceptance fields are untouched', async () => {
     await recordFieldChanges(
       MAP_ID,
       NODE_ID,
       USER_ID,
-      { text: 'before', verificationText: ANLEITUNG },
-      { text: 'after', verificationText: ANLEITUNG },
+      { text: 'before', verificationText: HOW_TO_VERIFY },
+      { text: 'after', verificationText: HOW_TO_VERIFY },
     );
     expect(loggedFields().map((e) => e.fieldName)).toEqual(['text']);
   });

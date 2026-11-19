@@ -110,6 +110,12 @@ NODE_ENV=production
 # SMTP_PASS=CHANGE-ME
 # MAIL_FROM=MindBlown <noreply@example.com>
 
+# Optional — Pushover push when tickets wait for approval (#493): one
+# push per map per hour at most, one reminder per ticket after 24 h.
+# Unset = nothing is sent.
+# PUSHOVER_APP_TOKEN=CHANGE-ME
+# PUSHOVER_USER_KEY=CHANGE-ME
+
 # Optional — Heartbeat-push URLs for GitHub-sync observability.
 # Without these, the API still runs the catchup loop + drift audit,
 # but silent failures have no external alarm. See below.

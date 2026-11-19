@@ -77,7 +77,7 @@ import { forgeEndpointForMapCached } from '../lib/forge.js';
 import { backfillMap, resolveIngestVersionId } from '../sync/githubIngest.js';
 import { sdNotifyWatchdog } from '../sync/sdNotify.js';
 import { importGitHubIssues, issueWebUrl } from '@mindblown/integrations';
-import type { ExternalLink } from '@mindblown/core';
+import type { ExternalLink, NodeReporter } from '@mindblown/core';
 import { triagePipelineState } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { NO_FORGE_MESSAGE } from '../services/forgeIssue.js';
@@ -570,8 +570,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           // IS in the map (parked under the Inbox) — listing it here
           // would break this endpoint's contract ("every GitHub
           // ticket that is NOT currently a node in this map") and
-          // point remediation at already-linked issues.
-          if (row.decision === 'uncertain' && row.placedNodeId != null) continue;
+          // point remediation at already-linked issues. A trusted
+          // reporter's skip is parked the same way (#599).
+          if (row.placedNodeId != null) continue;
           let kind: DecisionItem['kind'];
           if (row.decision === 'uncertain') {
             kind = 'uncertain';
@@ -1157,6 +1158,8 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             parentId: parentNodeId,
             text: `#${parseIssueNumber(externalId)} ${issueTitle}`,
             createdBy: userId,
+            // No reporter (#492): the author is unknown here, and one from the
+            // request body could be forged. The node waits for approval.
             percentComplete: isClosed ? 100 : 0,
             status: isClosed ? 'done' : 'todo',
           },
@@ -1807,6 +1810,8 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
               parentId: body.parentNodeId as string,
               text: `#${parseIssueNumber(row.externalId)} ${row.issueTitle}`,
               createdBy: userId,
+              // The issue author, not the operator (#492): placing is not approving.
+              reportedBy: (row.issueReporter as NodeReporter | null) ?? null,
               percentComplete: isClosed ? 100 : 0,
               status: isClosed ? 'done' : 'todo',
             },
@@ -2597,6 +2602,8 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
                   parentId: parentNodeId,
                   text: `#${parseIssueNumber(row.externalId)} ${row.issueTitle}`,
                   createdBy: userId,
+                  // The issue author, not the operator (#492): placing is not approving.
+                  reportedBy: (row.issueReporter as NodeReporter | null) ?? null,
                   percentComplete: isClosed ? 100 : 0,
                   status: isClosed ? 'done' : 'todo',
                 },

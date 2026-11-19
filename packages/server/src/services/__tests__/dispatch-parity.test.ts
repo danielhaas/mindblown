@@ -27,6 +27,7 @@ const WORKFLOW: StatusDef[] = [
 
 function n(p: Partial<CoreNode> & { id: string }): CoreNode {
   return {
+    approval: { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' },
     mapId: 'm',
     parentId: 'root',
     childrenIds: [],
@@ -95,5 +96,33 @@ describe('dispatchQueueSnapshot ⇔ selectPullCandidates', () => {
     expect(dispatchQueueSnapshot(fixture, { workflow: WORKFLOW, cap: 0, gate: [] }).state).toBe('hold');
     expect(selectPullCandidates(fixture, { workflow: WORKFLOW, cap: 1, gate: [], policy: [] }).reason).toBe('cap');
     expect(dispatchQueueSnapshot(fixture, { workflow: WORKFLOW, cap: 1, gate: [] }).state).toBe('full');
+  });
+});
+
+describe('"Fleet can fix it" check runs (fleet-check)', () => {
+  it('a fleet-check ticket goes first — past its blocker, its status and the gate; claimed or done ones do not', () => {
+    const nodes = [
+      ...fixture,
+      n({ id: 'check', status: 'in_progress', blockedReason: 'agent exited with 1', tags: ['fleet-check'] }),
+      n({ id: 'checkClaimed', blockedReason: 'x', tags: ['fleet-check'], claimedBySession: 's2' }),
+      n({ id: 'checkDone', status: 'done', blockedReason: 'x', tags: ['fleet-check'] }),
+      // Not past the approval gate (#492): nobody trusted let this brief through.
+      n({ id: 'checkProposed', blockedReason: 'x', tags: ['fleet-check'], approval: { state: 'proposed', merge: 'pr-only', by: null, at: '2026-10-28T00:00:00.000Z' } }),
+      // …nor under a proposed parent, approved itself or not.
+      n({ id: 'propParent', childrenIds: ['checkUnder'], approval: { state: 'proposed', merge: 'pr-only', by: null, at: '2026-10-28T00:00:00.000Z' } }),
+      n({ id: 'checkUnder', parentId: 'propParent', blockedReason: 'x', tags: ['fleet-check'] }),
+    ];
+    const d = selectPullCandidates(nodes, { workflow: WORKFLOW, cap: 10, gate: ['version:v2'], policy: [] });
+    expect(d.ranked[0].id).toBe('check');
+    expect(d.ranked.map((x) => x.id)).not.toContain('checkClaimed');
+    expect(d.ranked.map((x) => x.id)).not.toContain('checkDone');
+    expect(d.ranked.map((x) => x.id)).not.toContain('checkProposed');
+    expect(d.ranked.map((x) => x.id)).not.toContain('checkUnder');
+    expect(d.ranked.filter((x) => x.id === 'check')).toHaveLength(1);
+  });
+
+  it('a held map (cap 0) hands out no check run either', () => {
+    const d = selectPullCandidates([...fixture, n({ id: 'check', blockedReason: 'x', tags: ['fleet-check'] })], { workflow: WORKFLOW, cap: 0, gate: [], policy: [] });
+    expect(d.ranked).toEqual([]);
   });
 });

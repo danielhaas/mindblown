@@ -65,6 +65,50 @@ export function isForgeLink(link: { provider: string }): boolean {
 export type ForgeKindName = 'github' | 'gitea';
 
 /**
+ * A map that names a repo but cannot reach it (#513): no connection binds
+ * the repo (`unbound`), or the forge refuses the binding's token
+ * (`refused`, 401/403 in catch-up). Every forge path for the map stops
+ * silently in both cases, so the plan linter, the forge settings and the
+ * Fleet tab say it out loud. `message` is the sentence all three show.
+ */
+/**
+ * Who reported a node (#490): a MindBlown user (UI, REST, MCP key, intake)
+ * or the author of the forge issue it was ingested from.
+ */
+export type NodeReporter =
+  | { kind: 'user'; userId: string }
+  | { kind: 'forge'; provider: ForgeKindName; login: string };
+
+/** The authenticated user as reporter; null when there is none. */
+export function userReporter(userId: string | null | undefined): NodeReporter | null {
+  return userId ? { kind: 'user', userId } : null;
+}
+
+/**
+ * The approval stamp (#492): whether the fleet may run a node. Stamped once
+ * at creation from the map's trust policy (core `approvalAtCreation`); a
+ * trusted person changes it later (#494). Fail-closed: the pull queue runs
+ * only `approved` nodes, so a node without a stamp waits.
+ */
+export type ApprovalState = 'proposed' | 'approved' | 'rejected';
+
+export interface NodeApproval {
+  state: ApprovalState;
+  /** What the fleet may do once approved: merge itself, or stop at an open PR. */
+  merge: 'auto' | 'pr-only';
+  /** The user who decided; null = by the trust policy at creation, or by the #492 backfill. */
+  by: string | null;
+  at: string; // ISO 8601
+}
+
+export interface ForgeProblem {
+  kind: 'unbound' | 'refused';
+  /** `owner/repo` the map names. */
+  repo: string;
+  message: string;
+}
+
+/**
  * Human name of a forge for labels, tooltips and notices: 'Gitea' for a
  * Gitea/Forgejo link or map, 'GitHub' otherwise (also the fallback while
  * the kind is unknown). Pass a link's `provider` or a map's `forgeKind`.
@@ -317,6 +361,15 @@ export interface Node {
    */
   startedAt: string | null;
 
+  /**
+   * ISO 8601 timestamp of when the worker on this node expects to be done —
+   * its own ETA, set when it starts (set_progress etaMinutes, or update_node
+   * expectedDoneAt). Kept through done so the promise can be compared with
+   * completedAt; cleared together with startedAt when the node goes back to
+   * todo. Shown on In-Progress Kanban cards ("overdue" once past).
+   */
+  expectedDoneAt: string | null;
+
   // ── Orchestration substrate (#111) ────────────────────────────
 
   /**
@@ -364,7 +417,7 @@ export interface Node {
    */
   requirementId: string | null;
 
-  /** MoSCoW-style requirement priority (Muss/Soll/Kann). */
+  /** MoSCoW-style requirement priority (must/should/could). */
   requirementPriority: 'must' | 'should' | 'could' | null;
 
   /**
@@ -385,7 +438,7 @@ export interface Node {
    */
   phaseId: string | null;
   /**
-   * How to verify this requirement (Prüfanleitung): markdown with numbered
+   * How to verify this requirement: markdown with numbered
    * steps, expected result and test data, written for a non-technical
    * reviewer. Rendered on the review surface next to the accept/reject
    * actions. Like `requirementText`, NOT in the GitHub SYNC_FIELDS.
@@ -402,7 +455,7 @@ export interface Node {
    * Link to a short demo video showing the requirement in action (e.g. a
    * screen recording). Rendered as a "watch video" button on the review
    * surface next to `verificationUrl`. Optional companion to the written
-   * Prüfanleitung — a non-technical reviewer who can't follow the steps
+   * how-to-verify text — a non-technical reviewer who can't follow the steps
    * can watch instead. Like the other two, NOT in the GitHub SYNC_FIELDS.
    */
   verificationVideoUrl: string | null;
@@ -440,6 +493,18 @@ export interface Node {
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
   createdBy: UserId;
+  /**
+   * Who asked for this node (#490). Set once at creation, never changed by
+   * later edits, never accepted from callers. null = unknown (created
+   * before the column existed).
+   */
+  reportedBy: NodeReporter | null;
+  /**
+   * The approval stamp (#492). Set by the server at creation, never accepted
+   * from callers. null = no stamp (the map root, or a write path that
+   * skipped it) — the pull queue holds it like `proposed`.
+   */
+  approval: NodeApproval | null;
   // Bumps on every successful update. Clients send their last-seen value
   // as expectedRevision so concurrent edits don't silently clobber.
   revision: number;
@@ -489,14 +554,14 @@ export interface CustomFieldDef {
 }
 
 /**
- * A project phase (e.g. "M1 – Grundgerüst"). Lives on the map (same
+ * A project phase (e.g. "M1 – Foundation"). Lives on the map (same
  * pattern as StatusDef in `statusWorkflow`); nodes reference it via
  * `Node.phaseId`. Stable `id` so phases can be renamed without touching
  * nodes; `position` is the canonical phase order.
  */
 export interface PhaseDef {
   id: string; // stable — rename without touching nodes
-  name: string; // e.g. 'M1 – Grundgerüst'
+  name: string; // e.g. 'M1 – Foundation'
   position: number; // canonical sort order
   color?: string; // optional hex, unused in v1 UI
   targetDate?: string | null; // optional ISO date; deliberately in the model, unused in v1
@@ -572,6 +637,12 @@ export interface Fleet {
   name: string;
   ownerId: UserId;
   maxActiveClaims: number;
+  /**
+   * Hand blocked tickets to the fleet without a click: every blocker that has
+   * sat for a while gets one automatic "Fleet can fix it" (server
+   * services/derivedAsks autoCheckBlockers). On by default for a new fleet.
+   */
+  autoCheckBlockers: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -593,6 +664,8 @@ export interface FleetWithMaps extends Fleet {
   hiddenMapCount: number;
   /** The reader owns the fleet: may rename it, set its cap, connect maps. */
   isOwner: boolean;
+  /** Claims held now across every connected map (#480) — set against `maxActiveClaims`. */
+  activeClaims?: number;
 }
 
 export interface MindMap {
@@ -735,6 +808,15 @@ export interface MindMap {
    * fleet or is the fleet's only map.
    */
   fleetShare: number;
+  /**
+   * The fleet's repo token may change CI workflows (`.github/workflows/*`).
+   * Off by default: CI code can read the repo's secrets, so fleet-written
+   * code doesn't get to change it (#507). The setup wizard turns it on for
+   * a repo it creates, which has no secrets yet. GitHub App maps only; a
+   * PAT/OAuth token goes out as is anyway. Cleared when the map's repo
+   * changes. Only the map's creator turns it on; any admin turns it off. Server source: `maps.fleet_can_edit_ci`.
+   */
+  fleetCanEditCi?: boolean;
   /** Name of `fleetId`, derived at read time by GET /api/maps/:id. Not stored. */
   fleetName?: string | null;
 
@@ -743,6 +825,12 @@ export interface MindMap {
   updatedAt: string;
   createdBy: UserId;
   archivedAt: string | null;
+  /**
+   * Guided onboarding (setup.ts): when the owner finished or dismissed the
+   * setup checklist. null = a new project still showing it. Maps from
+   * before the checklist count as set up. Absent = unknown, never shown.
+   */
+  setupCompletedAt?: string | null;
 
   // ── GitHub integration ──────────────────────────────────
   githubInstallationId?: string | null;
@@ -771,6 +859,11 @@ export interface MindMap {
    * The UI labels links, the inbox and the settings with it (`forgeLabel`).
    */
   forgeKind?: ForgeKindName | null;
+  /**
+   * Derived at read time like `forgeKind`: set when the map names a repo
+   * it cannot reach (#513). null = fine, or no repo named.
+   */
+  forgeProblem?: ForgeProblem | null;
   /**
    * Per-map opt-in for the AI triage pipeline. When true, new GitHub
    * issues bound to this map go through the LLM triage classifier

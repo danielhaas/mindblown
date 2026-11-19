@@ -159,21 +159,34 @@ export async function mintInstallationToken(installationId: string): Promise<str
 
   const appJwt = await mintAppJwt();
 
-  const res = await fetch(
-    `${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`,
-    {
+  const mint = (permissions: Record<string, string>) =>
+    fetch(`${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`, {
       method: 'POST',
       headers: {
         Accept: 'application/vnd.github+json',
         Authorization: `Bearer ${appJwt}`,
         'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
       },
-    },
-  );
+      body: JSON.stringify({ permissions }),
+    });
+  // Narrowed to what sync and import use: never the App's Administration
+  // right, which is there only for users creating repos with their own
+  // token. An App without the CI reads (GitHub answers 422) gets the rest.
+  let res = await mint({ ...SERVER_TOKEN_PERMISSIONS, ...FLEET_TOKEN_CI_PERMISSIONS });
+  if (res.status === 422) res = await mint(SERVER_TOKEN_PERMISSIONS);
+  if (res.status === 422) {
+    // An installation that never accepted a later permission (contents,
+    // pull requests) still syncs issues rather than nothing.
+    console.warn(`[github-app] installation ${installationId}: contents/pull_requests not granted — token limited to issues`);
+    res = await mint(SERVER_TOKEN_MINIMUM);
+  }
 
   if (!res.ok) {
     const body = await res.text();
-    if (res.status === 401 || res.status === 404) {
+    // 403 = a suspended installation: a refused binding like 401/404, so
+    // catch-up doesn't count it against the watchdog (incident 2026-10-23).
+    if (res.status === 401 || res.status === 403 || res.status === 404) {
       // `GitHubApiError`'s constructor formats the message as
       // `GitHub API <status>: <body>`, which slots into the catchup
       // token-resolution catch the same way a fetch-401 from `github.ts`
@@ -194,6 +207,63 @@ export async function mintInstallationToken(installationId: string): Promise<str
 
   _tokenCache.set(installationId, installationToken);
   return installationToken.token;
+}
+
+/** What the server's own installation token does: issues, PRs, contents (docs, labels). */
+const SERVER_TOKEN_PERMISSIONS = { contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read' } as const;
+/** The floor: issue sync and import. */
+const SERVER_TOKEN_MINIMUM = { issues: 'write', metadata: 'read' } as const;
+
+/** What a fleet worker does with the repo: push a branch, open and merge the PR. */
+const FLEET_TOKEN_PERMISSIONS = { contents: 'write', pull_requests: 'write' } as const;
+/** And what it reads to merge on green CI (claude-fleet#74). Optional: an App without them still works. */
+const FLEET_TOKEN_CI_PERMISSIONS = { checks: 'read', statuses: 'read' } as const;
+/** Changing `.github/workflows/*` — only on a map that allows it (`fleetCanEditCi`). */
+const FLEET_TOKEN_WORKFLOW_PERMISSIONS = { workflows: 'write' } as const;
+
+/**
+ * A token narrowed to one repo and the permissions a fleet worker needs —
+ * minted fresh, never cached, never the server's own token (mindblown#507).
+ * It expires on its own within an hour; GitHub can't revoke it early on
+ * unpick. CI read access is asked for first; an App that lacks it (GitHub
+ * answers 422) gets a token without it, and the worker then reports "no
+ * CI" instead of merging.
+ *
+ * `workflows` (the map's `fleetCanEditCi`) adds write access to CI
+ * workflows. An App without that permission gets the token without it,
+ * and the push of a workflow file fails as before.
+ */
+export async function mintScopedRepoToken(
+  installationId: string,
+  repo: string,
+  opts: { workflows?: boolean } = {},
+): Promise<{ token: string; expiresAt: string }> {
+  const appJwt = await mintAppJwt();
+  const mint = (permissions: Record<string, string>) =>
+    fetch(`${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${appJwt}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ repositories: [repo], permissions }),
+    });
+  let res: Response | undefined;
+  if (opts.workflows) {
+    res = await mint({ ...FLEET_TOKEN_PERMISSIONS, ...FLEET_TOKEN_CI_PERMISSIONS, ...FLEET_TOKEN_WORKFLOW_PERMISSIONS });
+    if (res.status === 422) console.warn(`[github-app] installation ${installationId}: workflows not granted — fleet token for ${repo} can't change CI`);
+  }
+  if (!res || res.status === 422) res = await mint({ ...FLEET_TOKEN_PERMISSIONS, ...FLEET_TOKEN_CI_PERMISSIONS });
+  if (res.status === 422) res = await mint(FLEET_TOKEN_PERMISSIONS);
+  if (!res.ok) {
+    const body = await res.text();
+    if (res.status === 401 || res.status === 404 || res.status === 422) throw new GitHubApiError(res.status, body, 'github');
+    throw new Error(`Failed to mint a scoped installation token: ${res.status} ${body}`);
+  }
+  const data = (await res.json()) as { token: string; expires_at: string };
+  return { token: data.token, expiresAt: data.expires_at };
 }
 
 // ── Repository Listing ───────────────────────────────────────────
@@ -378,34 +448,6 @@ export async function getGitHubUser(accessToken: string): Promise<GitHubUser> {
   return (await res.json()) as GitHubUser;
 }
 
-/**
- * Fetch installation details (account login, type, etc.)
- */
-export async function getInstallationDetails(installationId: string): Promise<{
-  id: number;
-  account: GitHubInstallationAccount;
-}> {
-  const appJwt = await mintAppJwt();
-
-  const res = await fetch(
-    `${GITHUB_API_BASE}/app/installations/${installationId}`,
-    {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${appJwt}`,
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    },
-  );
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Failed to fetch installation: ${res.status} ${body}`);
-  }
-
-  return (await res.json()) as { id: number; account: GitHubInstallationAccount };
-}
-
 // ── Install URL ──────────────────────────────────────────────────
 
 /**
@@ -426,27 +468,75 @@ export function buildOAuthAuthorizeUrl(state: string): string {
 }
 
 /**
- * List all installations of the GitHub App that a user has access to.
- * Uses the App JWT (not a user token).
+ * Walk a user-token list endpoint that answers with an envelope
+ * (`{ total_count, <key>: [...] }`), following `Link: rel="next"` with the
+ * same page ceiling and origin guard as `listInstallationRepositories`.
  */
-export async function listAppInstallations(): Promise<Array<{
+async function walkUserEnvelope<T>(accessToken: string, firstUrl: string, key: string): Promise<T[]> {
+  const MAX_PAGES = 100;
+  const items: T[] = [];
+  let url: string | null = firstUrl;
+  let pages = 0;
+  while (url) {
+    const page: GitHubPage<Record<string, unknown> & { total_count: number }> =
+      await githubFetchPage(url, new GitHubForge({ token: accessToken }));
+    items.push(...((page.data[key] as T[] | undefined) ?? []));
+    pages += 1;
+    if (items.length >= page.data.total_count) break;
+    if (!page.nextUrl || pages >= MAX_PAGES) break;
+    assertSamePaginationOrigin(firstUrl, page.nextUrl);
+    url = page.nextUrl;
+  }
+  return items;
+}
+
+/**
+ * The App's installations this GitHub user can reach, read with the
+ * user's own access token. This is the ownership answer: an
+ * installation_id from a redirect or a request body is only the caller's
+ * when it is in this list (GitHub's setup-URL docs say as much).
+ */
+export async function listUserInstallations(accessToken: string): Promise<Array<{
   id: number;
   account: GitHubInstallationAccount;
 }>> {
-  const appJwt = await mintAppJwt();
+  return walkUserEnvelope(accessToken, `${GITHUB_API_BASE}/user/installations?per_page=100`, 'installations');
+}
 
-  const res = await fetch(`${GITHUB_API_BASE}/app/installations`, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${appJwt}`,
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
+/**
+ * The repos of one installation that this user can reach — not every repo
+ * the App sees there. An org member with access to one repo of an org-wide
+ * installation gets that repo here, not its neighbours. GitHub answers
+ * 403/404 when the installation is not the user's at all.
+ */
+export async function listUserInstallationRepositories(accessToken: string, installationId: string): Promise<GitHubRepo[]> {
+  return walkUserEnvelope(
+    accessToken,
+    `${GITHUB_API_BASE}/user/installations/${encodeURIComponent(installationId)}/repositories?per_page=100`,
+    'repositories',
+  );
+}
+
+/** What a new repository gets; the same shape serves GitHub and Gitea. */
+export interface NewRepositoryInput {
+  name: string;
+  private: boolean;
+  description?: string;
+}
+
+/**
+ * Create a repository with the user's own access token: in their account,
+ * or in `org` when given. Seeded with a README (`auto_init`) so it has a
+ * default branch for agents to branch from. An App user token needs the
+ * App's "Administration: write" permission (GitHub answers 403 without it).
+ */
+export async function createGitHubRepository(
+  accessToken: string,
+  input: NewRepositoryInput & { org?: string },
+): Promise<GitHubRepo> {
+  const path = input.org ? `/orgs/${encodeURIComponent(input.org)}/repos` : '/user/repos';
+  return new GitHubForge({ token: accessToken }).requestJson<GitHubRepo>(path, {
+    method: 'POST',
+    body: { name: input.name, private: input.private, description: input.description || undefined, auto_init: true },
   });
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Failed to list installations: ${res.status} ${body}`);
-  }
-
-  return (await res.json()) as Array<{ id: number; account: GitHubInstallationAccount }>;
 }

@@ -11,6 +11,7 @@ import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { ReleaseForecastResponse, ReleaseForecastRow } from './api.js';
 import { statusCategory } from './viewScope.js';
+import { localDateTime } from './localTime.js';
 import {
   openReleases,
   releaseVerdict,
@@ -217,7 +218,7 @@ export function DigestView() {
           : ''}
         Detail lives in the{' '}
         <Link onClick={() => setActiveView('releases')}>Releases</Link> tab. Forecast snapshot:{' '}
-        {forecast.lastSnapshotAt ? forecast.lastSnapshotAt.slice(0, 16).replace('T', ' ') : 'none yet'}.
+        {forecast.lastSnapshotAt ? localDateTime(new Date(forecast.lastSnapshotAt)) : 'none yet'}.
       </div>
     </Shell>
   );

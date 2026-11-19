@@ -273,6 +273,94 @@ describe('GiteaForge wire format', () => {
     expect(await forge.listPullRequestFiles('dan', 'r', 4)).toEqual(['NOTES.md', 'packages/two.ts']);
     expect(t.calls[0].url).toBe('https://git.example/api/v1/repos/dan/r/pulls/4/files?limit=100');
   });
+
+  it('getRepoTree walks the pages while `truncated`, keeps files only', async () => {
+    // Measured on 1.27: every page but the last says truncated, all carry the tree sha.
+    const t = fakeTransport();
+    const forge = forgeWith(t);
+    t.respond(
+      {
+        status: 200,
+        body: {
+          sha: 'f1ba',
+          truncated: true,
+          page: 1,
+          total_count: 3,
+          tree: [
+            { path: 'NOTES.md', mode: '100644', type: 'blob', size: 8, sha: '7c88' },
+            { path: 'docs', mode: '040000', type: 'tree', size: 0, sha: 'd0c5' },
+          ],
+        },
+      },
+      { status: 200, body: { sha: 'f1ba', truncated: false, page: 2, total_count: 3, tree: [{ path: 'docs/a.md', mode: '100644', type: 'blob', size: 3, sha: 'aaaa' }] } },
+    );
+    expect(await forge.getRepoTree('dan', 'r', 'main')).toEqual({
+      sha: 'f1ba',
+      truncated: false,
+      files: [
+        { path: 'NOTES.md', sha: '7c88', size: 8 },
+        { path: 'docs/a.md', sha: 'aaaa', size: 3 },
+      ],
+    });
+    expect(t.calls.map((c) => c.url)).toEqual([
+      'https://git.example/api/v1/repos/dan/r/git/trees/main?recursive=true&per_page=1000&page=1',
+      'https://git.example/api/v1/repos/dan/r/git/trees/main?recursive=true&per_page=1000&page=2',
+    ]);
+  });
+
+  it('getBlob decodes the base64 body', async () => {
+    const t = fakeTransport();
+    const forge = forgeWith(t);
+    t.respond({ status: 200, body: { content: 'IyBub3Rlcwo=', encoding: 'base64', sha: '7c88', size: 8 } });
+    expect(new TextDecoder().decode(await forge.getBlob('dan', 'r', '7c88'))).toBe('# notes\n');
+    expect(t.calls[0].url).toBe('https://git.example/api/v1/repos/dan/r/git/blobs/7c88');
+  });
+
+  it('createBranch / deleteBranch use the branches endpoint (measured 1.27)', async () => {
+    const t = fakeTransport();
+    const forge = forgeWith(t);
+    t.respond({ status: 201, body: { name: 'mindblown/x' } }, { status: 204 });
+    await forge.createBranch('dan', 'r', 'mindblown/x', 'main');
+    await forge.deleteBranch('dan', 'r', 'mindblown/x');
+    expect(t.calls[0].method).toBe('POST');
+    expect(t.calls[0].url).toBe('https://git.example/api/v1/repos/dan/r/branches');
+    expect(JSON.parse(t.calls[0].body!)).toEqual({ new_branch_name: 'mindblown/x', old_branch_name: 'main' });
+    expect(t.calls[1].method).toBe('DELETE');
+    expect(t.calls[1].url).toBe('https://git.example/api/v1/repos/dan/r/branches/mindblown%2Fx');
+  });
+
+  it('putFile sends base64 + the base sha on the branch; returns new blob + commit', async () => {
+    const t = fakeTransport();
+    const forge = forgeWith(t);
+    t.respond({ status: 200, body: { content: { sha: '88d8' }, commit: { sha: 'c749' }, verification: {} } });
+    const res = await forge.putFile('dan', 'r', { path: 'docs/a b.md', branch: 'mindblown/x', content: new TextEncoder().encode('# Ü\n'), blobSha: 'b6a1', message: 'docs: edit' });
+    expect(res).toEqual({ blobSha: '88d8', commitSha: 'c749' });
+    expect(t.calls[0].method).toBe('PUT');
+    expect(t.calls[0].url).toBe('https://git.example/api/v1/repos/dan/r/contents/docs/a%20b.md');
+    const body = JSON.parse(t.calls[0].body!);
+    expect(body).toMatchObject({ sha: 'b6a1', branch: 'mindblown/x', message: 'docs: edit' });
+    expect(Buffer.from(body.content, 'base64').toString('utf8')).toBe('# Ü\n');
+  });
+
+  it("putFile: Gitea's 422 'sha does not match' becomes the shared 409 conflict", async () => {
+    const t = fakeTransport();
+    const forge = forgeWith(t);
+    t.respond({ status: 422, body: { message: 'sha does not match [given: 0000, expected: b6a1]' } });
+    await expect(
+      forge.putFile('dan', 'r', { path: 'README.md', branch: 'b', content: new Uint8Array(), blobSha: '0000', message: 'm' }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('createPullRequest answers number + web URL', async () => {
+    const t = fakeTransport();
+    const forge = forgeWith(t);
+    t.respond({ status: 201, body: { number: 9, html_url: 'https://git.example/dan/r/pulls/9' } });
+    expect(await forge.createPullRequest('dan', 'r', { title: 't', body: 'b', head: 'mindblown/x', base: 'main' })).toEqual({
+      number: 9,
+      url: 'https://git.example/dan/r/pulls/9',
+    });
+    expect(JSON.parse(t.calls[0].body!)).toEqual({ title: 't', body: 'b', head: 'mindblown/x', base: 'main' });
+  });
 });
 
 // ── The sync operations over a GiteaForge ───────────────────────

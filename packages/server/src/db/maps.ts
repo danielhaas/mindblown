@@ -1,12 +1,13 @@
-import { and, eq, inArray, or } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { buildBaseline, capBaselines } from '../lib/mapSchedule.js';
 import { db } from './connection.js';
 import { maps, mapPermissions, nodes } from './schema.js';
 import { dbMapToCore, dbNodeToCore } from './helpers.js';
 import { notDeleted } from './nodes.js';
 import { recordMapFieldChanges } from './events.js';
-import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ProfilePolicy, AiPolicy } from '@mindblown/core';
-import { clampFleetShare, clampFocusFactor, isAiPolicy } from '@mindblown/core';
+import { FLEET_RETIRED, FleetUserForbiddenError, isFleetUser } from './fleets.js';
+import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ProfilePolicy, AiPolicy, TrustPolicy } from '@mindblown/core';
+import { capOnFleetConnect, clampFleetShare, clampFocusFactor, isAiPolicy } from '@mindblown/core';
 
 // ── Create ─────────────────────────────────────────────────────────
 
@@ -21,6 +22,10 @@ export interface CreateMapInput {
 }
 
 export async function createMap(input: CreateMapInput): Promise<{ map: MindMap; rootNode: CoreNode }> {
+  // A fleet key reaches only its connected maps (#481); a map it created
+  // would make it admin of something outside that. Here, so REST, MCP and
+  // the in-app chat all hit it.
+  if (await isFleetUser(input.createdBy)) throw new FleetUserForbiddenError('maps');
   const now = new Date();
 
   // Create the map first (without rootNodeId)
@@ -98,6 +103,19 @@ export async function listMaps(): Promise<MindMap[]> {
   return rows.map((r) => dbMapToCore(r as unknown as Record<string, unknown>));
 }
 
+/** Ids of the live (not archived) maps bound to this GitHub repo; case-insensitive. */
+export async function listMapIdsBoundToRepo(owner: string, repo: string): Promise<string[]> {
+  const rows = await db
+    .select({ id: maps.id })
+    .from(maps)
+    .where(and(
+      sql`lower(${maps.githubRepoOwner}) = ${owner.toLowerCase()}`,
+      sql`lower(${maps.githubRepoName}) = ${repo.toLowerCase()}`,
+      sql`${maps.archivedAt} is null`,
+    ));
+  return rows.map((r) => r.id);
+}
+
 /**
  * Lists maps a user can see: ones they created plus ones explicitly shared
  * via mapPermissions. The detail/update/delete routes already enforce ACL
@@ -169,6 +187,12 @@ export interface UpdateMapInput {
   aiPolicy?: AiPolicy;
   /** Draft estimates for committed work (#318). */
   aiEstimateDrafts?: boolean;
+  /**
+   * The fleet's repo token may change CI workflows. Admin only, checked by
+   * the callers (services/mapRepoBinding `authorizeFleetCiChange`). A
+   * change of the repo binding clears it unless the same call sets it.
+   */
+  fleetCanEditCi?: boolean;
   /** #110 — date-holidays code; null clears. Validated by the route / tool. */
   holidayJurisdiction?: string | null;
   /** #110 — full replacement of the map's own days off. */
@@ -181,6 +205,18 @@ export interface UpdateMapInput {
    * isMapArchived(). Humans can still open, edit and unarchive it.
    */
   archived?: boolean;
+  /**
+   * Setup checklist switch (guided onboarding), same shape as `archived`:
+   * `true` stamps `setupCompletedAt` (kept if already set), `false` clears
+   * it so the checklist shows again.
+   */
+  setupCompleted?: boolean;
+  /**
+   * Trust policy (#491); null = back to the defaults. Admin-only, so
+   * updateMap ignores it: the callers gate it and write it through
+   * services/trustPolicy.ts.
+   */
+  trustPolicy?: TrustPolicy | null;
 }
 
 // The archive check lives in ./archived.ts (kept out of this module's
@@ -194,6 +230,11 @@ export { isMapArchived } from './archived.js';
  * for system writes. The before-row is read first so the diff is against
  * what was persisted, not against what the caller assumed.
  */
+function repoBindingChanges(before: MindMap, input: UpdateMapInput): boolean {
+  const fields = ['githubInstallationId', 'githubRepoOwner', 'githubRepoName'] as const;
+  return fields.some((f) => input[f] !== undefined && (input[f] ?? null) !== (before[f] ?? null));
+}
+
 export async function updateMap(
   mapId: string,
   input: UpdateMapInput,
@@ -223,6 +264,8 @@ export async function updateMap(
   if (input.dispatchPolicy !== undefined) updates.dispatchPolicy = input.dispatchPolicy;
   if (input.profilePolicy !== undefined) updates.profilePolicy = input.profilePolicy;
   if (input.fleetId !== undefined) updates.fleetId = input.fleetId;
+  const connectCap = capOnFleetConnect(before, input);
+  if (connectCap !== undefined) updates.maxActiveClaims = connectCap;
   if (input.fleetShare !== undefined) updates.fleetShare = clampFleetShare(input.fleetShare);
   if (input.githubInstallationId !== undefined) updates.githubInstallationId = input.githubInstallationId;
   if (input.githubRepoOwner !== undefined) updates.githubRepoOwner = input.githubRepoOwner;
@@ -233,6 +276,9 @@ export async function updateMap(
   if (input.triageLabelWriteback !== undefined) updates.triageLabelWriteback = input.triageLabelWriteback;
   if (input.aiPolicy !== undefined && isAiPolicy(input.aiPolicy)) updates.aiPolicy = input.aiPolicy;
   if (typeof input.aiEstimateDrafts === 'boolean') updates.aiEstimateDrafts = input.aiEstimateDrafts;
+  // CI access was granted for one repo; another repo may hold secrets.
+  if (typeof input.fleetCanEditCi === 'boolean') updates.fleetCanEditCi = input.fleetCanEditCi;
+  else if (repoBindingChanges(before, input)) updates.fleetCanEditCi = false;
   if (input.holidayJurisdiction !== undefined) updates.holidayJurisdiction = input.holidayJurisdiction;
   if (input.holidayOverrides !== undefined) updates.holidayOverrides = input.holidayOverrides;
   // Boolean only: a raw REST caller sending `archived: null` must not
@@ -241,10 +287,23 @@ export async function updateMap(
     if (!input.archived) updates.archivedAt = null;
     else if (before.archivedAt == null) updates.archivedAt = new Date();
   }
+  if (typeof input.setupCompleted === 'boolean') {
+    if (!input.setupCompleted) updates.setupCompletedAt = null;
+    else if (before.setupCompletedAt == null) updates.setupCompletedAt = new Date();
+  }
 
   const [row] = await db.update(maps).set(updates).where(eq(maps.id, mapId)).returning();
   if (!row) return null;
   const updated = dbMapToCore(row as unknown as Record<string, unknown>);
+  // Asks are keyed by fleet (#479); the map routes read the map's current
+  // fleet. A map that moves takes its rows along — answer state and
+  // pending worker notes included — or they would be stranded on the old
+  // fleet. A disconnect leaves them where they are; nothing reads them
+  // until the map joins a fleet again, and then they move.
+  if (updated.fleetId && updated.fleetId !== before.fleetId) await moveMapAsks(mapId, updated.fleetId);
+  // The fleet's service user (#481) has edit on exactly the maps its fleet
+  // is connected to: connecting is the one step that gives a fleet access.
+  if (updated.fleetId !== before.fleetId) await syncFleetGrant(mapId);
   await recordMapFieldChanges(
     mapId,
     userId,
@@ -252,6 +311,51 @@ export async function updateMap(
     updated as unknown as Record<string, unknown>,
   );
   return updated;
+}
+
+/**
+ * Re-key a map's asks onto `fleetId`. A row the new fleet already holds for
+ * this map wins over an older copy (same ask id, other fleet); the push
+ * meta is a snapshot the next push rewrites, so only the new fleet's stays.
+ */
+async function moveMapAsks(mapId: string, fleetId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      DELETE FROM asks a USING asks b
+      WHERE a.map_id = ${mapId} AND b.map_id = ${mapId} AND a.ask_id = b.ask_id
+        AND a.fleet_id <> ${fleetId} AND b.fleet_id = ${fleetId}
+    `);
+    await tx.execute(sql`UPDATE asks SET fleet_id = ${fleetId} WHERE map_id = ${mapId} AND fleet_id <> ${fleetId}`);
+    await tx.execute(sql`DELETE FROM asks_pushes WHERE map_id = ${mapId} AND fleet_id <> ${fleetId}`);
+  });
+}
+
+/**
+ * Make the fleet grants on this map match its fleet as it is now: no fleet
+ * user but the current fleet's holds a grant here, and that one holds
+ * `edit` — set, not merged, so a fleet user never holds more. Derived from
+ * maps.fleet_id under a row lock rather than from the before/after of one
+ * update, so two moves racing each other (A→B, A→C) still end with the
+ * grant of whichever fleet the map is connected to.
+ */
+async function syncFleetGrant(mapId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    const locked = await tx.execute(sql`SELECT fleet_id FROM maps WHERE id = ${mapId} FOR UPDATE`);
+    const fleetId = (locked.rows[0] as { fleet_id: string | null } | undefined)?.fleet_id ?? null;
+    await tx.execute(sql`
+      DELETE FROM map_permissions p USING users u
+      WHERE p.map_id = ${mapId} AND p.user_id = u.id AND u.kind IN ('fleet', ${FLEET_RETIRED})
+        AND NOT EXISTS (SELECT 1 FROM fleets f WHERE f.id = ${fleetId} AND f.service_user_id = u.id)
+    `);
+    if (fleetId) {
+      await tx.execute(sql`
+        INSERT INTO map_permissions (map_id, user_id, permission)
+        SELECT ${mapId}, f.service_user_id, 'edit' FROM fleets f
+        WHERE f.id = ${fleetId} AND f.service_user_id IS NOT NULL
+        ON CONFLICT (map_id, user_id) DO UPDATE SET permission = 'edit'
+      `);
+    }
+  });
 }
 
 // ── Delete ─────────────────────────────────────────────────────────

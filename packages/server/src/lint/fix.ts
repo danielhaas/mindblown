@@ -11,7 +11,7 @@
  * stamp the stored link state so the finding clears immediately instead
  * of after the next catch-up poll, and leave an `issueState` change event.
  */
-import { buildTodoIds, isForgeLink, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
+import { BLOCKED_TAG, buildTodoIds, DISPATCH_SKIP_TAGS, FLEET_CHECK_TAG, FLEET_FIX_TAG, NEEDS_BRIEF_TAG, prependDecision, proseMirrorToPlainText, replaceNextStep, type AskWrite, type LintActionId, type Node as CoreNode } from '@mindblown/core';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { recordClaimTransition, recordEvent, recordFieldChanges } from '../db/events.js';
@@ -19,6 +19,7 @@ import { broadcast } from '../ws.js';
 import { syncNodeToGitHub } from '../routes/nodes.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { unblockNode, UnblockNotFoundError } from '../services/unblock.js';
+import { issueLinkOf } from '../services/issueLabels.js';
 import { buildDonePredicate } from './engine.js';
 
 export type LintFixErrorCode = 'NODE_NOT_FOUND' | 'NO_FORGE_LINK' | 'NO_FORGE' | 'BAD_ACTION';
@@ -40,19 +41,14 @@ export interface LintFixOutcome {
   changedFields: string[];
   /** Set when the fix wrote to the forge. */
   issue?: { externalId: string; state: 'open' | 'closed' };
+  /** clear-blocker: the `blocked` label taken off the linked issue (#622). */
+  labelWrite?: AskWrite;
 }
 
 const PARK_REASON = 'Parked from Plan health';
+const NEEDS_HUMAN_TAG = 'needs-human';
 
-/**
- * The link a finding is about — the same choice the engine's forgeLinkOf
- * makes (first issue link with a synced state), falling back to any issue
- * link so a fix still works on a link that never synced a state.
- */
-export function issueLinkOf(node: Pick<CoreNode, 'externalLinks'>): ExternalLink | null {
-  const issues = (node.externalLinks ?? []).filter((l) => isForgeLink(l) && !l.isPullRequest);
-  return issues.find((l) => l.state != null) ?? issues[0] ?? null;
-}
+export { issueLinkOf } from '../services/issueLabels.js';
 
 /** The hand-edit fan-out: history, claim trail, live update, outbound sync. */
 async function fanOut(
@@ -75,7 +71,12 @@ export async function applyLintFix(
   nodeId: string,
   action: LintActionId,
   userId: string | null,
-  opts: { note?: string } = {},
+  /**
+   * note: the text a fix carries (needs-human's next step, write-brief's brief).
+   * decision: a "Decision (by, date): …" line that takes the place of the
+   * step's next-step lines — with mark-done and to-fleet (#619).
+   */
+  opts: { note?: string; decision?: string } = {},
 ): Promise<LintFixOutcome> {
   const before = await nodeDb.getNode(nodeId);
   if (!before || before.mapId !== mapId) throw new LintFixError('NODE_NOT_FOUND', `Node ${nodeId} not found`);
@@ -86,7 +87,7 @@ export async function applyLintFix(
       const r = await unblockNode(mapId, nodeId, userId);
       broadcast(mapId, { type: 'node:updated', nodeId, fields: r.changedFields, node: r.node });
       syncNodeToGitHub(r.node, r.changedFields).catch(() => {});
-      return { action, node: r.node, changedFields: r.changedFields };
+      return { action, node: r.node, changedFields: r.changedFields, ...(r.labelWrite ? { labelWrite: r.labelWrite } : {}) };
     } catch (err) {
       if (err instanceof UnblockNotFoundError) throw new LintFixError('NODE_NOT_FOUND', err.message);
       throw err;
@@ -177,8 +178,93 @@ export async function applyLintFix(
       claimReason = 'blocked';
       break;
     }
+    case 'requeue': {
+      // Back to the pull queue as it stands: todo, progress kept — unlike
+      // reopen, which says "start over".
+      const todoId = [...buildTodoIds(workflow)][0] ?? 'todo';
+      input = { status: todoId, claimedBySession: null };
+      changedFields = ['status', 'claimedBySession'];
+      break;
+    }
+    case 'needs-human': {
+      // A person's next step, not a wait: the queue skips needs-human, the
+      // blocker text (and a note) becomes the step at the top of the
+      // description, and the blocker goes — "blocked" means waiting on an
+      // answer or another ticket. A status named "blocked" goes with it.
+      input = { tagsAppend: [NEEDS_HUMAN_TAG], claimedBySession: null };
+      changedFields = ['tags', 'claimedBySession'];
+      let description: unknown = before.description;
+      const reason = before.blockedReason?.trim();
+      if (reason) description = prependDecision(description, `Next step (a person): ${reason}`);
+      if (opts.note?.trim()) description = prependDecision(description, `Next step (a person): ${opts.note.trim()}`);
+      if (description !== before.description) {
+        input.description = description as nodeDb.UpdateNodeInput['description'];
+        changedFields.push('description');
+      }
+      if (reason) {
+        input.blockedReason = null;
+        input.tagsRemove = [BLOCKED_TAG];
+        changedFields.push('blockedReason');
+      }
+      if ((before.status ?? '').toLowerCase() === BLOCKED_TAG) {
+        const category = (before.percentComplete ?? 0) > 0 ? 'in_progress' : 'todo';
+        input.status = workflow.find((s) => s.category === category)?.id ?? category;
+        changedFields.push('status');
+      }
+      break;
+    }
+    case 'fleet-fix': {
+      // The worker's own PR is red or conflicted: blocker off, the tag on,
+      // claim and progress kept — the worker that holds it sees the tag on
+      // its next PR check, reworks the branch and drops the tag.
+      input = { blockedReason: null, tagsAppend: [FLEET_FIX_TAG], tagsRemove: [BLOCKED_TAG] };
+      changedFields = ['blockedReason', 'tags'];
+      if ((before.status ?? '').toLowerCase() === BLOCKED_TAG) {
+        input.status = workflow.find((s) => s.category === 'in_progress')?.id ?? 'in_progress';
+        changedFields.push('status');
+      }
+      break;
+    }
+    case 'fleet-check': {
+      // Any other blocker: the tag puts it at the head of the queue (the
+      // pull clears blocker and tag on the grant), so until then the board
+      // still says why it was blocked.
+      input = { tagsAppend: [FLEET_CHECK_TAG] };
+      changedFields = ['tags'];
+      break;
+    }
+    case 'to-fleet': {
+      // "Fleet can do it": every skip tag and the blocker off and back to
+      // the queue as it stands (todo, progress kept), so the next pull may
+      // take it. A blocker left on would keep it out of the queue (#619).
+      const skips = before.tags.filter((t) => (DISPATCH_SKIP_TAGS as readonly string[]).includes(t.toLowerCase()) || t.toLowerCase() === BLOCKED_TAG);
+      const todoId = [...buildTodoIds(workflow)][0] ?? 'todo';
+      input = { tagsRemove: skips, status: todoId, claimedBySession: null };
+      changedFields = ['tags', 'status', 'claimedBySession'];
+      if (before.blockedReason) {
+        input.blockedReason = null;
+        changedFields.push('blockedReason');
+      }
+      break;
+    }
+    case 'write-brief': {
+      // The answer is the brief: it becomes the description, and the
+      // needs-brief trace the pull left goes with it. A description written
+      // since the row was read is kept, the answer on top.
+      const text = opts.note?.trim();
+      if (!text) throw new LintFixError('BAD_ACTION', 'A brief needs text');
+      const empty = proseMirrorToPlainText(before.description).trim() === '';
+      input = { description: (empty ? text : prependDecision(before.description, text)) as nodeDb.UpdateNodeInput['description'], tagsRemove: [NEEDS_BRIEF_TAG] };
+      changedFields = ['description', 'tags'];
+      break;
+    }
     default:
       throw new LintFixError('BAD_ACTION', `Unknown fix "${String(action)}"`);
+  }
+
+  if (opts.decision?.trim() && (action === 'mark-done' || action === 'to-fleet')) {
+    input.description = replaceNextStep(before.description, opts.decision.trim()) as nodeDb.UpdateNodeInput['description'];
+    changedFields.push('description');
   }
 
   if (changedFields.length === 0) return { action, node: before, changedFields };
