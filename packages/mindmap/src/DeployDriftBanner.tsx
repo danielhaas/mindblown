@@ -1,8 +1,9 @@
 /**
  * "N merged changes not deployed" on the Fleet tab — the fleet merges
  * trusted PRs, nothing deploys them, and on 18.–19.11.2026 four sat for
- * up to 19 h unseen. The server knows only its own repo, so the banner
- * shows on the maps bound to it and renders nothing anywhere else.
+ * up to 19 h unseen. The drift comes from the map's deploy probe (Map
+ * settings → Deploy probe), or for MindBlown's own map from the server's
+ * checkout; a map with neither renders nothing. A probe that fails says so.
  */
 import { useEffect, useState } from 'react';
 import * as api from './api.js';
@@ -17,6 +18,7 @@ export function waitedLabel(since: string, now: Date): string {
 
 export function DeployDriftBanner({ mapId }: { mapId: string }) {
   const [drift, setDrift] = useState<api.DeployDrift | null>(null);
+  const [probeError, setProbeError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [poll, setPoll] = useState(0);
   useEffect(() => {
@@ -27,13 +29,28 @@ export function DeployDriftBanner({ mapId }: { mapId: string }) {
     let cancelled = false;
     api
       .fetchDeployDrift(mapId)
-      .then((d) => !cancelled && setDrift(d))
-      .catch(() => !cancelled && setDrift(null));
+      .then((r) => {
+        if (cancelled) return;
+        setDrift(r.drift);
+        setProbeError(r.probeError);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setDrift(null);
+        setProbeError(null);
+      });
     return () => {
       cancelled = true;
     };
   }, [mapId, poll]);
 
+  if (probeError) {
+    return (
+      <div data-testid="deploy-probe-error" style={{ margin: '0 0 16px', fontSize: 12, color: '#92400e' }}>
+        Deploy probe failed — what is live is unknown: {probeError}
+      </div>
+    );
+  }
   if (!drift || drift.undeployed === 0 || !drift.undeployedSince) return null;
   const n = drift.undeployed;
   return (

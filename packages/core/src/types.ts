@@ -936,6 +936,15 @@ export interface MindMap {
   holidayJurisdiction?: string | null;
   /** Company days off added to, and jurisdiction holidays removed from, the calendar ('YYYY-MM-DD'). */
   holidayOverrides?: HolidayOverrides;
+  /**
+   * How to see what this map's project runs in production: a URL that
+   * returns the deployed commit (JSON `{"commit": "<sha>"}` or a plain
+   * sha), or `none` — nothing is deployed. Null = not set yet (the fleet
+   * asks once). The server compares it with the bound repo's default
+   * branch: merged, not live (core deployProbe.ts). Server source:
+   * `maps.deploy_probe`.
+   */
+  deployProbe?: string | null;
 }
 
 export interface HolidayOverrides {

@@ -8,7 +8,9 @@
  * the tickets waiting for approval, on maps they can view — plus the PRs
  * open longer than STALE_PR_DAYS (default 7, bots and drafts left out) on
  * the repo of each map they administer (#499 sat open a month because
- * nothing outside the fleet loop looked at it). Nothing open, no mail.
+ * nothing outside the fleet loop looked at it) — and, to the same admins,
+ * merged work a map's deploy probe says is not live past the threshold
+ * (services/deployProbe.ts). Nothing open, no mail.
  * Fleet service users get none; a person can switch it off
  * (routes/digestMail.ts).
  *
@@ -19,7 +21,7 @@
  * tries again, up to DIGEST_MAX_ATTEMPTS per day (#602).
  * Without SMTP_HOST the round does nothing.
  */
-import { isNoQuestion } from '@mindblown/core';
+import { isNoQuestion, notLiveLabel } from '@mindblown/core';
 import type { AskRow, PendingApproval } from '@mindblown/core';
 import { paginateGitHub } from '@mindblown/integrations';
 import * as digestDb from '../db/digestMails.js';
@@ -30,6 +32,8 @@ import { checkMapAccess } from '../lib/mapAccess.js';
 import { listPendingApprovals } from './approvals.js';
 import { fleetInbox } from './asksInbox.js';
 import { listFleetsForUser } from './fleets.js';
+import { latestProbeResult, overThreshold } from './deployProbe.js';
+import type { DeployDrift } from './deployDrift.js';
 import { waitingMaps } from '../lib/waitingMaps.js';
 
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5180';
@@ -270,6 +274,30 @@ async function stalePrItemsForUser(
   return items;
 }
 
+/** "2 merges not live on Navy for 19 h" — once the oldest is past the alert threshold. */
+export function notLiveItem(map: { id: string; name: string }, drift: DeployDrift | undefined, now: Date): DigestItem | null {
+  if (!drift || !overThreshold(drift, now)) return null;
+  const n = drift.undeployed.length;
+  return {
+    groupId: map.id,
+    groupName: map.name,
+    question: `${notLiveLabel(n, map.name, drift.undeployed[0].at, now)} — deploy?`,
+    title: drift.undeployed[0].subject,
+    since: drift.undeployed[0].at,
+    url: fleetTab(map.id),
+  };
+}
+
+/** Merged, not live, on the live maps this person administers (the deploy is theirs to run). */
+async function notLiveItemsForUser(userId: string, liveMaps: Array<{ id: string; name: string }>, now: Date): Promise<DigestItem[]> {
+  const items: DigestItem[] = [];
+  for (const m of liveMaps) {
+    const item = notLiveItem(m, latestProbeResult(m.id)?.drift, now);
+    if (item && !(await checkMapAccess(userId, m.id, 'admin'))) items.push(item);
+  }
+  return items;
+}
+
 export interface DigestGroup {
   name: string;
   items: DigestItem[];
@@ -363,6 +391,7 @@ export async function openItemsForUser(
   const approvals = await listPendingApprovals(userId, {});
   if (!('status' in approvals)) items.push(...approvalItems(approvals.items, live));
   items.push(...(await stalePrItemsForUser(userId, liveMaps, now, cache)));
+  items.push(...(await notLiveItemsForUser(userId, liveMaps, now)));
   return items;
 }
 

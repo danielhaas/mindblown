@@ -160,6 +160,8 @@ export interface MapDetail {
     /** #110 — public-holiday calendar; null/absent = every day counts. */
     holidayJurisdiction?: string | null;
     holidayOverrides?: { add: string[]; remove: string[] };
+    /** Deploy probe URL, 'none', or null = not set (merged, not live). */
+    deployProbe?: string | null;
     /** #477 — the fleet the map is connected to; null/absent = none. */
     fleetId?: string | null;
     fleetName?: string | null;

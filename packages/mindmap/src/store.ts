@@ -33,6 +33,8 @@ const BROADCAST_MAP_SETTINGS = [
   // Holiday calendar (#110): the Gantt's label and dates follow it.
   'holidayJurisdiction',
   'holidayOverrides',
+  // Deploy probe — the Fleet tab's "merged, not live" follows it.
+  'deployProbe',
   // Archive flips in another tab must land here: the banner and the
   // agent-refusal state follow the server, never an optimistic edit.
   'archivedAt',
@@ -203,7 +205,7 @@ export interface MindmapState {
    * write moves the fleet within ~2 min, so callers apply explicitly, never
    * on-change.
    */
-  updateMapSettings: (fields: Partial<Pick<MindMap, 'name' | 'description' | 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy' | 'aiEstimateDrafts' | 'fleetId' | 'fleetShare' | 'fleetCanEditCi' | 'githubInstallationId' | 'githubRepoOwner' | 'githubRepoName' | 'autoImportNewIssues'>> & { archived?: boolean; setupCompleted?: boolean }) => Promise<boolean>;
+  updateMapSettings: (fields: Partial<Pick<MindMap, 'name' | 'description' | 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy' | 'aiEstimateDrafts' | 'fleetId' | 'fleetShare' | 'fleetCanEditCi' | 'githubInstallationId' | 'githubRepoOwner' | 'githubRepoName' | 'autoImportNewIssues' | 'deployProbe'>> & { archived?: boolean; setupCompleted?: boolean }) => Promise<boolean>;
   /**
    * Append a new phase (PhaseDef) to the current map's phases list and
    * persist via PUT /api/maps/:id. Returns the new phase's id (so callers

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
-import { computeTree, schedule, criticalPath, capacityCriticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline, withoutParked, parkedNodeIds } from '@mindblown/core';
+import { computeTree, schedule, criticalPath, capacityCriticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline, withoutParked, parkedNodeIds, normalizeDeployProbe } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { buildTimelineMarkdown, TimelineOptionError } from '../export/timeline.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
@@ -453,6 +453,11 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     const holidayError = normalizeHolidaySettings(body);
     if (holidayError) {
       return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: holidayError } });
+    }
+    if (body.deployProbe !== undefined) {
+      const probe = normalizeDeployProbe(body.deployProbe);
+      if ('error' in probe) return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: probe.error } });
+      body.deployProbe = probe.value;
     }
     // Fleet connection (#477): admin on the map, and owner of the target fleet.
     if (body.fleetId !== undefined && body.fleetId !== null && typeof body.fleetId !== 'string') {

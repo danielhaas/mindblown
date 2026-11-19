@@ -149,6 +149,26 @@ describe('PUT /api/maps/:id — holiday calendar (#110)', () => {
   });
 });
 
+// Same harness, another map setting: the deploy probe (merged, not live).
+describe('PUT /api/maps/:id — deploy probe', () => {
+  it('stores a trimmed URL and "none"; refuses what is not a http(s) URL', async () => {
+    updateMapMock.mockResolvedValue({ id: MAP_ID });
+    const app = await buildApp();
+    const put = (deployProbe: unknown) => app.inject({ method: 'PUT', url: `/api/maps/${MAP_ID}`, payload: { deployProbe } });
+    expect((await put(' https://navy.example/api/version ')).statusCode).toBe(200);
+    expect((await put('NONE')).statusCode).toBe(200);
+    expect((await put('')).statusCode).toBe(200);
+    expect((await put('ftp://navy.example/v')).statusCode).toBe(400);
+    expect((await put('navy')).statusCode).toBe(400);
+    await app.close();
+    expect(updateMapMock.mock.calls.map((c) => c[1])).toEqual([
+      { deployProbe: 'https://navy.example/api/version' },
+      { deployProbe: 'none' },
+      { deployProbe: null },
+    ]);
+  });
+});
+
 describe('GET /api/maps/:id/schedule — working calendar (#110)', () => {
   it('without a calendar every day counts and no holidays are shipped', async () => {
     getMapMock.mockResolvedValueOnce(mapWith({ holidayJurisdiction: null }));

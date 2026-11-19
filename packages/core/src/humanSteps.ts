@@ -16,6 +16,7 @@ import { dispatchSkipTag, fleetFixAction, WORKER_WAIT_NOTE } from './dispatch.js
 import { proseMirrorToPlainText } from './richtext.js';
 import { isForgeLink, type ExternalLink } from './types.js';
 import { STALLED_ASK_OPTIONS, stalledAnswerAction, stalledAskNodeId } from './stalled.js';
+import { DEPLOY_PROBE_NONE, deployProbeAskMapId, deployProbeFromAnswer } from './deployProbe.js';
 
 export const STEP_ASK_PREFIX = 'step-';
 export const STEP_ASK_OPTIONS = ['Done', 'Fleet can do it'] as const;
@@ -98,7 +99,7 @@ export function derivedAskNodeId(askId: string): string | null {
 
 /** Rows MindBlown derives itself (stalled work, a person's steps, blockers, briefs) — not the collector's. */
 export function isDerivedAsk(a: Pick<Ask, 'id'>): boolean {
-  return derivedAskNodeId(a.id) !== null;
+  return derivedAskNodeId(a.id) !== null || deployProbeAskMapId(a.id) !== null;
 }
 
 /** Rows for the "Your steps" card: steps, blockers and missing briefs. */
@@ -435,6 +436,12 @@ export function derivedAnswerPreview(
     return briefAnswerAction(d) === 'mark-done'
       ? ['Node: done, 100 %']
       : [`Node: "${d || '…'}" becomes the description — the fleet takes it on its next pull`];
+  }
+  if (deployProbeAskMapId(a.id)) {
+    const probe = deployProbeFromAnswer(d);
+    if (probe === DEPLOY_PROBE_NONE) return ['Map: deploy probe "none" — not deployed, never asked again'];
+    if (probe) return [`Map: deploy probe ${probe} — the Fleet tab shows what is merged and not live`];
+    return ['Answer with the probe URL (returns the deployed commit) or "none"'];
   }
   return null;
 }
