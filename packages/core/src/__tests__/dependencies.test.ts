@@ -713,6 +713,51 @@ describe('priority-inheritance schedule', () => {
     expect(byId.get('a')!.computedStart).toBe(0);
     expect(byId.get('b')!.computedStart).toBe(2);
   });
+
+  describe('dependent before its blocker in tree/creation order (#636)', () => {
+    // M1 holds an old node (moved in, created first) that depends on the
+    // last link of a chain under M2, all created later. Same priority, so
+    // createdAt alone used to put the dependent first and its edge was
+    // skipped (the blocker wasn't scheduled yet).
+    function build(dependentOverrides: Partial<Node> = {}) {
+      const m1 = makeNode({ id: 'm1', childrenIds: ['dependent'] });
+      const m2 = makeNode({ id: 'm2', childrenIds: ['c1', 'c2', 'c3', 'blocker'] });
+      const dependent = makeNode({
+        id: 'dependent',
+        parentId: 'm1',
+        effortEstimate: 5,
+        createdAt: '2026-01-01T00:00:00Z',
+        dependencies: [{ targetNodeId: 'blocker', type: 'FS', lag: 0 }],
+        ...dependentOverrides,
+      });
+      const chain = ['c1', 'c2', 'c3', 'blocker'].map((id, i) =>
+        makeNode({
+          id,
+          parentId: 'm2',
+          effortEstimate: 10,
+          createdAt: `2026-02-0${i + 1}T00:00:00Z`,
+          dependencies: i === 0 ? [] : [{ targetNodeId: ['c1', 'c2', 'c3'][i - 1], type: 'FS', lag: 0 }],
+        }),
+      );
+      return [m1, dependent, m2, ...chain];
+    }
+
+    it('starts the dependent after its blocker ends', () => {
+      const byId = new Map(schedule(build()).map((s) => [s.nodeId, s]));
+      expect(byId.get('blocker')!.computedEnd).toBe(40);
+      expect(byId.get('dependent')!.computedStart).toBe(40);
+    });
+
+    it('holds with several workers', () => {
+      const byId = new Map(schedule(build(), 0, undefined, undefined, 3).map((s) => [s.nodeId, s]));
+      expect(byId.get('dependent')!.computedStart).toBeGreaterThanOrEqual(byId.get('blocker')!.computedEnd);
+    });
+
+    it('holds when the dependent has a better priorityRank than its blocker', () => {
+      const byId = new Map(schedule(build({ priorityRank: 1 })).map((s) => [s.nodeId, s]));
+      expect(byId.get('dependent')!.computedStart).toBeGreaterThanOrEqual(byId.get('blocker')!.computedEnd);
+    });
+  });
 });
 
 // ── Capacity-aware critical path (#112) ─────────────────────────
