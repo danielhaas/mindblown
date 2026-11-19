@@ -9,7 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookSubscription } from '@mindblown/core';
+import type { CommentKind, NodeComment, AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookSubscription } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
 export interface FleetStatusResult {
@@ -626,6 +626,14 @@ export interface ToolBackend {
   /** The map was deployed: reopen each waiting issue and ask its reporter (edit on the map). */
   markDeployed(mapId: string): Promise<DeployedResult>;
   // No reopen/close: deciding a reply means reading the reporter's untrusted text — the card only.
+
+  // ── Comments / notes to the agent (claude-fleet#92) ─────────────
+  /** A comment on a node (edit on the map); kind 'fleet-note' = a note to the agent running the ticket. */
+  addComment(mapId: string, nodeId: string, input: { text: string; kind?: CommentKind }): Promise<NodeComment>;
+  /** The node's comments, oldest first (view on the map); filter by kind and by created after `since` (ISO). */
+  listComments(mapId: string, nodeId: string, opts?: { kind?: CommentKind; since?: string }): Promise<NodeComment[]>;
+  /** The fleet worker picked a note up (edit on the map); `deliveredAt` ISO, default now; a second mark keeps the first time. */
+  ackFleetNote(mapId: string, nodeId: string, commentId: string, deliveredAt?: string): Promise<NodeComment>;
 
   // ── A person merges a fleet PR (Tracer's voice merges) ──────────
   /** The node's PR, read live from the map's forge (view on the map). */

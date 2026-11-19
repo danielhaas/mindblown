@@ -1,4 +1,5 @@
 import type {
+  CommentKind,
   Node,
   MindMap,
   Cycle,
@@ -152,6 +153,10 @@ export interface Comment {
   userId: string;
   userName?: string;
   text: string;
+  /** 'fleet-note' = a note to the fleet agent running the ticket (claude-fleet#92). Absent from older servers. */
+  kind?: CommentKind;
+  /** fleet-note: when the worker picked it up; null until then. */
+  deliveredAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -323,14 +328,14 @@ export function adminResetPassword(email: string): Promise<{ email: string; temp
 
 // ── Comments ────────────────────────────────────────────────────
 
-export function fetchComments(mapId: string, nodeId: string): Promise<Comment[]> {
-  return request<Comment[]>(`/api/maps/${mapId}/nodes/${nodeId}/comments`);
+export function fetchComments(mapId: string, nodeId: string, kind?: CommentKind): Promise<Comment[]> {
+  return request<Comment[]>(`/api/maps/${mapId}/nodes/${nodeId}/comments${kind ? `?kind=${kind}` : ''}`);
 }
 
-export function createComment(mapId: string, nodeId: string, text: string): Promise<Comment> {
+export function createComment(mapId: string, nodeId: string, text: string, kind?: CommentKind): Promise<Comment> {
   return request<Comment>(`/api/maps/${mapId}/nodes/${nodeId}/comments`, {
     method: 'POST',
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(kind ? { text, kind } : { text }),
   });
 }
 

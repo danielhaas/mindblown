@@ -133,6 +133,9 @@ function makeRecordingBackend(): {
     updateWebhook: async () => { throw new Error('not implemented'); },
     deleteWebhook: async () => { throw new Error('not implemented'); },
     pingWebhook: async () => { throw new Error('not implemented'); },
+    addComment: async () => { throw new Error('not implemented'); },
+    listComments: async () => { throw new Error('not implemented'); },
+    ackFleetNote: async () => { throw new Error('not implemented'); },
   };
   return {
     backend,
