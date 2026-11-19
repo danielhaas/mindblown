@@ -80,6 +80,7 @@ test('"+N" pill: its left edge drills in too, not the hover "add child" handle',
   // person who moves the mouse from the label to the pill.
   const label = (await page.getByText('Billing', { exact: true }).boundingBox())!;
   await page.mouse.move(label.x + label.width / 2, label.y + label.height / 2);
+  await expect(page.locator('svg title', { hasText: /^Add child node$/ })).toHaveCount(1);
   await page.mouse.move(pill.x + 2, pill.y + pill.height / 2, { steps: 5 });
   await page.mouse.down();
   await page.mouse.up();
@@ -89,6 +90,28 @@ test('"+N" pill: its left edge drills in too, not the hover "add child" handle',
     () => Object.keys((window as never as { __store: { getState(): { nodes: object } } }).__store.getState().nodes).length,
   );
   expect(after).toBe(nodeCount);
+});
+
+test('in every layout the hover handle and the "+N" pill never overlap', async ({ page }) => {
+  await open(page);
+  for (const t of ['tree-lr', 'radial', 'tree-tb', 'org-chart']) {
+    await page.mouse.move(1, 1);
+    await page.evaluate((layoutType) => {
+      (window as never as { __store: { setState(s: object): void } }).__store.setState({ layoutType });
+    }, t);
+    const pill = await pillFor(page, 'Billing');
+    const node = (await page.locator('g', { has: page.getByTestId('node-show-hidden') }).last().locator(':scope > rect').first().boundingBox())!;
+    const label = (await page.getByText('Billing', { exact: true }).boundingBox())!;
+    await page.mouse.move(label.x + label.width / 2, label.y + label.height / 2);
+    const handle = (await page.locator('g', { has: page.locator('title', { hasText: /^Add child node$/ }) }).last().boundingBox())!;
+
+    const apart =
+      handle.x + handle.width <= pill.x || pill.x + pill.width <= handle.x ||
+      handle.y + handle.height <= pill.y || pill.y + pill.height <= handle.y;
+    expect(apart, `${t}: handle ${JSON.stringify(handle)} vs pill ${JSON.stringify(pill)}`).toBe(true);
+    // Top-down layouts put the handle under the node, so the pill stays close.
+    if (t === 'tree-tb' || t === 'org-chart') expect(handle.y, t).toBeGreaterThan(node.y + node.height / 2);
+  }
 });
 
 test('"+N" pill on a folded node unfolds it on the way in', async ({ page }) => {

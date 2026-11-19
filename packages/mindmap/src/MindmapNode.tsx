@@ -283,6 +283,8 @@ interface MindmapNodeProps {
   onShowHidden?: () => void;
   /** Click on the "+" circle (branch folded by hand). */
   onExpand?: () => void;
+  /** The editor's hover "add child" handle sits on the node's right edge (tree-lr, radial). */
+  createHandleRight?: boolean;
   onSelect: (shiftKey: boolean) => void;
   onDoubleClick: () => void;
   onTextChange: (text: string) => void;
@@ -310,6 +312,7 @@ export function MindmapNode({
   onRefineClick,
   onShowHidden,
   onExpand,
+  createHandleRight = false,
   onSelect,
   onDoubleClick,
   onTextChange,
@@ -496,10 +499,11 @@ export function MindmapNode({
       {hasHiddenChildren && hiddenDescendantCount > 0 && (() => {
         const badgeW = (hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40) * textScale;
         const badgeH = 20 * textScale;
-        // Start past the editor's hover "add child" handle (unscaled
-        // circle at x+width+8, r=10 → ends at x+width+18). It draws on
-        // top, so an overlap turns a click on the pill into a new child.
-        const badgeX = x + width + Math.max(20, 6 * textScale);
+        // When the editor's hover "add child" handle sits on the right
+        // (unscaled circle at x+width+8, r=10, 2px stroke → painted to
+        // x+width+19), start past it: it draws on top, so an overlap
+        // turns a click on the pill into a new child.
+        const badgeX = x + width + (createHandleRight ? Math.max(21, 6 * textScale) : 6 * textScale);
         return (
         <g
           data-testid="node-show-hidden"
