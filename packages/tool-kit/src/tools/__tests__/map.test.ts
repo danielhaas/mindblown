@@ -330,6 +330,22 @@ describe('update_map tool — lintAutoFix', () => {
   });
 });
 
+// Personal leave (#664): who does the map's work, through the MCP surface.
+describe('update_map tool — workers', () => {
+  it('forwards the workers list to the backend', async () => {
+    const recorder = makeRecordingBackend();
+    const ids = ['11111111-1111-4111-8111-111111111111'];
+    await updateMapTool.handler(recorder.backend, { mapId: 'm1', workers: ids } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ workers: ids });
+  });
+
+  it('accepts an empty list (nobody\'s leave applies) and rejects a non-list', () => {
+    const schema = z.object(updateMapTool.schema);
+    expect(schema.parse({ mapId: 'm1', workers: [] }).workers).toEqual([]);
+    expect(() => schema.parse({ mapId: 'm1', workers: 'dan' })).toThrow();
+  });
+});
+
 // Merged, not live — the deploy probe must reach the backend through the MCP surface.
 describe('update_map tool — deploy probe', () => {
   it('accepts a URL, "none" and null', () => {

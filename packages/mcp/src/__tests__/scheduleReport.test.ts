@@ -74,3 +74,24 @@ describe('formatScheduleReport — waits on outside parties (#654)', () => {
     expect(out).toContain('- [External] VM [n-w]: day 0 - 5 (5 duration) waiting on LOKE engineering, not requested yet **CRITICAL**');
   });
 });
+
+describe('formatScheduleReport — personal leave (#664)', () => {
+  it('names the leave and lists the leave days per track', () => {
+    const map = { map: { name: 'Plan', effortUnit: 'days' }, nodes: [node('n-a', 'Design')] } as unknown as MapDetail;
+    const out = formatScheduleReport(map, {
+      criticalPath: { path: ['n-a'], totalDuration: 3, float: { 'n-a': 0 } },
+      schedule: [{ nodeId: 'n-a', computedStart: 0, computedEnd: 3, duration: 3 }],
+      leave: [
+        {
+          userId: 'u1',
+          name: 'Dan',
+          track: 0,
+          ranges: [{ startDate: '2026-12-21', endDate: '2026-12-22', note: 'Christmas', workingDays: 2 }],
+          days: ['2026-12-21', '2026-12-22'],
+        },
+      ],
+    } as unknown as ScheduleResult);
+    expect(out).toContain('Includes leave: Dan 21 Dec – 22 Dec');
+    expect(out).toContain('- Track 1 — Dan: 21 Dec – 22 Dec (Christmas): 2 working days — days off: 2026-12-21, 2026-12-22');
+  });
+});

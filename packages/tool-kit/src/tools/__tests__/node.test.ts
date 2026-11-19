@@ -154,6 +154,9 @@ function makeRecordingBackend(): {
     addComment: async () => { throw new Error('not implemented'); },
     listComments: async () => { throw new Error('not implemented'); },
     ackFleetNote: async () => { throw new Error('not implemented'); },
+    listLeave: async () => { throw new Error('not implemented'); },
+    addLeave: async () => { throw new Error('not implemented'); },
+    removeLeave: async () => { throw new Error('not implemented'); },
   };
   return {
     backend,

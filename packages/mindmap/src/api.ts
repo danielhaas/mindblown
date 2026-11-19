@@ -1,5 +1,6 @@
 import type {
   CommentKind,
+  LeaveRange,
   FlagBlockerKind,
   Node,
   MindMap,
@@ -1578,6 +1579,34 @@ export interface ScheduleResponse {
    * days (Mon–Fri minus `holidays`); map them with makeDayMapper.
    */
   workingCalendar?: { jurisdiction: string | null; holidays: string[] } | null;
+  /** #664 — personal leave inside the projected work, per person / track. */
+  leave?: ScheduleLeave[];
+  /** #664 — open leaves whose dates follow a person's leave: nodeId → userId. */
+  nodeLeave?: Record<string, string>;
+}
+
+export interface ScheduleLeave {
+  userId: string;
+  name: string;
+  /** The person's worker track (map `workers`), null = only via assigned nodes. */
+  track: number | null;
+  ranges: Array<{ startDate: string; endDate: string; note: string | null; workingDays: number }>;
+  /** Working days of leave inside the projected work, 'YYYY-MM-DD'. */
+  days: string[];
+}
+
+// ── Personal leave (#664) — the signed-in person's own days off ──
+
+export function listMyLeave(): Promise<{ leave: LeaveRange[] }> {
+  return request<{ leave: LeaveRange[] }>('/api/me/leave');
+}
+
+export function addMyLeave(input: { startDate: string; endDate: string; note?: string | null }): Promise<LeaveRange> {
+  return request<LeaveRange>('/api/me/leave', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function removeMyLeave(id: string): Promise<void> {
+  return request<void>(`/api/me/leave/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export interface DueViolation {

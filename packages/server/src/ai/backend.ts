@@ -7,9 +7,11 @@
 
 import { buildTimelineMarkdown } from '../export/timeline.js';
 import { publishMapToWiki } from '../services/wikiPublish.js';
-import { normalizeHolidaySettings } from '../lib/holidays.js';
+import { normalizeHolidaySettings, normalizeWorkers } from '../lib/holidays.js';
 import type { ToolBackend, MapDetail, MapSummary, NodeWithComputed } from '@mindblown/tool-kit';
-import { computeTree, parseTickWindow } from '@mindblown/core';
+import { computeTree, parseTickWindow, validateLeaveInput } from '@mindblown/core';
+import * as leaveDb from '../db/leave.js';
+import { isFleetUser } from '../db/fleets.js';
 import type { Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as nodeDb from '../db/nodes.js';
@@ -202,7 +204,7 @@ export function createChatBackend(userId: string): ToolBackend {
       // Attributed + broadcast like the REST route: a dispatch-knob write
       // from the in-app chat must show the chatting user in the audit and
       // reach an open cockpit without a reload.
-      const holidayError = normalizeHolidaySettings(fields);
+      const holidayError = normalizeHolidaySettings(fields) ?? normalizeWorkers(fields);
       if (holidayError) throw new Error(holidayError);
       // The edit-level guard already ran; connecting a fleet asks for more.
       const fleetDenied = await fleetService.authorizeMapFleetChange(userId, mapId, fields);
@@ -264,7 +266,21 @@ export function createChatBackend(userId: string): ToolBackend {
     async exportMarkdown(mapId, opts) {
       const data = await mapDb.getMap(mapId);
       if (!data) throw new Error(`Map ${mapId} not found`);
-      return buildTimelineMarkdown(data, opts ?? {});
+      return buildTimelineMarkdown(await leaveDb.withMapLeave(data), opts ?? {});
+    },
+
+    // Personal leave (#664): the chatting user's own.
+    listLeave: () => leaveDb.listLeave(userId),
+    async addLeave(input) {
+      const error = validateLeaveInput(input);
+      if (error) throw new Error(error);
+      if (await isFleetUser(userId)) throw new Error('Fleet users take no leave');
+      return leaveDb.addLeave(userId, input);
+    },
+    async removeLeave(leaveId) {
+      if (!/^[0-9a-f-]{36}$/i.test(leaveId) || !(await leaveDb.removeLeave(userId, leaveId))) {
+        throw new Error(`Leave ${leaveId} not found`);
+      }
     },
 
     async publishToWiki(mapId) {
@@ -722,6 +738,10 @@ export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new
   'listReporterChecks',
   // prs_waiting: scoped like approvals (services/approvals mapsInScope).
   'prsWaiting',
+  // Personal leave (#664): always the user's own.
+  'listLeave',
+  'addLeave',
+  'removeLeave',
 ]);
 
 /**

@@ -13,7 +13,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { CommentKind, LintRun, NodeComment, RequirementGate } from '@mindblown/core';
+import type { CommentKind, LintRun, NodeComment, RequirementGate, LeaveRange } from '@mindblown/core';
 import type { FlagBlockerInput, FlagBlockerResult, FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult, MoveNodeToMapResult } from '@mindblown/tool-kit';
 import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookEventStat, WebhookSubscription } from '@mindblown/core';
 
@@ -229,6 +229,8 @@ export interface MapDetail {
     /** #110 — public-holiday calendar; null/absent = every day counts. */
     holidayJurisdiction?: string | null;
     holidayOverrides?: { add: string[]; remove: string[] };
+    /** #664 — who does the map's work, one user id per worker track. */
+    workers?: string[];
     deployProbe?: string | null;
   };
   nodes: NodeWithComputed[];
@@ -269,6 +271,18 @@ export interface ScheduleResult {
    * makeDayMapper(projectStartDate, new Set(holidays)).
    */
   workingCalendar?: { jurisdiction: string | null; holidays: string[] } | null;
+  /**
+   * #664 — personal leave inside the projected work: per person, their
+   * worker track (null = only through assigned nodes), the ranges with
+   * their working days, and the leave days themselves. Absent on older servers.
+   */
+  leave?: Array<{
+    userId: string;
+    name: string;
+    track: number | null;
+    ranges: Array<{ startDate: string; endDate: string; note: string | null; workingDays: number }>;
+    days: string[];
+  }>;
   versionId?: string | null;
   crossVersionDependencies?: Array<{
     fromNodeId: string;
@@ -551,6 +565,7 @@ export function updateMap(
     lintAutoFix?: Partial<Record<string, boolean>>;
     holidayJurisdiction?: string | null;
     holidayOverrides?: { add: string[]; remove: string[] };
+    workers?: string[];
     deployProbe?: string | null;
     phases?: PhaseDef[];
     archived?: boolean;
@@ -601,6 +616,20 @@ export async function freezeBaseline(
   );
   const b = map.baselines[map.baselines.length - 1];
   return { id: b.id, name: b.name, createdAt: b.createdAt, nodeCount: Object.keys(b.nodes ?? {}).length, dropped: map.droppedBaselines ?? [] };
+}
+
+// ── Personal leave (#664) ──────────────────────────────────────
+
+export async function listLeave(): Promise<LeaveRange[]> {
+  return (await request<{ leave: LeaveRange[] }>('/api/me/leave')).leave;
+}
+
+export function addLeave(input: { startDate: string; endDate: string; note?: string | null }): Promise<LeaveRange> {
+  return request<LeaveRange>('/api/me/leave', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export async function removeLeave(leaveId: string): Promise<void> {
+  await request<void>(`/api/me/leave/${encodeURIComponent(leaveId)}`, { method: 'DELETE' });
 }
 
 /** The map (or a subtree) as a Markdown timeline (#637). */

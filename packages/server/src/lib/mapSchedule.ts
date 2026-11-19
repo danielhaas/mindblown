@@ -3,8 +3,8 @@
  * GET /api/maps/:id/schedule and "freeze baseline" (#113), which snapshots
  * exactly what the Gantt shows.
  */
-import { schedule, criticalPath, capacityCriticalPath, clampFocusFactor, nodesInVersion, withoutParked, latestAskDates } from '@mindblown/core';
-import type { Baseline, ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
+import { schedule, criticalPath, capacityCriticalPath, clampFocusFactor, nodesInVersion, withoutParked, latestAskDates, leaveDaysOff, isFleetBuilt } from '@mindblown/core';
+import type { Baseline, ScheduleConstraint, ScheduleCalendars, DaysOff, NodeId, Node as CoreNode, MindMap, PersonLeave } from '@mindblown/core';
 import { mapDayMapper } from './holidays.js';
 
 export interface MapScheduleOptions {
@@ -13,7 +13,20 @@ export interface MapScheduleOptions {
   workers?: string;
 }
 
-export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, opts: MapScheduleOptions = {}) {
+/** Leave of one person inside the projection (#664) — get_schedule, the Gantt, the export line. */
+export interface ScheduleLeave {
+  userId: string;
+  name: string;
+  /** The worker track that is this person's (map `workers`), null = only via assigned nodes. */
+  track: number | null;
+  /** Ranges that fall inside the projected work, each with its working days. */
+  ranges: Array<{ startDate: string; endDate: string; note: string | null; workingDays: number }>;
+  /** The working days of leave inside the projected work ('YYYY-MM-DD'), ascending. */
+  days: string[];
+}
+
+/** `leave`: the people's leave (db/leave withMapLeave) — absent = nobody's leave applies. */
+export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[]; leave?: PersonLeave[] }, opts: MapScheduleOptions = {}) {
   // Anchor day 0 of the schedule to the map's projectStartDate (or today).
   const projectStartDate = data.map.projectStartDate
     ? new Date(data.map.projectStartDate)
@@ -135,8 +148,48 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
     }
   }
 
+  // ── Personal leave (#664) ─────────────────────────────────
+  // Track t is workers[t]'s; an assigned leaf follows its assignee (on the
+  // assignee's track when they are a map worker); fleet-built work ignores
+  // leave. Without workers and leave, nothing changes.
+  const workerIds = (data.map.workers ?? []).slice(0, effectiveWorkers);
+  const leaveByUser = new Map((data.leave ?? []).map((p) => [p.userId, p]));
+  const offByUser = new Map<string, DaysOff>();
+  const offOf = (userId: string): DaysOff => {
+    let off = offByUser.get(userId);
+    if (!off) {
+      const p = leaveByUser.get(userId);
+      off = p ? leaveDaysOff(p.ranges, mapper, holidays, unitsPerDay).off : [];
+      offByUser.set(userId, off);
+    }
+    return off;
+  };
+  // Whose leave each open leaf follows: its assignee, or (by track) a worker.
+  const assignedTo = new Map<NodeId, string>();
+  const fleetBuilt = new Set<NodeId>();
+  let calendars: ScheduleCalendars | undefined;
+  if (workerIds.length > 0 || leaveByUser.size > 0) {
+    const nodesOff = new Map<NodeId, DaysOff>();
+    const pinnedTrack = new Map<NodeId, number>();
+    for (const n of scopedNodes) {
+      if (n.childrenIds.length > 0) continue;
+      if (isFleetBuilt(data.map, n)) {
+        fleetBuilt.add(n.id);
+        nodesOff.set(n.id, []);
+        continue;
+      }
+      const a = n.assigneeIds?.[0];
+      if (!a) continue;
+      assignedTo.set(n.id, a);
+      const t = workerIds.indexOf(a);
+      if (t >= 0) pinnedTrack.set(n.id, t);
+      else nodesOff.set(n.id, offOf(a));
+    }
+    calendars = { tracks: workerIds.map(offOf), nodes: nodesOff, pinnedTrack };
+  }
+
   const tracks = new Map<NodeId, number>();
-  const scheduled = schedule(scopedNodes, 0, constraints, undefined, effectiveWorkers, todayDay, completedAtByNodeId, tracks);
+  const scheduled = schedule(scopedNodes, 0, constraints, undefined, effectiveWorkers, todayDay, completedAtByNodeId, tracks, calendars);
   // The critical path is the chain that decides the projected end UNDER
   // the worker count (#112); the dependency-only CPM stays available for
   // callers that want the plan's logical chain regardless of capacity.
@@ -153,6 +206,7 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
   // Whole-day offset → date on the map's calendar (a boundary: a bar's start,
   // or its exclusive end).
   const dayToDate = (days: number): string => mapper.toDate(days).toISOString().slice(0, 10);
+  const dayToDateIso = dayToDate;
 
   // Missed deadlines (#113): the drawn bar runs past the end of the due
   // day. projectedEnd = the last working day; lateDays counted in whole
@@ -197,8 +251,53 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
     })
     .sort((a, b) => a.latestAskDate.localeCompare(b.latestAskDate));
 
+  // Leave inside the projected work (#664): per person, the ranges and
+  // working days from the start of the open work (project start or today,
+  // whichever is later — leave can push the first bar past itself) to the
+  // end of the last open bar that person works on.
+  const leave: ScheduleLeave[] = [];
+  const nodeLeave: Record<NodeId, string> = {};
+  if (leaveByUser.size > 0) {
+    const personOfLeaf = new Map<NodeId, string>();
+    const first = Math.max(0, todayDay);
+    let last = -Infinity;
+    for (const s of scheduled) {
+      const t = tracks.get(s.nodeId);
+      if (t === undefined || fleetBuilt.has(s.nodeId)) continue; // not open work, or no person
+      const person = assignedTo.get(s.nodeId) ?? workerIds[t];
+      if (!person || !leaveByUser.has(person)) continue;
+      personOfLeaf.set(s.nodeId, person);
+      last = Math.max(last, s.computedEnd);
+    }
+    if (first < last) {
+      const from = mapper.toDate(Math.floor(first / unitsPerDay)).toISOString().slice(0, 10);
+      const to = mapper.lastDay(Math.ceil(last / unitsPerDay)).toISOString().slice(0, 10);
+      const people = new Set(personOfLeaf.values());
+      for (const userId of people) {
+        const p = leaveByUser.get(userId)!;
+        const ranges: ScheduleLeave['ranges'] = [];
+        const days = new Set<string>();
+        for (const r of p.ranges) {
+          if (r.endDate < from || r.startDate > to) continue;
+          const clipped = { startDate: r.startDate < from ? from : r.startDate, endDate: r.endDate > to ? to : r.endDate };
+          const { off, days: n } = leaveDaysOff([clipped], mapper, holidays, 1);
+          if (n === 0) continue;
+          ranges.push({ ...r, workingDays: n });
+          for (const [a, b] of off) for (let o = a; o < b; o++) days.add(dayToDateIso(o));
+        }
+        if (ranges.length === 0) continue;
+        const t = workerIds.indexOf(userId);
+        leave.push({ userId, name: p.name, track: t >= 0 ? t : null, ranges, days: [...days].sort() });
+      }
+      const withLeave = new Set(leave.map((l) => l.userId));
+      for (const [nodeId, person] of personOfLeaf) if (withLeave.has(person)) nodeLeave[nodeId] = person;
+    }
+  }
+
   return {
     schedule: scheduled,
+    leave,
+    nodeLeave,
     askBy,
     criticalPath: cp,
     dependencyCriticalPath: criticalPath(scopedNodes),
@@ -234,7 +333,7 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
  * fields plus its projected bar, so the ghost bars carry the whole committed
  * plan, not only the nodes someone pinned by hand.
  */
-export function buildBaseline(data: { map: MindMap; nodes: CoreNode[] }, name: string, now: Date = new Date()): Baseline {
+export function buildBaseline(data: { map: MindMap; nodes: CoreNode[]; leave?: PersonLeave[] }, name: string, now: Date = new Date()): Baseline {
   const projection = computeMapSchedule(data);
   const projected = new Map(projection.schedule.map((s) => [s.nodeId, s]));
   const nodes: Baseline['nodes'] = {};

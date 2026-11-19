@@ -175,6 +175,9 @@ function makeRecorder(): Recorder {
     addComment: async () => { throw new Error('not used'); },
     listComments: async () => { throw new Error('not used'); },
     ackFleetNote: async () => { throw new Error('not used'); },
+    listLeave: async () => { throw new Error('not used'); },
+    addLeave: async () => { throw new Error('not used'); },
+    removeLeave: async () => { throw new Error('not used'); },
   };
   return state;
 }

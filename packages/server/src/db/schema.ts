@@ -32,6 +32,19 @@ export const users = pgTable('users', {
   kind: text('kind').notNull().default('person'),
 });
 
+// ── Personal leave (#664) ──────────────────────────────────────────
+// A person's days off, both ends inclusive. Applied on every map whose
+// work that person does (maps.workers, node assignees).
+
+export const userLeave = pgTable('user_leave', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  startDate: date('start_date').notNull(),
+  endDate: date('end_date').notNull(),
+  note: text('note'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ── System-wide key/value settings ────────────────────────────────
 
 export const systemSettings = pgTable('system_settings', {
@@ -157,6 +170,9 @@ export const maps = pgTable('maps', {
   // higher = more parallelism. Stored as REAL to allow fractional
   // values later if useful.
   workerCount: real('worker_count').notNull().default(1),
+  // Who does the map's work (#664): user ids, one per worker track. Their
+  // personal leave (user_leave) pauses the work on their track.
+  workers: jsonb('workers').notNull().default([]), // string[]
 
   // ── Forecast capacity knob: focusFactor ────────────────────────
   // Fraction of calendar time that reaches planned-ticket work (0.05–1.0).

@@ -9,7 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, MoveNodeToMapResult, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { CommentKind, NodeComment, AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookEventStat, WebhookSubscription } from '@mindblown/core';
+import type { CommentKind, NodeComment, AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookEventStat, WebhookSubscription, LeaveRange } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
 export interface FleetStatusResult {
@@ -508,6 +508,8 @@ export interface ToolBackend {
       projectStartDate?: string | null;
       hoursPerDay?: number;
       workerCount?: number;
+      /** #664 — who does the map's work, one user id per worker track. */
+      workers?: string[];
       focusFactor?: number;
       maxActiveClaims?: number;
       dispatchGate?: string[];
@@ -540,6 +542,10 @@ export interface ToolBackend {
   freezeBaseline(mapId: string, name?: string): Promise<FrozenBaseline>;
   /** The map (or a subtree) as a Markdown timeline for readers outside the project (#637). */
   exportMarkdown(mapId: string, opts?: ExportMarkdownOptions): Promise<string>;
+  // ── Personal leave (#664) — not map-scoped: the caller's own days off ──
+  listLeave(): Promise<LeaveRange[]>;
+  addLeave(input: { startDate: string; endDate: string; note?: string | null }): Promise<LeaveRange>;
+  removeLeave(leaveId: string): Promise<void>;
   /** Push the timeline to the workspace's wiki: create the page once, update it after (#637). */
   publishToWiki(mapId: string): Promise<WikiPublishResult>;
 

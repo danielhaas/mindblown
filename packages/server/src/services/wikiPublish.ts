@@ -16,6 +16,7 @@ import * as mapDb from '../db/maps.js';
 import * as wikiDb from '../db/wiki.js';
 import { decrypt, encrypt, isEncrypted } from '../crypto.js';
 import { buildTimelineMarkdown } from '../export/timeline.js';
+import * as leaveDb from '../db/leave.js';
 
 export class WikiValidationError extends Error {}
 export class WikiForbiddenError extends Error {}
@@ -135,7 +136,7 @@ export async function publishMapToWiki(
     );
   }
   const now = opts.now ?? new Date();
-  const markdown = buildTimelineMarkdown(data, { timeZone: opts.timeZone, preface: wikiPreface(mapId), now });
+  const markdown = buildTimelineMarkdown(await leaveDb.withMapLeave(data), { timeZone: opts.timeZone, preface: wikiPreface(mapId), now });
   const { title, text } = splitTitle(markdown);
   const client = createOutlineClient({ baseUrl: config.baseUrl, token: open(config.token), fetch: opts.fetch });
 
