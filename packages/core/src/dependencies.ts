@@ -6,6 +6,7 @@ import type {
   CriticalPathResult,
   EffortUnit,
 } from './types.js';
+import { isLeadTimeNode } from './types.js';
 import { hoursToBusinessDays } from './calendar.js';
 
 /**
@@ -214,6 +215,9 @@ function expandParentDependencies(nodes: Node[]): Node[] {
 export interface ScheduleConstraint {
   minStart?: number;
   maxEnd?: number;
+  /** A lead-time leaf's `requestedAt` (#654): the wait's clock runs from
+   *  here instead of from the leaf's earliest possible start. */
+  requestedAt?: number;
 }
 
 /**
@@ -380,6 +384,24 @@ function priorityTopologicalOrder(
   return out;
 }
 
+/** Earliest t >= from with [t, t + duration) clear of the busy intervals. */
+function earliestFit(busy: Array<[number, number]>, from: number, duration: number): number {
+  let t = from;
+  for (const [s, e] of busy) {
+    if (e <= t) continue;
+    if (s >= t + duration) break;
+    t = e;
+  }
+  return t;
+}
+
+/** Add [start, end) to a track's sorted busy list. */
+function book(busy: Array<[number, number]>, start: number, end: number): void {
+  let i = busy.length;
+  while (i > 0 && busy[i - 1][0] > start) i--;
+  busy.splice(i, 0, [start, end]);
+}
+
 /**
  * Priority-inheritance scheduler.
  *
@@ -413,6 +435,16 @@ function priorityTopologicalOrder(
  *    `completedAtByNodeId` map carries an entry for a done leaf, the bar
  *    ENDS at that scheduler-unit offset (real close date), with effort
  *    as width. Without an entry, falls back to ending at `todayDay`.
+ *
+ * 5. **Lead time (#654).** A leaf with `leadTime` waits on someone outside
+ *    the team: it takes no worker track, so other work runs during the
+ *    wait. It ends at `max(requestedAt ?? its earliest start, deps' end)
+ *    + leadTime` — asked early, the clock is already running — and never
+ *    before today while it is still open. Done, it ends at its close date
+ *    like any done leaf. Its bar carries `waiting: true`.
+ *
+ *    Open work fills the gaps waits leave on a worker track: a task that
+ *    fits before the next booked task goes there instead of after it.
  *
  * What this replaces: the synthetic-FS-chain machinery from #109/#121–#129.
  * The old model invented edges to mimic sequential ordering at each level,
@@ -526,6 +558,8 @@ export function schedule(
   // workerCount=1 reduces to the single-cursor model exactly.
   const workers = Math.max(1, Math.floor(workerCount));
   const trackCursors: number[] = new Array(workers).fill(projectStartDay);
+  // Busy intervals per track, sorted by start — where the gaps are.
+  const trackBusy: Array<Array<[number, number]>> = Array.from({ length: workers }, () => []);
 
   // Track which nodes are "done markers" — done leaves pinned at the
   // project anchor, and parents whose subtree is entirely done. These
@@ -545,23 +579,32 @@ export function schedule(
     // bar to the left of the today line. Don't advance any worker
     // cursor — completed work doesn't compete with future work.
     const isDone = (node.percentComplete ?? 0) >= 100;
+    const waits = isLeadTimeNode(node);
+    const pin = constraints?.get(node.id);
     if (isDone) {
-      const doneDuration = leafDuration(node.effortEstimate);
       // Position the bar so it ENDS at the node's actual close date if we
-      // have one, otherwise fall back to ending at today. Width = effort.
+      // have one, otherwise fall back to ending at today. Width = effort,
+      // or for a wait (#654) the time since it was asked.
       const endAt = completedAtByNodeId?.get(node.id) ?? todayDay;
+      const startAt = waits
+        ? Math.min(endAt, pin?.requestedAt ?? endAt - node.leadTime!)
+        : endAt - leafDuration(node.effortEstimate);
       scheduled.set(node.id, {
         nodeId: node.id,
-        computedStart: endAt - doneDuration,
+        computedStart: startAt,
         computedEnd: endAt,
-        duration: doneDuration,
+        duration: endAt - startAt,
+        ...(waits && { waiting: true }),
       });
       doneMarkers.add(node.id);
       continue;
     }
 
-    const duration = leafDuration(node.effortEstimate);
+    const duration = waits ? node.leadTime! : leafDuration(node.effortEstimate);
     let earliestStart = projectStartDay;
+    // The latest dependency constraint alone — a wait asked early starts
+    // its clock before the project start, but not before its deps.
+    let depsStart = -Infinity;
 
     // Dep constraints first — these don't depend on which track we pick.
     for (const dep of node.dependencies) {
@@ -583,26 +626,46 @@ export function schedule(
           break;
       }
       if (constraint > earliestStart) earliestStart = constraint;
+      if (constraint > depsStart) depsStart = constraint;
     }
 
     // Pin constraints next.
-    const pin = constraints?.get(node.id);
     if (pin) {
       if (pin.minStart !== undefined && pin.minStart > earliestStart) {
         earliestStart = pin.minStart;
       }
     }
 
-    // Pick the track whose cursor is earliest (greedy list scheduling).
-    // Ties broken by lowest index — deterministic and gives leaf 0 to
-    // track 0 when all cursors are tied (clean visual order on day 0).
-    let bestTrack = 0;
-    for (let t = 1; t < workers; t++) {
-      if (trackCursors[t] < trackCursors[bestTrack]) bestTrack = t;
+    if (waits) {
+      // A wait (#654): no worker track. Asked already → the clock started
+      // then (deps permitting); else it starts as early as it can. Still
+      // open, so whatever we wait for has not arrived before today.
+      const start = pin?.requestedAt !== undefined ? Math.max(pin.requestedAt, depsStart) : earliestStart;
+      const end = Math.max(start + duration, todayDay);
+      scheduled.set(node.id, {
+        nodeId: node.id,
+        computedStart: start,
+        computedEnd: end,
+        duration: end - start,
+        waiting: true,
+      });
+      continue;
     }
 
-    // Start = max(track cursor, dep/pin constraints).
-    const start = Math.max(trackCursors[bestTrack], earliestStart);
+    // Pick the track that can start this leaf earliest (greedy list
+    // scheduling); a leaf with effort may go into a gap a wait left before
+    // a booked task. Ties: the track whose cursor is earliest, then lowest
+    // index — deterministic and gives leaf 0 to track 0 when all cursors
+    // are tied (clean visual order on day 0).
+    let bestTrack = 0;
+    let start = Infinity;
+    for (let t = 0; t < workers; t++) {
+      const s = duration > 0 ? earliestFit(trackBusy[t], earliestStart, duration) : Math.max(trackCursors[t], earliestStart);
+      if (s < start || (s === start && trackCursors[t] < trackCursors[bestTrack])) {
+        start = s;
+        bestTrack = t;
+      }
+    }
     const end = start + duration;
 
     scheduled.set(node.id, {
@@ -612,7 +675,8 @@ export function schedule(
       duration,
     });
 
-    trackCursors[bestTrack] = end;
+    if (duration > 0) book(trackBusy[bestTrack], start, end);
+    if (end > trackCursors[bestTrack]) trackCursors[bestTrack] = end;
     trackOut?.set(node.id, bestTrack);
   }
 
@@ -753,8 +817,12 @@ export function capacityCriticalPath(
   const expanded = expandParentDependencies(nodes);
   const nodeById = new Map(expanded.map((n) => [n.id, n]));
   const byId = new Map(scheduled.map((s) => [s.nodeId, s]));
-  // Open leaves = the ones that took a worker track.
-  const open = scheduled.filter((s) => tracks.has(s.nodeId));
+  // Open leaves = the ones that took a worker track, and open waits (#654):
+  // a wait decides the end as much as work does.
+  const doneWait = (s: ScheduledNode) => (nodeById.get(s.nodeId)?.percentComplete ?? 0) >= 100;
+  const isOpen = (s: ScheduledNode | undefined): s is ScheduledNode =>
+    !!s && (tracks.has(s.nodeId) || (s.waiting === true && !doneWait(s)));
+  const open = scheduled.filter(isOpen);
   if (open.length === 0) return { path: [], totalDuration: 0, float: {} };
 
   let last = open[0];
@@ -769,7 +837,7 @@ export function capacityCriticalPath(
     let next: ScheduledNode | undefined;
     for (const dep of node?.dependencies ?? []) {
       const target = byId.get(dep.targetNodeId);
-      if (!target || !tracks.has(dep.targetNodeId)) continue;
+      if (!isOpen(target)) continue;
       const constraint =
         dep.type === 'FS'
           ? target.computedEnd + dep.lag
@@ -783,7 +851,8 @@ export function capacityCriticalPath(
         break;
       }
     }
-    if (!next) {
+    // Only work waits for a free worker; a wait's start is its ask or its deps.
+    if (!next && tracks.has(cur.nodeId)) {
       const track = tracks.get(cur.nodeId);
       next = open.find(
         (s) => s.nodeId !== cur.nodeId && tracks.get(s.nodeId) === track && same(s.computedEnd, cur.computedStart) && s.duration > EPS,
@@ -830,7 +899,7 @@ export function criticalPath(nodes: Node[]): CriticalPathResult {
   for (const node of sorted) {
     const duration =
       node.childrenIds.length === 0
-        ? (node.effortEstimate ?? 0)
+        ? isLeadTimeNode(node) ? node.leadTime! : (node.effortEstimate ?? 0)
         : 0;
 
     let earliestStart = 0;
@@ -942,6 +1011,39 @@ export function criticalPath(nodes: Node[]): CriticalPathResult {
     totalDuration: projectEnd,
     float: floatMap,
   };
+}
+
+/**
+ * When each open, not-yet-requested wait must be asked for (#654) so it
+ * does not delay the plan: the earliest start of the work that waits on it
+ * (FS dependents; the projected end when nothing waits on it), minus the
+ * lead time. In scheduler units — the caller turns it into a date and
+ * decides how close is "ask now".
+ */
+export function latestAskDates(
+  nodes: Node[],
+  scheduled: ScheduledNode[],
+): Array<{ nodeId: NodeId; latestStart: number }> {
+  const expanded = expandParentDependencies(nodes);
+  const byId = new Map(scheduled.map((s) => [s.nodeId, s]));
+  const projectedEnd = scheduled.reduce((m, s) => Math.max(m, s.computedEnd), -Infinity);
+  const needBy = new Map<NodeId, number>();
+  for (const n of expanded) {
+    if (n.childrenIds.length > 0) continue;
+    const s = byId.get(n.id);
+    if (!s) continue;
+    for (const dep of n.dependencies) {
+      if (dep.type !== 'FS') continue;
+      const bound = s.computedStart - dep.lag;
+      if (bound < (needBy.get(dep.targetNodeId) ?? Infinity)) needBy.set(dep.targetNodeId, bound);
+    }
+  }
+  const out: Array<{ nodeId: NodeId; latestStart: number }> = [];
+  for (const n of expanded) {
+    if (!isLeadTimeNode(n) || n.requestedAt || (n.percentComplete ?? 0) >= 100) continue;
+    out.push({ nodeId: n.id, latestStart: (needBy.get(n.id) ?? projectedEnd) - n.leadTime! });
+  }
+  return out;
 }
 
 // ── Orchestration substrate (#111) ──────────────────────────────

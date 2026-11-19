@@ -35,6 +35,8 @@ export const LINT_RULE_IDS = [
   // Stuck-work pack — work that waits without anyone being asked.
   'blocker-without-question',
   'hold-on-parent',
+  // Wrong-map guard — a ticket naming the repo another map plans.
+  'misfiled-repo',
 ] as const;
 export type LintRuleId = (typeof LINT_RULE_IDS)[number];
 
@@ -56,6 +58,7 @@ export const LINT_ACTIONS = {
   'fleet-check': { label: 'Fleet can fix it (the queue hands it out again, blocker in the brief)', bulk: false },
   'needs-human': { label: 'For a person (needs-human; blocker text into the description)', bulk: false },
   'write-brief': { label: 'Write the brief (the text becomes the description)', bulk: false },
+  'move-to-map': { label: 'Move it to the map that plans its repo', bulk: false },
 } as const;
 export type LintActionId = keyof typeof LINT_ACTIONS;
 export const LINT_ACTION_IDS = Object.keys(LINT_ACTIONS) as [LintActionId, ...LintActionId[]];
@@ -73,4 +76,5 @@ export const LINT_FIX_ACTIONS: Partial<Record<LintRuleId, LintActionId[]>> = {
   'stalled-unclaimed': ['mark-done', 'requeue', 'needs-human'],
   // A person's step, not a wait: tag it, keep the text as the next step.
   'blocker-without-question': ['needs-human'],
+  'misfiled-repo': ['move-to-map'],
 };

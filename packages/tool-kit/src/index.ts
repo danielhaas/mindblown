@@ -56,7 +56,7 @@ export type {
 } from './backend.js';
 export type { ToolSpec } from './spec.js';
 export { defineTool } from './spec.js';
-export type { MapDetail, MapSummary, NodeWithComputed, AttachmentSummary } from './types.js';
+export type { MapDetail, MapSummary, NodeWithComputed, AttachmentSummary, MisfiledRepoInfo, MoveNodeToMapResult } from './types.js';
 export { filterMapData, formatMapTree, formatReporter, formatApproval, type MapFilters } from './formatters.js';
 export { formatBytes } from './tools/attachments.js';
 export { specToOpenAiTool, type OpenAiTool } from './openai.js';

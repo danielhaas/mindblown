@@ -79,7 +79,11 @@ function renderTreeNode(
   parts.push(healthIcon(node.healthSignal));
   parts.push(progressBar(node.computedProgress));
 
-  if (isLeaf) {
+  if (isLeaf && (node.leadTime ?? 0) > 0) {
+    // A wait on someone outside the team (#654), not effort.
+    const who = node.waitingOn ? ` on ${node.waitingOn}` : '';
+    parts.push(`waiting${who}: lead time ${node.leadTime}, ${node.requestedAt ? `requested ${node.requestedAt}` : 'not requested yet'}`);
+  } else if (isLeaf) {
     parts.push(
       node.effortEstimate == null
         ? 'effort: —'

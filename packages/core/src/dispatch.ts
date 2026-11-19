@@ -18,6 +18,7 @@ import type { ApprovalState, Node, NodeMap, StatusDef } from './types.js';
 import { isForgeLink } from './types.js';
 import { effectiveVersionId } from './versions.js';
 import { isReady } from './dependencies.js';
+import { MISFILED_TAG } from './misfiled.js';
 import { buildIsDonePredicate, buildTodoIds } from './statusWorkflow.js';
 import { proseMirrorToPlainText } from './richtext.js';
 
@@ -293,9 +294,10 @@ export function pullableNodes(nodes: Node[], workflow: StatusDef[]): { pullable:
  * Kira dispatcher's SKIP_LABELS plus `needs-human`. A ticket carrying one
  * is never granted by get_next_ticket: it needs a person (a token scope, a
  * decision, credentials), and every worker turn spent on it came back
- * blocked. Case-insensitive.
+ * blocked. Case-insensitive. `misfiled?` (core misfiled.ts): the ticket
+ * names another map's repo — held until it is moved or a person confirms.
  */
-export const DISPATCH_SKIP_TAGS = ['kira-skip', 'needs-human', 'needs-daniel-input', 'needs-rita-review'] as const;
+export const DISPATCH_SKIP_TAGS = ['kira-skip', 'needs-human', 'needs-daniel-input', 'needs-rita-review', MISFILED_TAG] as const;
 
 /** The skip tag a node carries, or null — the first match, as written on the node. */
 export function dispatchSkipTag(node: Pick<Node, 'tags'>): string | null {

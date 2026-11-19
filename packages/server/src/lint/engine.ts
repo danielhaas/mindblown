@@ -23,6 +23,7 @@ import {
   STALLED_AFTER_HOURS,
   type StalledLeaf,
   type ForgeProblem,
+  type MisfiledRepo,
   parentHolds,
   PARKED_HOLD_TAG,
 } from '@mindblown/core';
@@ -173,6 +174,12 @@ export interface LintOptions {
    * blocker-without-question — a map without a fleet has no card.
    */
   openAskNodeIds?: Set<string>;
+  /**
+   * Open leaves that name a repo another map plans (core findMisfiledRepo,
+   * read by services/misfiled.ts). Omit to skip misfiled-repo — an unbound
+   * map plans no repo, so nothing on it can be misfiled.
+   */
+  misfiled?: Map<string, MisfiledRepo>;
   nodeId?: string;
   versionId?: string;
   cycleId?: string;
@@ -836,6 +843,27 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
       const why = h.tag ? `tag ${h.tag}` : 'a blocker';
       return [finding(parent, `${why} holds ${h.count} open ticket${h.count === 1 ? '' : 's'} below it`)];
     }),
+  });
+
+  // 22. misfiled-repo — a ticket naming the repo another map plans. The
+  // fleet clones this map's repo for it: on 19.11.2026 four claude-fleet
+  // tickets in the MindBlown map sent workers to the wrong repo.
+  const misfiled = opts.misfiled;
+  rules.push({
+    ruleId: 'misfiled-repo',
+    severity: 'warn',
+    title: 'Tickets naming the repo another map plans',
+    why: 'One map plans one repo: the fleet works a ticket in this map\'s repo, so a ticket for another repo sends a worker to the wrong code (or nowhere).',
+    fix: 'Move it to the map that plans its repo. If it really belongs here, dismiss the finding and take the misfiled? tag off.',
+    findings: misfiled
+      ? openLeaves
+          .filter((n) => misfiled.has(n.id))
+          .map((n) => {
+            const m = misfiled.get(n.id)!;
+            return finding(n, `names ${m.repo}, which map "${m.suggestedMapName}" plans`, act('move-to-map'));
+          })
+      : [],
+    skipped: misfiled ? undefined : 'the map plans no repo',
   });
 
   // ── Apply dismissals ──

@@ -1506,6 +1506,19 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS expected_done_at TIMESTAMPTZ
   `);
 
+  // ── nodes lead time (#654) ─────────────────────────────────────
+  // A wait on someone outside the team: lead_time (map effort unit),
+  // requested_at (when we asked) and waiting_on (who).
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS lead_time REAL
+  `);
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS requested_at DATE
+  `);
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS waiting_on TEXT
+  `);
+
   // ── maps.setup_completed_at (guided onboarding) ─────────────────
   // NULL = a new project still showing its setup checklist. Every map from
   // before the checklist counts as set up, once.

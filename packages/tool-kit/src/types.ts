@@ -78,6 +78,12 @@ export interface NodeWithComputed {
   expectedDoneAt?: string | null;
   /** Parked branch (#655) — out of the schedule and the fleet's pull. Older servers omit it. */
   parked?: boolean;
+  /** Lead time (#654): a wait on someone outside the team, map effort unit. */
+  leadTime?: number | null;
+  /** When we asked (YYYY-MM-DD). */
+  requestedAt?: string | null;
+  /** Who we wait on. */
+  waitingOn?: string | null;
   computedEffort: number;
   /** Effort in parked branches below this node, left out of computedEffort (#655). */
   parkedEffort?: number;
@@ -89,6 +95,30 @@ export interface NodeWithComputed {
    * the attachment tools only read it to report a count.
    */
   attachments?: AttachmentSummary[];
+  /**
+   * Set on create_node's answer when the node names the repo another map
+   * plans (wrong-map guard): the node was created but held from the fleet
+   * (tag `misfiled?`) — move it with move_node_to_map.
+   */
+  misfiled?: MisfiledRepoInfo | null;
+}
+
+/** The repo a misfiled node names and the map that plans it (mirrors core MisfiledRepo). */
+export interface MisfiledRepoInfo {
+  repo: string;
+  suggestedMapId: string;
+  suggestedMapName: string;
+}
+
+/** move_node_to_map's answer. */
+export interface MoveNodeToMapResult {
+  node: NodeWithComputed;
+  movedIds: string[];
+  fromMapId: string;
+  toMapId: string;
+  toMapName: string;
+  /** What did not come along: dropped issue links and dependencies, a released claim. */
+  notes: string[];
 }
 
 /** One attachment as the tools report it (mirrors core `Attachment`). */

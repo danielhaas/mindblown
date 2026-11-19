@@ -26,6 +26,8 @@ import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
 import { readAttachmentText } from '../lib/attachmentText.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
 import { issueCloseHeld } from '../db/reporterChecks.js';
+import { detectMisfiled, withMisfiledHold } from '../services/misfiled.js';
+import { moveNodeToMap, MoveToMapError } from '../services/moveToMap.js';
 
 /**
  * Ceiling for a file sent inline as base64 (`…/attachments/file`). 8 MB
@@ -224,6 +226,9 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       startDate?: string;
       dueDate?: string;
       expectedDoneAt?: string | null;
+      leadTime?: number | null;
+      requestedAt?: string | null;
+      waitingOn?: string | null;
       autoProgress?: 'off' | 'children';
       /** Parked branch (#655): kept in the map, out of the schedule and the fleet's pull. */
       parked?: boolean;
@@ -261,10 +266,18 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     if (!isValidExpectedDoneAt(body.expectedDoneAt)) {
       return reply.status(400).send({ error: EXPECTED_DONE_AT_ERROR });
     }
+    const leadTimeError = leadTimeFieldsError(body);
+    if (leadTimeError) {
+      return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: leadTimeError } });
+    }
 
     // `skipAutoLink` is not a column on the nodes table — strip it before
     // forwarding to the DB layer.
     const { skipAutoLink, ...nodeFields } = body;
+    // Wrong-map guard: a ticket naming the repo another map plans is still
+    // created, but held from the fleet and the answer says where it belongs.
+    const misfiled = await detectMisfiled(body, req.params.id, req.userId).catch(() => null);
+    if (misfiled) nodeFields.tags = withMisfiledHold(nodeFields.tags);
     let node: CoreNode;
     try {
       node = await nodeDb.createNode({
@@ -324,8 +337,40 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       })
       .catch(() => {});
 
-    return reply.status(201).send(node);
+    return reply.status(201).send(misfiled ? { ...node, misfiled } : node);
   });
+
+  // ── POST /api/maps/:id/nodes/:nodeId/move-to-map ─────────────
+  // Body: { toMapId, parentId? } — re-home a node (and its subtree) in
+  // another map of the same workspace (services/moveToMap.ts). The guard
+  // checks edit on this map; the service checks edit on the target.
+  app.post<{ Params: { id: string; nodeId: string }; Body: { toMapId?: unknown; parentId?: unknown } }>(
+    '/api/maps/:id/nodes/:nodeId/move-to-map',
+    async (req, reply) => {
+      const { toMapId, parentId } = req.body ?? {};
+      if (typeof toMapId !== 'string' || toMapId === '') {
+        return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'toMapId is required' } });
+      }
+      if (parentId != null && typeof parentId !== 'string') {
+        return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'parentId must be a string' } });
+      }
+      try {
+        const result = await moveNodeToMap({
+          nodeId: req.params.nodeId,
+          fromMapId: req.params.id,
+          toMapId,
+          parentId: (parentId as string | null | undefined) ?? null,
+          userId: req.userId ?? null,
+        });
+        return reply.send(result);
+      } catch (err) {
+        if (err instanceof MoveToMapError) {
+          return reply.status(err.status).send({ error: { code: err.code, message: err.message } });
+        }
+        throw err;
+      }
+    },
+  );
 
   // ── PUT /api/maps/:id/nodes/reorder — Reorder children ───────
   // NOTE: Must be registered BEFORE the parametric /:nodeId routes
@@ -966,6 +1011,27 @@ function isValidExpectedDoneAt(v: unknown): boolean {
   return day.getUTCMonth() === +m[2] - 1 && day.getUTCDate() === +m[3];
 }
 
+/**
+ * Lead-time fields (#654): leadTime a non-negative number, requestedAt a
+ * calendar date (YYYY-MM-DD), waitingOn text — each may be null (clear) or
+ * omitted. Returns the problem, or null when they are fine.
+ */
+export function leadTimeFieldsError(body: { leadTime?: unknown; requestedAt?: unknown; waitingOn?: unknown }): string | null {
+  const { leadTime, requestedAt, waitingOn } = body;
+  if (leadTime != null && (typeof leadTime !== 'number' || !Number.isFinite(leadTime) || leadTime < 0)) {
+    return 'leadTime must be a non-negative number or null';
+  }
+  if (requestedAt != null) {
+    const m = typeof requestedAt === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(requestedAt) : null;
+    const day = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
+    if (!m || !day || day.getUTCMonth() !== +m[2] - 1 || day.getUTCDate() !== +m[3]) {
+      return 'requestedAt must be a date (YYYY-MM-DD) or null';
+    }
+  }
+  if (waitingOn != null && typeof waitingOn !== 'string') return 'waitingOn must be text or null';
+  return null;
+}
+
 const EXPECTED_DONE_AT_ERROR = {
   code: 'VALIDATION_ERROR',
   message: 'expectedDoneAt must be an ISO 8601 timestamp or null',
@@ -986,6 +1052,10 @@ async function applyNodeUpdate(
 ): Promise<NodeUpdateResult> {
   if (!isValidExpectedDoneAt(body.expectedDoneAt)) {
     return { ok: false, status: 400, error: EXPECTED_DONE_AT_ERROR };
+  }
+  const leadTimeError = leadTimeFieldsError(body);
+  if (leadTimeError) {
+    return { ok: false, status: 400, error: { code: 'VALIDATION_ERROR', message: leadTimeError } };
   }
 
   // Snapshot current values of tracked fields before mutating so we can

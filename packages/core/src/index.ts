@@ -43,7 +43,7 @@ export type {
   NodeMap,
 } from './types.js';
 
-export { FORGE_LINK_PROVIDERS, isForgeLink, forgeLabel, userReporter } from './types.js';
+export { FORGE_LINK_PROVIDERS, isForgeLink, forgeLabel, userReporter, isLeadTimeNode } from './types.js';
 export type { ApprovalState, ForgeKindName, ForgeProblem, NodeApproval, NodeReporter } from './types.js';
 
 // Computation engine
@@ -76,6 +76,7 @@ export {
   topologicalSort,
   schedule,
   criticalPath, capacityCriticalPath,
+  latestAskDates,
   // Orchestration substrate (#111)
   resolvedSiblingOrder,
   isReady,
@@ -159,6 +160,10 @@ export {
   planUnblock,
 } from './dispatch.js';
 export type { DispatchPolicyKey, GateEntry, GateTerm, DispatchState, DispatchQueueSnapshot, DispatchHold, ParentHold, UnblockPlan } from './dispatch.js';
+
+// Wrong-map guard — a ticket that names another map's repo
+export { MISFILED_TAG, namedRepos, parseRepoRef, findMisfiledRepo, misfiledHint } from './misfiled.js';
+export type { NamedRepo, RepoBinding, MapRepoCandidate, MisfiledRepo } from './misfiled.js';
 
 // Leidang fleet telemetry — rollup/tick shapes + the reading the Fleet card shows
 export {

@@ -3,7 +3,7 @@
  * GET /api/maps/:id/schedule and "freeze baseline" (#113), which snapshots
  * exactly what the Gantt shows.
  */
-import { schedule, criticalPath, capacityCriticalPath, clampFocusFactor, nodesInVersion, withoutParked } from '@mindblown/core';
+import { schedule, criticalPath, capacityCriticalPath, clampFocusFactor, nodesInVersion, withoutParked, latestAskDates } from '@mindblown/core';
 import type { Baseline, ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
 import { mapDayMapper } from './holidays.js';
 
@@ -96,10 +96,12 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
   for (const n of scopedNodes) {
     const pin: ScheduleConstraint = {};
     if (n.startDate) pin.minStart = toDayOffset(n.startDate);
+    // A wait's clock starts when we asked (#654).
+    if (n.requestedAt) pin.requestedAt = toDayOffset(n.requestedAt);
     // The deadline is the END of the due day: work whose last day is the
     // due date is on time (#113 review).
     if (n.dueDate) pin.maxEnd = dueEndDay(n.dueDate) * unitsPerDay;
-    if (pin.minStart !== undefined || pin.maxEnd !== undefined) {
+    if (pin.minStart !== undefined || pin.maxEnd !== undefined || pin.requestedAt !== undefined) {
       constraints.set(n.id, pin);
     }
   }
@@ -181,8 +183,23 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
     .filter((v) => v.lateDays > 0)
     .sort((a, b) => b.lateDays - a.lateDays);
 
+  // Waits not asked for yet (#654): the last day to ask without delaying
+  // the plan. risk_scan flags the ones due soon as "ask now".
+  const askBy = latestAskDates(scopedNodes, scheduled)
+    .map((a) => {
+      const node = scopedById.get(a.nodeId)!;
+      return {
+        nodeId: a.nodeId,
+        text: node.text,
+        waitingOn: node.waitingOn ?? null,
+        latestAskDate: dayToDate(Math.floor(a.latestStart / unitsPerDay)),
+      };
+    })
+    .sort((a, b) => a.latestAskDate.localeCompare(b.latestAskDate));
+
   return {
     schedule: scheduled,
+    askBy,
     criticalPath: cp,
     dependencyCriticalPath: criticalPath(scopedNodes),
     projectStartDate: projectStartDate.toISOString().slice(0, 10),

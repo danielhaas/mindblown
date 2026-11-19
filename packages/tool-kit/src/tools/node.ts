@@ -1,11 +1,18 @@
 import { z } from 'zod';
 import { defineTool } from '../spec.js';
+import { misfiledHint } from '@mindblown/core';
 import { formatApproval, formatClaim, formatReporter } from '../formatters.js';
 
 /** An ETA given as minutes from now, as the ISO timestamp the server stores. */
 export function etaFromMinutes(minutes: number, now: Date = new Date()): string {
   return new Date(now.getTime() + minutes * 60_000).toISOString();
 }
+
+const LEAD_TIME_DESC =
+  "Lead time: how long this leaf waits on someone outside the team (another team's sign-off, credentials, a VM someone else creates), in the map's effort unit. Not worker effort: the scheduler gives it no worker slot (other work runs during the wait), leaves it out of effort and progress roll-ups, and starts everything that depends on it only when the wait is over. Use it instead of an effort estimate on outside items.";
+const REQUESTED_AT_DESC =
+  'When we asked (YYYY-MM-DD). Starts the lead-time clock: asked early, the wait ends earlier and dependent work moves up. Unset = the scheduler assumes we ask as soon as possible, and risk_scan says "ask now" when the last day to ask comes close.';
+const WAITING_ON_DESC = 'Who we are waiting on (free text, e.g. "LOKE engineering"), shown with the wait.';
 
 export const createNodeTool = defineTool({
   name: 'create_node',
@@ -31,6 +38,17 @@ export const createNodeTool = defineTool({
       .datetime({ offset: true })
       .optional()
       .describe('Your ETA for this node (ISO 8601 with offset): when you expect to be done. Cannot be combined with etaMinutes.'),
+    leadTime: z
+      .number()
+      .min(0)
+      .optional()
+      .describe(LEAD_TIME_DESC),
+    requestedAt: z
+      .string()
+      .date()
+      .optional()
+      .describe(REQUESTED_AT_DESC),
+    waitingOn: z.string().optional().describe(WAITING_ON_DESC),
     etaMinutes: z
       .number()
       .int()
@@ -126,13 +144,15 @@ export const createNodeTool = defineTool({
     }
     if (etaMinutes !== undefined) cleanFields.expectedDoneAt = etaFromMinutes(etaMinutes);
     const node = await backend.createNode(mapId, parentId, text, cleanFields);
-    const base = `Created node "${text}" (id: ${node.id}) under parent ${parentId}`;
+    let out = `Created node "${text}" (id: ${node.id}) under parent ${parentId}`;
     // Flag missing estimate so agents/users don't forget to size new work —
     // unestimated leaves under-count forecasts and "ready node" picks.
     if (fields.effortEstimate == null) {
-      return `${base}. No effort estimate set — call set_estimate (or update_node with effortEstimate) once the size is known.`;
+      out += '. No effort estimate set — call set_estimate (or update_node with effortEstimate) once the size is known.';
     }
-    return base;
+    // Wrong-map guard: created, but held from the fleet until it is moved.
+    if (node.misfiled) out += `\n${misfiledHint(node.misfiled)}`;
+    return out;
   },
 });
 
@@ -166,6 +186,19 @@ export const updateNodeTool = defineTool({
       .nullable()
       .optional()
       .describe('Your ETA for this node (ISO 8601 with offset): when you expect to be done. Shown on the Kanban card, "overdue" once past. null clears it. Cannot be combined with etaMinutes.'),
+    leadTime: z
+      .number()
+      .min(0)
+      .nullable()
+      .optional()
+      .describe(`${LEAD_TIME_DESC} null clears it.`),
+    requestedAt: z
+      .string()
+      .date()
+      .nullable()
+      .optional()
+      .describe(`${REQUESTED_AT_DESC} null clears it.`),
+    waitingOn: z.string().nullable().optional().describe(`${WAITING_ON_DESC} null clears it.`),
     etaMinutes: z
       .number()
       .int()
@@ -363,6 +396,25 @@ export const moveNodeTool = defineTool({
   handler: async (backend, { mapId, nodeId, newParentId, index }) => {
     await backend.moveNode(mapId, nodeId, newParentId, index);
     return `Moved node ${nodeId} under parent ${newParentId}${index !== undefined ? ` at position ${index}` : ''}.`;
+  },
+});
+
+export const moveNodeToMapTool = defineTool({
+  name: 'move_node_to_map',
+  description:
+    "Move a node (and its subtree) to another map of the same workspace — for a ticket filed in the wrong map (create_node and plan_lint's misfiled-repo say which map plans the repo it names). It keeps its id, text, description, priority, estimate, progress, tags, reporter, approval, comments and attachments. Per map and so cleared: version, sprint, phase. An issue link stays only when it points at the target map's repo (else dropped, with a note); a dependency across the two maps is dropped, with a note on both ends; a claim is released — refused while an agent is working on it. The misfiled? hold comes off. Needs edit on both maps.",
+  schema: {
+    nodeId: z.string().describe('The node to move'),
+    fromMapId: z.string().describe('The map it is in now'),
+    toMapId: z.string().describe('The map to move it to'),
+    parentId: z.string().optional().describe("Parent in the target map. Default: the target map's root."),
+  },
+  handler: async (backend, { nodeId, fromMapId, toMapId, parentId }) => {
+    const r = await backend.moveNodeToMap(fromMapId, nodeId, toMapId, parentId);
+    const count = r.movedIds.length > 1 ? ` with ${r.movedIds.length - 1} node(s) below it` : '';
+    const lines = [`Moved "${r.node.text}" (id: ${r.node.id})${count} to map ${r.toMapName} (${r.toMapId}), under ${r.node.parentId}.`];
+    for (const n of r.notes) lines.push(`- ${n}`);
+    return lines.join('\n');
   },
 });
 
@@ -657,6 +709,7 @@ export const nodeTools = [
   restoreNodeTool,
   listRecentlyDeletedTool,
   moveNodeTool,
+  moveNodeToMapTool,
   flagBlockerTool,
   clearBlockerTool,
   searchNodesTool,

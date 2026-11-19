@@ -6,6 +6,7 @@ import type {
   ComputedNodeValues,
   BlockedBy,
 } from './types.js';
+import { isLeadTimeNode } from './types.js';
 
 /**
  * Compute the effort rollup for a node — the user-facing total.
@@ -21,6 +22,8 @@ import type {
  */
 export function computeEffort(node: Node, nodeMap: NodeMap, inParked: boolean = node.parked === true): number {
   if (node.childrenIds.length === 0) {
+    // A wait on someone outside the team is not our effort (#654).
+    if (isLeadTimeNode(node)) return 0;
     return node.effortEstimate ?? 0;
   }
 
@@ -69,6 +72,8 @@ export function computeParkedEffort(node: Node, nodeMap: NodeMap): number {
  */
 function effortWeight(node: Node, nodeMap: NodeMap, inParked: boolean): number {
   if (node.childrenIds.length === 0) {
+    // A wait carries no weight in % complete (#654).
+    if (isLeadTimeNode(node)) return 0;
     return node.effortEstimate ?? 1;
   }
 
