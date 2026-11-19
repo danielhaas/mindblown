@@ -76,6 +76,8 @@ import { onBroadcast, registerWebSocket } from './ws.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { wikiRoutes } from './routes/wiki.js';
 import { deployDriftRoutes } from './routes/deployDrift.js';
+import { buildInfoRoutes } from './routes/buildInfo.js';
+import { buildInfo } from './services/buildInfo.js';
 import { driftGit, runDeployDriftCheck, setLatestDeployDrift } from './services/deployDrift.js';
 import { runProbeChecks } from './services/deployProbe.js';
 import { handleBroadcast, startWebhooks } from './services/webhooks.js';
@@ -117,6 +119,11 @@ async function main(): Promise<void> {
   app.get('/api/health', async () => {
     return { status: 'ok', timestamp: new Date().toISOString() };
   });
+
+  // ── The running commit, for deploy probes (before auth) ────────
+  // Read now, so builtAt is when this process started on the commit.
+  void buildInfo();
+  await app.register(buildInfoRoutes);
 
   // ── AI backend health (#429) — for the monitor, before auth ────
   // 503 once a configured local backend has been unreachable for 2 min.

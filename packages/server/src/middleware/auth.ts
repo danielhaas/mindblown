@@ -75,7 +75,7 @@ async function authPreHandler(req: FastifyRequest, reply: FastifyReply): Promise
 
 /**
  * Register the auth middleware on all protected routes.
- * Skips /api/auth/* and /api/health.
+ * Skips /api/auth/*, /api/health and /api/version.
  */
 export async function registerAuthMiddleware(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', async (req, reply) => {
@@ -87,6 +87,8 @@ export async function registerAuthMiddleware(app: FastifyInstance): Promise<void
       url.startsWith('/api/auth/login') ||
       url.startsWith('/api/auth/github/install/callback') ||
       url.startsWith('/api/health') ||
+      url === '/api/version' ||
+      url.startsWith('/api/version?') ||
       url.startsWith('/api/webhooks/') ||
       url.startsWith('/ws/') ||
       // Calendar feeds authenticate via a per-map HMAC token on the
