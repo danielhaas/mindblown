@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { linksAnyExternalId } from './externalLinkFilter.js';
 import { db } from './connection.js';
-import { nodes, maps, changeEvents, mediaOwners, reporterChecks } from './schema.js';
+import { nodes, maps, versions, changeEvents, mediaOwners, reporterChecks } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
-import { hasCycle, resolveStatusDef, isForgeLink, isPrematureCloseLink, BLOCKED_TAG, WORKER_WAIT_NOTE } from '@mindblown/core';
+import { defaultVersionForNewLeaf, hasCycle, resolveStatusDef, isForgeLink, isPrematureCloseLink, BLOCKED_TAG, WORKER_WAIT_NOTE } from '@mindblown/core';
 import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, NodeApproval, NodeReporter, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
 import { approvalForNewNode } from '../services/trustPolicy.js';
@@ -322,6 +322,51 @@ export interface CreateNodeInput {
   cycleId?: string | null;
 }
 
+/** The version createNode gave a node by default — the answer says so ("added to V1"). */
+export interface VersionDefault {
+  id: string;
+  name: string;
+}
+
+const versionDefaults = new WeakMap<CoreNode, VersionDefault>();
+
+/** The active version createNode gave this node because it came without one, or null. */
+export function versionDefaultOf(node: CoreNode): VersionDefault | null {
+  return versionDefaults.get(node) ?? null;
+}
+
+/**
+ * The version a new node gets when the caller named none (`versionId`
+ * undefined — an explicit null keeps it unversioned): in a map whose gate
+ * names versions, the active one (core defaultVersionForNewLeaf), unless
+ * the node inherits a version from its parent chain already or is created
+ * done. Every create path passes through createNode — create_node, the
+ * intake, agents, forge import, bulk — so a ticket filed without a version
+ * no longer lands outside the gate where the fleet never sees it.
+ */
+async function versionDefaultFor(handle: DbHandle, input: CreateNodeInput, done: boolean): Promise<VersionDefault | null> {
+  if (input.versionId !== undefined || done) return null;
+  const [mapRow] = await handle.select({ gate: maps.dispatchGate }).from(maps).where(eq(maps.id, input.mapId));
+  const gate = (mapRow?.gate as string[] | null) ?? [];
+  if (gate.length === 0) return null;
+  const rows = await handle
+    .select({ id: versions.id, name: versions.name, status: versions.status, sortOrder: versions.sortOrder })
+    .from(versions)
+    .where(eq(versions.mapId, input.mapId));
+  const active = defaultVersionForNewLeaf(gate, rows);
+  if (!active) return null;
+  // Inherited from the parent chain: the node is in that version already.
+  const seen = new Set<string>();
+  for (let id: string | null = input.parentId; id && !seen.has(id); ) {
+    seen.add(id);
+    const [p] = await handle.select({ parentId: nodes.parentId, versionId: nodes.versionId }).from(nodes).where(eq(nodes.id, id));
+    if (!p) break;
+    if (p.versionId) return null;
+    id = p.parentId;
+  }
+  return { id: active.id, name: active.name };
+}
+
 export async function createNode(
   input: CreateNodeInput,
   /**
@@ -371,6 +416,7 @@ export async function createNode(
   // The approval stamp (#492), from the reporter against the map's trust
   // policy — every create path passes through here, so none can skip it.
   const approval = await approvalForNewNode(input.mapId, input.reportedBy ?? null, now);
+  const versionDefault = await versionDefaultFor(handle, input, statusDef?.category === 'done');
 
   // Create the node
   let row;
@@ -414,7 +460,7 @@ export async function createNode(
       description: input.description ?? null,
       tags: input.tags ?? [],
       scopes: input.scopes ?? [],
-      versionId: input.versionId ?? null,
+      versionId: input.versionId ?? versionDefault?.id ?? null,
       cycleId: input.cycleId ?? null,
       customFields: {},
       dependencies: [],
@@ -457,7 +503,9 @@ export async function createNode(
   // only forces one extra DB round-trip on the next triage.
   invalidateMapContext(input.mapId);
 
-  return dbNodeToCore(row as unknown as Record<string, unknown>);
+  const created = dbNodeToCore(row as unknown as Record<string, unknown>);
+  if (versionDefault) versionDefaults.set(created, versionDefault);
+  return created;
 }
 
 // ── Get ────────────────────────────────────────────────────────────

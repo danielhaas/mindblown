@@ -28,6 +28,7 @@ export type {
   SkippedTicket,
   GetNextTicketResult,
   FleetPullMapOutcome,
+  GatedOutCount,
   TicketRepo,
   TicketRepoCredentials,
   // Closed-issue audit (premature-close backfill)

@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
   rollups: [] as unknown[],
   moveWrite: vi.fn(),
   createNode: vi.fn(),
+  versionDefaultOf: vi.fn((_n: unknown): { id: string; name: string } | null => null),
   createComment: vi.fn(async () => ({})),
   recordEvent: vi.fn(async () => {}),
   recordClaimTransition: vi.fn(async () => {}),
@@ -69,6 +70,7 @@ vi.mock('../../db/nodes.js', async (importOriginal) => {
     getNode: async (id: string) => h.nodes.get(id) ?? null,
     getNodeMapId: async (id: string) => (h.nodes.get(id)?.mapId as string | undefined) ?? null,
     createNode: h.createNode,
+    versionDefaultOf: (n: unknown) => h.versionDefaultOf(n),
     moveSubtreeToMap: h.moveWrite,
   };
 });
@@ -172,6 +174,23 @@ const create = (payload: Record<string, unknown>) =>
   app.inject({ method: 'POST', url: `/api/maps/${MB}/nodes`, headers: { 'x-user': 'dan' }, payload });
 const move = (nodeId: string, payload: Record<string, unknown>, user = 'dan', fromMapId = MB) =>
   app.inject({ method: 'POST', url: `/api/maps/${fromMapId}/nodes/${nodeId}/move-to-map`, headers: { 'x-user': user }, payload });
+
+describe('create_node — the gate default', () => {
+  it('a node given the active version says so in the answer', async () => {
+    h.versionDefaultOf.mockReturnValueOnce({ id: 'v1', name: 'V1' });
+    const res = await create({ parentId: 'mb-root', text: 'TeamSnap OAuth' });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().versionDefault).toEqual({ id: 'v1', name: 'V1' });
+    expect((h.createNode.mock.calls[0][0] as { versionId?: unknown }).versionId).toBeUndefined();
+  });
+
+  it('an explicit versionId: null reaches the DB layer as null; no default, nothing said', async () => {
+    const res = await create({ parentId: 'mb-root', text: 'later', versionId: null });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().versionDefault).toBeUndefined();
+    expect((h.createNode.mock.calls[0][0] as { versionId?: unknown }).versionId).toBeNull();
+  });
+});
 
 describe('create_node — wrong-map guard', () => {
   it('the 19.11 case: created, warned, held from the fleet', async () => {

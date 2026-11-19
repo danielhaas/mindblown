@@ -342,7 +342,9 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       })
       .catch(() => {});
 
-    return reply.status(201).send(misfiled ? { ...node, misfiled } : node);
+    // The gate default (nodeDb.versionDefaultOf): the answer says "added to V1".
+    const versionDefault = nodeDb.versionDefaultOf(node);
+    return reply.status(201).send({ ...node, ...(misfiled ? { misfiled } : {}), ...(versionDefault ? { versionDefault } : {}) });
   });
 
   // ── POST /api/maps/:id/nodes/:nodeId/move-to-map ─────────────

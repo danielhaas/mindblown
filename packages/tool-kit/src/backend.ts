@@ -363,6 +363,18 @@ export interface FleetPullMapOutcome {
   name: string;
   /** hold = the map's cap is 0; cap = the map is at its own ceiling; empty = nothing dispatchable; archived = on hold by archive. */
   reason: 'hold' | 'cap' | 'empty' | 'archived';
+  /** With `empty`: ready tickets this map's gate keeps out. */
+  gatedOut?: GatedOutCount;
+}
+
+/**
+ * Ready tickets outside the dispatch gate — what an idle fleet would take
+ * if the gate let them in. Set with `empty` only, when there are any.
+ */
+export interface GatedOutCount {
+  count: number;
+  /** Of them, with no version (own or inherited). */
+  unversioned: number;
 }
 
 export interface GetNextTicketResult {
@@ -389,6 +401,12 @@ export interface GetNextTicketResult {
   fleet?: { id: string; name: string; active: number; cap: number };
   /** Fleet pulls only: maps that gave nothing, and why. */
   maps?: FleetPullMapOutcome[];
+  /**
+   * With `empty`: ready tickets the gate keeps out (summed over the maps on
+   * a fleet pull). "empty" then means "nothing inside the gate", not
+   * "nothing to do" — the map owner gets a question about them.
+   */
+  gatedOut?: GatedOutCount;
   /**
    * Granted: where the ticket's code lives — the map's forge binding (#507).
    * null = the map has no repo connected. No credential here; a fleet key

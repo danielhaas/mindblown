@@ -290,7 +290,8 @@ export function createChatBackend(userId: string): ToolBackend {
       broadcast(mapId, { type: 'node:created', node });
       scheduleEmbedNode(node.id);
       const out = toNodeWithComputed(node, undefined);
-      return misfiled ? { ...out, misfiled } : out;
+      const versionDefault = nodeDb.versionDefaultOf(node);
+      return { ...out, ...(misfiled ? { misfiled } : {}), ...(versionDefault ? { versionDefault } : {}) };
     },
 
     async updateNode(mapId, nodeId, fields) {

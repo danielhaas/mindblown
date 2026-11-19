@@ -113,6 +113,11 @@ export const bulkCreateNodesTool = defineTool({
             .string()
             .optional()
             .describe('Phase reference — id of a PhaseDef from the map\'s phases list (add phases via update_map first)'),
+          versionId: z
+            .string()
+            .nullable()
+            .optional()
+            .describe("Version ID. Omitted in a map whose dispatchGate names versions: the map's active version. null keeps it unversioned."),
         }),
       )
       .describe('Array of node definitions to create, processed in order'),
@@ -133,7 +138,9 @@ export const bulkCreateNodesTool = defineTool({
         const node = await backend.createNode(mapId, resolvedParentId, text, cleanFields);
         created++;
         if (tempId) tempIdMap.set(tempId, node.id);
-        results.push(`  ${tempId ?? `[${i}]`}: "${text}" created (id: ${node.id}) under ${resolvedParentId}`);
+        results.push(
+          `  ${tempId ?? `[${i}]`}: "${text}" created (id: ${node.id}) under ${resolvedParentId}${node.versionDefault ? ` — added to ${node.versionDefault.name}, the active version` : ''}`,
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         results.push(`  ${tempId ?? `[${i}]`}: "${text}" FAILED — ${msg}`);

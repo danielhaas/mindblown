@@ -443,6 +443,8 @@ Node to break down: "${targetNode.text}"`;
           createdBy: userId,
           reportedBy: userReporter((req as any).userId),
           effortEstimate: hasChildren ? undefined : (item.estimate ?? undefined),
+          // A category gets no version — its leaves get the gate default.
+          ...(hasChildren ? { versionId: null } : {}),
         });
         created.push(node);
         broadcast(body.mapId, { type: 'node:created', node });
@@ -1349,6 +1351,8 @@ Parent node: "${parentNode.text}"`;
     } catch (err: any) {
       return reply.status(400).send({ error: { code: 'CREATE_FAILED', message: err.message } });
     }
+    // The gate default ("added to V1"), read before node is replaced below.
+    const versionDefault = nodeDb.versionDefaultOf(node);
     broadcast(body.mapId, { type: 'node:created', node });
     scheduleEmbedNode(node.id);
     // Same change-history row the REST create writes (the lint sync pack
@@ -1406,6 +1410,7 @@ Parent node: "${parentNode.text}"`;
       ...(issueError ? { issueError } : {}),
       ...(dependencyErrors.length > 0 ? { dependencyErrors } : {}),
       ...(misfiled ? { misfiled } : {}),
+      ...(versionDefault ? { versionDefault } : {}),
     });
   });
 
@@ -1698,6 +1703,7 @@ Review the children and propose groupings.`;
           text: proposal.suggestedLabel,
           createdBy: userId,
           reportedBy: userReporter((req as any).userId),
+          versionId: null, // a container — the gate default is for leaves
         });
         createdCount++;
         broadcast(body.mapId, { type: 'node:created', node: category });

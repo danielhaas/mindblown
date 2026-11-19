@@ -2064,6 +2064,8 @@ export interface IntakeAcceptResponse {
   dependencyErrors?: string[];
   /** Set when the ticket names the repo another map plans (wrong-map guard). */
   misfiled?: MisfiledRepo;
+  /** Set when the server gave the ticket the map's active version (its gate names versions). */
+  versionDefault?: { id: string; name: string };
 }
 
 export function aiIntake(
