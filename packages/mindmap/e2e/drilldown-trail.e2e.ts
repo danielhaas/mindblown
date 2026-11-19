@@ -62,6 +62,26 @@ test('drilled two levels in: root → parent trail on the left, no siblings; cli
   await expect(page.getByText('M2 Auth', { exact: true })).toBeVisible();
 });
 
+test('the trail is navigation only: no context menu, ArrowLeft stops at the focus node', async ({ page }) => {
+  await open(page);
+  const state = () =>
+    page.evaluate(() => {
+      const s = (window as never as { __store: { getState(): { focusNodeId: string | null; selectedNodeId: string | null } } }).__store.getState();
+      return { focus: s.focusNodeId, selected: s.selectedNodeId };
+    });
+  await page.evaluate(() => (window as never as { __store: { setState(s: object): void } }).__store.setState({ focusNodeId: 'a1-t2' }));
+  const parent = await box(page, 'M1 Billing');
+
+  await page.mouse.click(...centre(parent), { button: 'right' });
+  await expect(page.getByText('Delete', { exact: true })).toHaveCount(0);
+  expect(await state()).toEqual({ focus: 'a1-t2', selected: null });
+
+  await page.mouse.click(...centre(await box(page, 'M1 Billing task 2')));
+  expect((await state()).selected).toBe('a1-t2');
+  await page.keyboard.press('ArrowLeft');
+  expect(await state()).toEqual({ focus: 'a1-t2', selected: 'a1-t2' });
+});
+
 test('top-down layouts stack the trail above', async ({ page }) => {
   await open(page);
   await page.evaluate(() =>

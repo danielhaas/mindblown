@@ -1160,7 +1160,9 @@ export function MindmapEditor() {
         case 'ArrowLeft': {
           e.preventDefault();
           const selNode = nodes[selectedNodeId];
-          if (selNode?.parentId) selectNode(selNode.parentId);
+          // Not past the drill-down focus: its parent is on the trail back,
+          // which is never selected (Delete/Tab/F2 would act on it).
+          if (selNode?.parentId && selectedNodeId !== focusNodeId) selectNode(selNode.parentId);
           break;
         }
         case 'ArrowRight': {
@@ -1604,6 +1606,10 @@ export function MindmapEditor() {
                   onContextMenu={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    // The trail back is navigation only: no menu, no
+                    // selection — Delete on the parent would remove the
+                    // subtree being looked at.
+                    if (isDimmed) return;
                     selectNode(ln.id);
                     setContextMenu({ x: e.clientX, y: e.clientY, nodeId: ln.id });
                   }}
