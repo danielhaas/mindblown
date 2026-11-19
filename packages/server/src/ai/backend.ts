@@ -414,6 +414,13 @@ export function createChatBackend(userId: string): ToolBackend {
         ...(result.labelWrite?.error ? { labelError: result.labelWrite.error } : {}),
       };
     },
+    async flagBlocker(mapId, nodeId, input) {
+      // flagBlocker broadcasts and syncs itself (the hand-edit fan-out).
+      // Loaded on use: it reaches the routes' GitHub sync, which this module must not load eagerly.
+      const { flagBlocker } = await import('../services/flagBlocker.js');
+      const r = await flagBlocker(mapId, nodeId, input, userId);
+      return { node: r.node as unknown as NodeWithComputed, kind: r.kind, ...(r.dependsOn ? { dependsOn: r.dependsOn } : {}) };
+    },
     conflictScan: (mapId, candidateNodeId?) => orchestrationService.conflictScan(mapId, candidateNodeId),
     async getFleetStatus(mapId, opts) {
       // Same window rules as GET /fleet — the tool must not read differently

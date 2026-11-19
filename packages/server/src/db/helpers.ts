@@ -40,6 +40,10 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     percentComplete: (get('percentComplete', 'percent_complete') as number) ?? null,
     status: (get('status', 'status') as string) ?? null,
     blockedReason: (get('blockedReason', 'blocked_reason') as string) ?? null,
+    blockedAt: (get('blockedAt', 'blocked_at') instanceof Date
+      ? (get('blockedAt', 'blocked_at') as Date).toISOString()
+      : (get('blockedAt', 'blocked_at') as string)) ?? null,
+    blockerInfo: (get('blockerInfo', 'blocker_info') as CoreNode['blockerInfo']) ?? null,
     assigneeIds: (get('assigneeIds', 'assignee_ids') as string[]) ?? [],
     priority: (get('priority', 'priority') as CoreNode['priority']) ?? null,
     dueDate: (get('dueDate', 'due_date') as string) ?? null,

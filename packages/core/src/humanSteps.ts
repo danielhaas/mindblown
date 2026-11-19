@@ -17,6 +17,7 @@ import { proseMirrorToPlainText } from './richtext.js';
 import { isForgeLink, type ExternalLink } from './types.js';
 import { STALLED_ASK_OPTIONS, stalledAnswerAction, stalledAskNodeId } from './stalled.js';
 import { DEPLOY_PROBE_NONE, deployProbeAskMapId, deployProbeFromAnswer } from './deployProbe.js';
+import { externalAnswerAction, externalAskNodeId, questionAskNodeId } from './blockerKinds.js';
 
 export const STEP_ASK_PREFIX = 'step-';
 export const STEP_ASK_OPTIONS = ['Done', 'Fleet can do it'] as const;
@@ -92,9 +93,16 @@ export function briefAskNodeId(askId: string): string | null {
   return askId.startsWith(BRIEF_ASK_PREFIX) && askId.length > BRIEF_ASK_PREFIX.length ? askId.slice(BRIEF_ASK_PREFIX.length) : null;
 }
 
-/** The node behind any derived row (stalled, step, blocker, brief), or null for a collector's ask. */
+/** The node behind any derived row (stalled, step, blocker, brief, blocker question, external re-check), or null for a collector's ask. */
 export function derivedAskNodeId(askId: string): string | null {
-  return stalledAskNodeId(askId) ?? stepAskNodeId(askId) ?? blockerAskNodeId(askId) ?? briefAskNodeId(askId);
+  return (
+    stalledAskNodeId(askId) ??
+    stepAskNodeId(askId) ??
+    blockerAskNodeId(askId) ??
+    briefAskNodeId(askId) ??
+    questionAskNodeId(askId) ??
+    externalAskNodeId(askId)
+  );
 }
 
 /** Rows MindBlown derives itself (stalled work, a person's steps, blockers, briefs) — not the collector's. */
@@ -429,6 +437,19 @@ export function derivedAnswerPreview(
         return ['Node: done, 100 % (the linked issue closes via sync)'];
       default:
         return [`Node: blocker becomes "Next step (a person): …" plus your note "${d || '…'}", tagged needs-human`];
+    }
+  }
+  if (questionAskNodeId(a.id)) {
+    return [`Node: "Decision (…): ${d || '…'}" at the top of the description, blocker cleared, back to the queue unless done or claimed`];
+  }
+  if (externalAskNodeId(a.id)) {
+    switch (externalAnswerAction(d)) {
+      case 'still-waiting':
+        return ['Node: still blocked — asked again in 7 days'];
+      case 'clear-blocker':
+        return ['Node: blocker cleared, back to the queue unless done or claimed'];
+      default:
+        return [`Node: "Decision (…): ${d || '…'}" at the top of the description, blocker cleared, back to the queue unless done or claimed`];
     }
   }
   if (briefAskNodeId(a.id)) {

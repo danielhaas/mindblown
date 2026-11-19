@@ -256,6 +256,25 @@ export interface ReleaseNodeResult {
   alreadyReleased?: boolean;
 }
 
+/** flag_blocker's input (`POST /api/maps/:id/nodes/:nodeId/flag-blocker`). */
+export interface FlagBlockerInput {
+  /** Omitted = unkinded free text: classified after an hour. */
+  kind?: 'question' | 'person-step' | 'external' | 'waits-on';
+  reason: string;
+  answerer?: string;
+  options?: string[];
+  recheckDays?: number;
+  waitsOn?: string;
+}
+
+/** What flag_blocker wrote. */
+export interface FlagBlockerResult {
+  node: NodeWithComputed;
+  kind: FlagBlockerInput['kind'] | null;
+  /** waits-on: the ticket the node now depends on. */
+  dependsOn?: { id: string; text: string };
+}
+
 /** Result of releasing a parked ("blocked") ticket back into the queue. */
 export interface UnblockNodeResult {
   node: { id: string; text: string; status: string | null; claimedBySession: string | null };
@@ -615,6 +634,12 @@ export interface ToolBackend {
    * (`POST /api/maps/:id/nodes/:nodeId/unblock`).
    */
   unblockNode(mapId: string, nodeId: string): Promise<UnblockNodeResult>;
+  /**
+   * Flag a blocker with a kind — question (an ask on the Questions card),
+   * person-step (needs-human), external (re-checked on a date) or waits-on
+   * (a dependency, no blocker).
+   */
+  flagBlocker(mapId: string, nodeId: string, input: FlagBlockerInput): Promise<FlagBlockerResult>;
   conflictScan(mapId: string, candidateNodeId?: string): Promise<ConflictScanResult>;
   /**
    * Last-known satellite rollups + recent orchestrator ticks (read-only); `since` widens the ticks to a history window.

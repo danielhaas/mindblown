@@ -16,6 +16,10 @@
  *                   answer (a URL, or none) is the map's probe, so it is
  *                   asked until answered, once. Not for the repo this
  *                   server runs from: its own checkout says (#645)
+ *   question-<node> a blocker whose kind is a question (flag_blocker, or
+ *                   an unkinded blocker classified after an hour) — to its
+ *                   answerer, default the map owner (core blockerKinds.ts)
+ *   external-<node> a wait on a party outside whose re-check date has come
  *
  * Nothing is stored while a row is open, so a fleet push (which replaces
  * the open set) cannot wipe it and there is no second list to keep in step:
@@ -40,6 +44,15 @@
  * mark-done, free text = write-brief.
  */
 import {
+  buildExternalAsk,
+  buildQuestionAsk,
+  externalAnswerAction,
+  externalAskNodeId,
+  externalRecheckAt,
+  externalRecheckDue,
+  planUnblock,
+  prependDecision,
+  questionAskNodeId,
   AUTO_CHECK_BY,
   AUTO_CHECK_GRACE_MINUTES,
   autoCheckable,
@@ -90,6 +103,11 @@ import { applyLintFix, issueLinkOf } from '../lint/fix.js';
 import { AskNotFoundError, AskValidationError, type AnswerAskOutcome } from './asks.js';
 import { removeIssueLabels } from './issueLabels.js';
 import { latestDeployDrift } from './deployDrift.js';
+import * as nodeDb from '../db/nodes.js';
+import { recordFieldChanges } from '../db/events.js';
+import { broadcast } from '../ws.js';
+import { syncNodeToGitHub } from '../routes/nodes.js';
+import { mapOwnerAnswerer } from './flagBlocker.js';
 
 const rowKey = (r: { mapId?: string | null; ask: { id: string } }) => `${r.mapId ?? ''}|${r.ask.id}`;
 
@@ -125,9 +143,18 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
     }
 
     const isDone = buildIsDonePredicate(data.map.statusWorkflow ?? []);
+    let owner: string | null = null;
+    const answerer = async () => (owner ??= await mapOwnerAnswerer(data.map));
     for (const node of data.nodes) {
       if (isDone(node.status) || (node.childrenIds.length === 0 && (node.percentComplete ?? 0) >= 100)) continue;
+      const kind = node.blockedReason?.trim() ? node.blockerInfo?.kind : undefined;
       if (dispatchSkipTag(node) !== null) out.push(openRow(buildStepAsk(node, mapId), mapId, now, node.updatedAt));
+      // A blocker with a kind reaches its person as a question — on a parent too.
+      else if (kind === 'question') out.push(openRow(buildQuestionAsk(node, mapId, await answerer()), mapId, now, node.blockedAt ?? node.updatedAt));
+      // An external wait is asked about again once its re-check date has come; until then nothing to do.
+      else if (kind === 'external') {
+        if (externalRecheckDue(node.blockerInfo, now)) out.push(openRow(buildExternalAsk(node, mapId, await answerer()), mapId, now, node.blockerInfo?.recheckAt ?? node.updatedAt));
+      }
       // fleet-check: the fleet has it already, nothing for a person until it reports back.
       else if (node.childrenIds.length === 0 && node.blockedReason?.trim() && !node.tags.includes(FLEET_CHECK_TAG)) out.push(openRow(buildBlockerAsk(node, mapId), mapId, now, node.updatedAt));
     }
@@ -169,7 +196,7 @@ function storedFilters(stored: AskRow[], now: Date): { snoozed: Set<string>; ask
   );
   const open = new Set(stored.filter((r) => r.status === 'open' && r.ask.unblocks?.node_id).map((r) => `${r.mapId ?? ''}|${r.ask.unblocks.node_id}`));
   const asked = (r: AskRow) =>
-    !!(stepAskNodeId(r.ask.id) || blockerAskNodeId(r.ask.id) || briefAskNodeId(r.ask.id) || stalledAskNodeId(r.ask.id)) && open.has(`${r.mapId ?? ''}|${r.ask.unblocks.node_id}`);
+    !!derivedAskNodeId(r.ask.id) && open.has(`${r.mapId ?? ''}|${r.ask.unblocks.node_id}`);
   return { snoozed, asked };
 }
 
@@ -251,7 +278,12 @@ export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput
   let node: AnswerAskOutcome['node'] = null;
   let changedFields: string[] = [];
 
-  if (input.action === 'answered') {
+  if (input.action === 'answered' && (questionAskNodeId(key.askId) || externalAskNodeId(key.askId))) {
+    const decision = (input.decision ?? '').trim();
+    const out = await answerBlockerQuestion(key.mapId, nodeId, key.askId, { by, decision, date, now }, userId, writes);
+    node = out.node;
+    changedFields = out.changedFields;
+  } else if (input.action === 'answered') {
     const decision = (input.decision ?? '').trim();
     const { action, note, decided } = plannedFix(row.ask, input, decision);
     const line = decisionLine(by, decision, date);
@@ -314,6 +346,69 @@ async function answerDeployProbeAsk(key: asksDb.AskKey, input: AskAnswerInput, u
   const status = input.action === 'answered' ? 'answered' : input.action === 'later' ? 'later' : 'delegated';
   const saved = await asksDb.recordAnswer(key, row.ask, { status, answer, answeredBy: by, answeredAt: now, writes, workerPending: false });
   return { row: saved, plan: planAskWrites(row.ask, answer, null, now.toISOString().slice(0, 10)), ok: writes.every((w) => w.done), node: null, changedFields: [] };
+}
+
+/**
+ * The answer to a blocker question or an external re-check, written like a
+ * collector ask's answer (services/asks.ts): the decision on top of the
+ * description and as a comment on the linked issue, blocker and `blocked`
+ * tag off, status back to todo unless done or claimed (core planUnblock).
+ * An external wait answered "Still waiting" keeps its blocker and is asked
+ * again EXTERNAL_RECHECK_DAYS later; "Unblocked" lifts it without a decision.
+ */
+async function answerBlockerQuestion(
+  mapId: string,
+  nodeId: string,
+  askId: string,
+  a: { by: string; decision: string; date: string; now: Date },
+  userId: string | null,
+  writes: AskWrite[],
+): Promise<{ node: CoreNode | null; changedFields: string[] }> {
+  const action = externalAskNodeId(askId) ? externalAnswerAction(a.decision) : 'decision';
+  const line = decisionLine(a.by, a.decision, a.date);
+  const w: AskWrite = { kind: 'mb-put', target: nodeId.slice(0, 8), detail: action === 'decision' ? `clear-blocker — ${line}` : action, done: false };
+  writes.push(w);
+  try {
+    if (action === 'clear-blocker') {
+      const out = await applyLintFix(mapId, nodeId, 'clear-blocker', userId);
+      w.done = true;
+      if (out.labelWrite) writes.push(out.labelWrite);
+      return { node: out.node, changedFields: out.changedFields };
+    }
+    const before = await nodeDb.getNode(nodeId);
+    if (!before || before.mapId !== mapId) throw new Error('node not found on this map');
+    let patch: nodeDb.UpdateNodeInput;
+    let changedFields: string[];
+    if (action === 'still-waiting') {
+      patch = { blockerInfo: { ...(before.blockerInfo ?? { kind: 'external' }), kind: 'external', recheckAt: externalRecheckAt(a.now) } };
+      changedFields = ['blockerInfo'];
+    } else {
+      const unblock = planUnblock(before, (await mapDb.getStatusWorkflow(mapId)) ?? []);
+      patch = { blockedReason: null, description: prependDecision(before.description, line) as nodeDb.UpdateNodeInput['description'] };
+      changedFields = ['blockedReason', 'description'];
+      if (unblock.tagsRemove.length > 0) {
+        patch.tagsRemove = unblock.tagsRemove;
+        changedFields.push('tags');
+      }
+      if (unblock.status !== undefined) {
+        patch.status = unblock.status;
+        changedFields.push('status');
+      }
+    }
+    const updated = await nodeDb.updateNode(nodeId, patch);
+    if (!updated) throw new Error('node vanished during update');
+    await recordFieldChanges(mapId, nodeId, userId, before, updated).catch(() => {});
+    broadcast(mapId, { type: 'node:updated', nodeId, fields: changedFields, node: updated });
+    syncNodeToGitHub(updated, changedFields).catch(() => {});
+    w.done = true;
+    if (action === 'decision') {
+      await stepIssueWrites(mapId, updated, { comment: decisionCommentBody(a.by, a.decision, a.date), line, dropLabels: changedFields.includes('tags') }, writes);
+    }
+    return { node: updated, changedFields };
+  } catch (err) {
+    w.error = err instanceof Error ? err.message : String(err);
+    return { node: null, changedFields: [] };
+  }
 }
 
 /** What "Let the fleet check all blockers" did. */

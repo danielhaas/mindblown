@@ -282,6 +282,13 @@ export interface MindmapState {
    */
   stopFleetTicket: (id: string, blockedReason: string) => Promise<boolean>;
   /**
+   * Flag a blocker with a kind (the Block choices): question, a person's
+   * step, external, or a wait on another ticket. Not optimistic — the
+   * server routes it (tag, dependency, ask); the returned node is applied.
+   * Resolves false on failure (error is set).
+   */
+  flagBlocker: (id: string, body: api.FlagBlockerBody) => Promise<boolean>;
+  /**
    * Replace a node with what the server just returned, without writing
    * back. For sub-resource endpoints (attachments, dependencies) that have
    * already persisted the change and answered with the whole node —
@@ -323,6 +330,32 @@ export function getWsClient(): WsClient | null {
 }
 
 // ── Store implementation ───────────────────────────────────────
+
+/**
+ * Fold (`collapsed = true`) or open every branch below `scopeId`. The scope
+ * node itself always ends up open, so a collapse-all still shows its first
+ * level. Returns a new nodes record, or null when nothing changes.
+ */
+export function setCollapsedInSubtree(
+  nodes: Record<string, Node>,
+  scopeId: string,
+  collapsed: boolean,
+): Record<string, Node> | null {
+  let next: Record<string, Node> | null = null;
+  const stack = [scopeId];
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    const node = nodes[id];
+    if (!node || node.childrenIds.length === 0) continue;
+    const want = id === scopeId ? false : collapsed;
+    if (!!node.collapsed !== want) {
+      next ??= { ...nodes };
+      next[id] = { ...node, collapsed: want };
+    }
+    for (const cid of node.childrenIds) stack.push(cid);
+  }
+  return next;
+}
 
 export const useMindmapStore = create<MindmapState>((set, get) => ({
   user: null,
@@ -1099,6 +1132,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       percentComplete: null,
       status: null,
       blockedReason: null,
+      blockedAt: null,
+      blockerInfo: null,
       assigneeIds: [],
       priority: null,
       dueDate: null,
@@ -1255,6 +1290,26 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       return true;
     } catch (e: any) {
       set({ error: e?.message ?? 'Failed to release the ticket' });
+      return false;
+    }
+  },
+
+  flagBlocker: async (id, body) => {
+    const state = get();
+    const mapId = state.currentMapId;
+    if (!mapId || !state.nodes[id]) {
+      set({ error: 'That ticket is no longer on this map.' });
+      return false;
+    }
+    try {
+      const { node } = await api.flagBlocker(mapId, id, body);
+      const current = get();
+      if (current.currentMapId !== mapId) return true;
+      const nodes = { ...current.nodes, [id]: node };
+      set({ nodes, computed: recomputeValues(nodes) });
+      return true;
+    } catch (e: any) {
+      set({ error: e?.message ?? 'Failed to flag the blocker' });
       return false;
     }
   },
@@ -1524,26 +1579,23 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     });
   },
 
+  // Both act on the visible subtree — the drill-down focus when there is
+  // one, else the whole map — and land as ONE store update however many
+  // nodes change (a per-node toggle re-lays-out the map once per node).
   expandAll: () => {
-    const state = get();
-    const updatedNodes = { ...state.nodes };
-    for (const [id, node] of Object.entries(updatedNodes)) {
-      if (node.collapsed && node.childrenIds.length > 0) {
-        updatedNodes[id] = { ...node, collapsed: false };
-      }
-    }
-    set({ nodes: updatedNodes });
+    const { nodes, rootNodeId, focusNodeId } = get();
+    const scopeId = focusNodeId ?? rootNodeId;
+    if (!scopeId) return;
+    const changed = setCollapsedInSubtree(nodes, scopeId, false);
+    if (changed) set({ nodes: changed });
   },
 
   collapseAll: () => {
-    const state = get();
-    const updatedNodes = { ...state.nodes };
-    for (const [id, node] of Object.entries(updatedNodes)) {
-      if (!node.collapsed && node.childrenIds.length > 0 && id !== state.rootNodeId) {
-        updatedNodes[id] = { ...node, collapsed: true };
-      }
-    }
-    set({ nodes: updatedNodes });
+    const { nodes, rootNodeId, focusNodeId } = get();
+    const scopeId = focusNodeId ?? rootNodeId;
+    if (!scopeId) return;
+    const changed = setCollapsedInSubtree(nodes, scopeId, true);
+    if (changed) set({ nodes: changed });
   },
 
   recompute: () => {

@@ -261,6 +261,10 @@ export const nodes = pgTable('nodes', {
   percentComplete: real('percent_complete'),
   status: text('status'),
   blockedReason: text('blocked_reason'),
+  // When the reason text was last set, and its kind (flag_blocker): null =
+  // unkinded free text, classified after an hour (services/blockers.ts).
+  blockedAt: timestamp('blocked_at', { withTimezone: true }),
+  blockerInfo: jsonb('blocker_info'),
   assigneeIds: jsonb('assignee_ids').notNull().default([]), // uuid[]
   priority: text('priority'),
   dueDate: date('due_date'),

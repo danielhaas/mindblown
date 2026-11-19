@@ -14,7 +14,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CommentKind, NodeComment, RequirementGate } from '@mindblown/core';
-import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult, MoveNodeToMapResult } from '@mindblown/tool-kit';
+import type { FlagBlockerInput, FlagBlockerResult, FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult, MoveNodeToMapResult } from '@mindblown/tool-kit';
 import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookEventStat, WebhookSubscription } from '@mindblown/core';
 
 /**
@@ -1937,6 +1937,14 @@ export async function unblockNode(mapId: string, nodeId: string): Promise<Unbloc
     statusReset: res.statusReset,
     ...(res.labelError ? { labelError: res.labelError } : {}),
   };
+}
+
+/** flag_blocker with a kind (`POST /api/maps/:id/nodes/:nodeId/flag-blocker`). */
+export function flagBlocker(mapId: string, nodeId: string, input: FlagBlockerInput): Promise<FlagBlockerResult> {
+  return request<FlagBlockerResult>(`/api/maps/${mapId}/nodes/${nodeId}/flag-blocker`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
 }
 
 // ── Attachments ───────────────────────────────────────────────────

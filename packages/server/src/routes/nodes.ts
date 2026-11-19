@@ -4,12 +4,13 @@ import { DependencyValidationError, DoneProgressConflictError, PhaseIdValidation
 import * as mapDb from '../db/maps.js';
 import * as events from '../db/events.js';
 import { unblockNode, UnblockNotFoundError } from '../services/unblock.js';
+import { flagBlocker, FlagBlockerError, type FlagBlockerInput } from '../services/flagBlocker.js';
 import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from '../ai/embeddings.js';
 import { updateGitHubIssue, getGitHubIssue } from '@mindblown/integrations';
 import { getGitHubContextForMap } from './integrations.js';
-import type { ExternalLink, DependencyType, Node as CoreNode } from '@mindblown/core';
-import { isForgeLink, userReporter } from '@mindblown/core';
+import type { ExternalLink, DependencyType, FlagBlockerKind, Node as CoreNode } from '@mindblown/core';
+import { FLAG_BLOCKER_KINDS, isForgeLink, userReporter } from '@mindblown/core';
 
 // ── Auto-link helper (#58) ──────────────────────────────────────
 // Titles that begin with `#NNNN` are almost always referencing an existing
@@ -955,6 +956,32 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ── POST /api/maps/:id/nodes/:nodeId/flag-blocker — a blocker with a kind ──
+  // Every blocker reaches a person or resolves itself: question → an ask on
+  // the Questions card, person-step → needs-human, external → re-checked on
+  // a date, waits-on → a dependency (services/flagBlocker.ts). No kind = a
+  // plain blockedReason, classified after an hour.
+  app.post<{ Params: { id: string; nodeId: string }; Body: Record<string, unknown> | null }>(
+    '/api/maps/:id/nodes/:nodeId/flag-blocker',
+    async (req, reply) => {
+      const parsed = parseFlagBlockerBody(req.body);
+      if ('error' in parsed) return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: parsed.error } });
+      try {
+        const r = await flagBlocker(req.params.id, req.params.nodeId, parsed, req.userId ?? null);
+        return reply.send({ node: r.node, kind: r.kind, ...(r.dependsOn ? { dependsOn: r.dependsOn } : {}) });
+      } catch (err) {
+        if (err instanceof FlagBlockerError) {
+          const status = err.code === 'NODE_NOT_FOUND' ? 404 : 400;
+          return reply.status(status).send({ error: { code: err.code, message: err.message } });
+        }
+        if (err instanceof DependencyValidationError) {
+          return reply.status(400).send({ error: { code: 'DEPENDENCY_INVALID', message: err.message } });
+        }
+        throw err;
+      }
+    },
+  );
+
   // ── GET /api/maps/:mapId/changes — Query the change log ─────
   app.get<{
     Params: { id: string };
@@ -1021,6 +1048,37 @@ function isValidExpectedDoneAt(v: unknown): boolean {
  * calendar date (YYYY-MM-DD), waitingOn text — each may be null (clear) or
  * omitted. Returns the problem, or null when they are fine.
  */
+/** flag-blocker's body, checked: kind one of the four (or none), reason text, the kind's own fields. */
+export function parseFlagBlockerBody(body: unknown): FlagBlockerInput | { error: string } {
+  const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+  const out: FlagBlockerInput = { reason: typeof b.reason === 'string' ? b.reason : '' };
+  if (b.kind !== undefined && b.kind !== null) {
+    if (typeof b.kind !== 'string' || !(FLAG_BLOCKER_KINDS as readonly string[]).includes(b.kind)) {
+      return { error: `kind must be one of ${FLAG_BLOCKER_KINDS.join(', ')}` };
+    }
+    out.kind = b.kind as FlagBlockerKind;
+  }
+  if (b.reason !== undefined && typeof b.reason !== 'string') return { error: 'reason must be a string' };
+  if (out.kind !== 'waits-on' && !out.reason.trim()) return { error: 'reason is required' };
+  if (b.answerer != null) {
+    if (typeof b.answerer !== 'string') return { error: 'answerer must be a string' };
+    out.answerer = b.answerer;
+  }
+  if (b.options != null) {
+    if (!Array.isArray(b.options) || b.options.some((o) => typeof o !== 'string')) return { error: 'options must be an array of strings' };
+    out.options = b.options as string[];
+  }
+  if (b.recheckDays != null) {
+    if (typeof b.recheckDays !== 'number' || !Number.isFinite(b.recheckDays) || b.recheckDays < 0) return { error: 'recheckDays must be a number ≥ 0' };
+    out.recheckDays = b.recheckDays;
+  }
+  if (b.waitsOn != null) {
+    if (typeof b.waitsOn !== 'string') return { error: 'waitsOn must be a string' };
+    out.waitsOn = b.waitsOn;
+  }
+  return out;
+}
+
 export function leadTimeFieldsError(body: { leadTime?: unknown; requestedAt?: unknown; waitingOn?: unknown }): string | null {
   const { leadTime, requestedAt, waitingOn } = body;
   if (leadTime != null && (typeof leadTime !== 'number' || !Number.isFinite(leadTime) || leadTime < 0)) {

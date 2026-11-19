@@ -191,6 +191,8 @@ export function ListView() {
   const createPhase = useMindmapStore((s) => s.createPhase);
   const deleteNode = useMindmapStore((s) => s.deleteNode);
   const toggleCollapse = useMindmapStore((s) => s.toggleCollapse);
+  const collapseAll = useMindmapStore((s) => s.collapseAll);
+  const expandAll = useMindmapStore((s) => s.expandAll);
   const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
   const focusNodeId = useMindmapStore((s) => s.focusNodeId);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
@@ -1194,6 +1196,29 @@ export function ListView() {
           />
         </div>
 
+        {/* Collapse all / expand all — the rows fold on the shared per-node
+            collapse state, scoped to the drilled-in subtree like the mindmap */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <button
+            type="button"
+            onClick={collapseAll}
+            title={`Collapse all${focusNodeId ? ' in this subtree' : ''} — only the first level stays open`}
+            data-testid="list-collapse-all"
+            style={foldBtnStyle}
+          >
+            Collapse all
+          </button>
+          <button
+            type="button"
+            onClick={expandAll}
+            title={`Expand all${focusNodeId ? ' in this subtree' : ''}`}
+            data-testid="list-expand-all"
+            style={foldBtnStyle}
+          >
+            Expand all
+          </button>
+        </div>
+
         {/* Status filter */}
         <FilterDropdown
           label="Status"
@@ -1520,6 +1545,19 @@ export function ListView() {
     </div>
   );
 }
+
+const foldBtnStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 500,
+  padding: '4px 8px',
+  borderRadius: 6,
+  background: '#fff',
+  border: '1px solid #e2e8f0',
+  color: '#475569',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  whiteSpace: 'nowrap',
+};
 
 // ── Inline title editor ─────────────────────────────────────────
 

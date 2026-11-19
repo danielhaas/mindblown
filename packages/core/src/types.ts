@@ -41,6 +41,27 @@ export type CustomFieldValue =
  * A dependency edge. Stored on the dependent (downstream) node.
  * "This node depends on `targetNodeId`."
  */
+/**
+ * flag_blocker's four kinds. Only `question` and `external` leave a
+ * blocker on the node; `person-step` becomes needs-human with the text as
+ * the next step, `waits-on` a dependency (it clears itself).
+ */
+export const FLAG_BLOCKER_KINDS = ['question', 'person-step', 'external', 'waits-on'] as const;
+export type FlagBlockerKind = (typeof FLAG_BLOCKER_KINDS)[number];
+
+/** The kind a blocker carries on the node (Node.blockerInfo). */
+export interface BlockerInfo {
+  kind: 'question' | 'external';
+  /** question: who answers it — default the map owner. */
+  answerer?: string | null;
+  /** question: the answers to offer, if any. */
+  options?: string[];
+  /** external: when to ask again whether the wait is over (ISO 8601). */
+  recheckAt?: string | null;
+  /** Set by the hourly classification of an unkinded blocker, not by a person. */
+  auto?: boolean;
+}
+
 export interface Dependency {
   targetNodeId: NodeId;
   type: DependencyType;
@@ -313,6 +334,19 @@ export interface Node {
   percentComplete: number | null; // leaf-only input; 0–100; null = unset
   status: string | null; // references a status from Map.statusWorkflow
   blockedReason: string | null; // null = not manually blocked; string = blocker description
+  /**
+   * When the current blockedReason was set (ISO 8601). Written by the DB
+   * layer whenever the reason text changes; null with no blocker. An
+   * unkinded blocker older than an hour is classified (core blockers.ts).
+   */
+  blockedAt?: string | null;
+  /**
+   * What kind of wait the blocker is (flag_blocker's `kind`): a question to
+   * a person (an ask on the Questions card) or a party outside (re-checked
+   * on a date). null = unkinded free text — classified after an hour.
+   * Cleared whenever the reason text changes without one.
+   */
+  blockerInfo?: BlockerInfo | null;
   /**
    * Lead time (#654): how long this node waits on someone outside the team
    * (a sign-off, credentials, a VM another team creates), in the map's
