@@ -42,7 +42,8 @@ describe('mindmap Depth limit', () => {
   it('no view other than the mindmap editor reads maxDepth', () => {
     const readers = sourceFiles(SRC)
       .filter((f) => !f.endsWith('store.ts'))
-      .filter((f) => /\(s\)\s*=>\s*s\.maxDepth|\bs\.maxDepth\b/.test(readFileSync(f, 'utf8')))
+      // `s.maxDepth`, `getState().maxDepth`, `{ maxDepth } = useMindmapStore…`
+      .filter((f) => /\.maxDepth\b|\{[^}]*\bmaxDepth\b[^}]*\}\s*=\s*(useMindmapStore|get)/.test(readFileSync(f, 'utf8')))
       .map((f) => f.slice(SRC.length + 1))
       .sort();
     // useUrlState mirrors it into the URL (?depth=) — that IS the mindmap's state.
