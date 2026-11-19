@@ -219,6 +219,29 @@ export function parseAskDocument(raw: unknown): AskDocument | null {
 
 // ── the answer, as text ────────────────────────────────────────────
 
+/** What may follow an option at the start of an answer: " — ", " - ", ":", "," or ".". */
+const OPTION_SEPARATOR = /^(?:\s*[—–]|\s+-(?=\s|$)|\s*[:,.])\s*/;
+
+/**
+ * The option an answer starts with, and the rest — its note. Case-insensitive;
+ * the option is the whole answer or is followed by " — ", " - ", ":", "," or
+ * "." ("Fleet can fix it — rebase on main" is Fleet can fix it, note "rebase
+ * on main"). The longest option wins; null when the answer starts with none.
+ */
+export function splitOptionAnswer(decision: string, options: readonly string[]): { option: string; rest: string } | null {
+  const text = decision.trim();
+  const lower = text.toLowerCase();
+  for (const option of [...options].sort((a, b) => b.length - a.length)) {
+    const o = option.toLowerCase();
+    if (!lower.startsWith(o)) continue;
+    const after = text.slice(o.length);
+    if (after.trim() === '') return { option, rest: '' };
+    const sep = OPTION_SEPARATOR.exec(after);
+    if (sep) return { option, rest: after.slice(sep[0].length).trim() };
+  }
+  return null;
+}
+
 /** `Decision (Dan, 2026-09-03): …` — the same line on the issue and in the node. */
 export function decisionLine(by: string, decision: string, date: string): string {
   return `Decision (${by}, ${date}): ${decision}`;

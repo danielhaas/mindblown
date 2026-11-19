@@ -11,11 +11,11 @@
  * Like stalled asks (stalled.ts) they are derived on read, never stored
  * while open: the tag is the truth, and answering changes the tag.
  */
-import { questionParts, type Ask, type QuestionParts, type StepFollowUp } from './asks.js';
+import { questionParts, splitOptionAnswer, type Ask, type QuestionParts, type StepFollowUp } from './asks.js';
 import { dispatchSkipTag, fleetFixAction, holdTagPerson, WORKER_WAIT_NOTE } from './dispatch.js';
 import { proseMirrorToPlainText } from './richtext.js';
 import { isForgeLink, type ExternalLink } from './types.js';
-import { STALLED_ASK_OPTIONS, stalledAnswerAction, stalledAskNodeId } from './stalled.js';
+import { stalledAnswerAction, stalledAnswerNote, stalledAskNodeId } from './stalled.js';
 import { DEPLOY_PROBE_NONE, deployProbeAskMapId, deployProbeFromAnswer } from './deployProbe.js';
 import { externalAnswerAction, externalAskNodeId, questionAskNodeId } from './blockerKinds.js';
 import { lintAskNodeId } from './lint.js';
@@ -343,30 +343,53 @@ export function namedTickets(a: Pick<Ask, 'question'>): number[] {
   return out;
 }
 
-/** Which write an answer to a blocker means: Fleet can fix it, Unblocked, Done, else the text is a person's next step. */
-export function blockerAnswerAction(decision: string): BlockerAnswer {
-  const d = decision.trim().toLowerCase();
-  if (d === 'fleet can fix it' || d === 'fleet-fix') return 'fleet-fix';
-  if (d === 'unblocked' || d === 'unblock' || d === 'clear-blocker') return 'clear-blocker';
-  if (d === 'done' || d === 'mark done' || d === 'mark-done') return 'mark-done';
-  return 'needs-human';
-}
+const DONE_WORDS = ['done', 'mark done', 'mark-done'];
+const STEP_FLEET_WORDS = ['fleet can do it', 'to-fleet', 'fleet'];
+const BLOCKER_FIX_WORDS = ['fleet can fix it', 'fleet-fix'];
+const UNBLOCK_WORDS = ['unblocked', 'unblock', 'clear-blocker'];
 
-/** True for a step row's own options (Done, Fleet can do it) — anything else is a decision. */
-export function isStepOption(decision: string): boolean {
-  const d = decision.trim().toLowerCase();
-  return ['done', 'mark done', 'mark-done', 'fleet can do it', 'to-fleet', 'fleet'].includes(d);
+/** Which write an answer to a blocker means: Fleet can fix it, Unblocked, Done (each may lead the answer), else the text is a person's next step. */
+export function blockerAnswerAction(decision: string): BlockerAnswer {
+  const hit = splitOptionAnswer(decision, [...BLOCKER_FIX_WORDS, ...UNBLOCK_WORDS, ...DONE_WORDS]);
+  if (!hit) return 'needs-human';
+  if (BLOCKER_FIX_WORDS.includes(hit.option)) return 'fleet-fix';
+  if (UNBLOCK_WORDS.includes(hit.option)) return 'clear-blocker';
+  return 'mark-done';
 }
 
 /**
- * Which write an answer to a step means: Done, Fleet can do it; free text
- * is a decision and `next` says what follows — fleet (default), done, or
- * still a person's step (the text the new next step).
+ * The text an answer to a blocker row carries: the note after a leading
+ * option, the whole answer when it names none, '' for a bare option.
+ */
+export function blockerAnswerText(decision: string): string {
+  const hit = splitOptionAnswer(decision, [...BLOCKER_FIX_WORDS, ...UNBLOCK_WORDS, ...DONE_WORDS]);
+  return hit ? hit.rest : decision.trim();
+}
+
+/** True for a step row's own options (Done, Fleet can do it), alone — anything else carries a decision. */
+export function isStepOption(decision: string): boolean {
+  return stepAnswerText(decision) === '' && decision.trim() !== '';
+}
+
+/**
+ * The decision an answer to a step row carries: the note after a leading
+ * option ("Fleet can do it: use the v2 API" → "use the v2 API"), the whole
+ * answer when it names none, '' for a bare option.
+ */
+export function stepAnswerText(decision: string): string {
+  const hit = splitOptionAnswer(decision, [...DONE_WORDS, ...STEP_FLEET_WORDS]);
+  return hit ? hit.rest : decision.trim();
+}
+
+/**
+ * Which write an answer to a step means: Done, Fleet can do it (each may
+ * lead the answer, the rest its decision); other free text is a decision
+ * and `next` says what follows — fleet (default), done, or still a
+ * person's step (the text the new next step).
  */
 export function stepAnswerAction(decision: string, next: StepFollowUp = 'fleet'): StepAnswer {
-  const d = decision.trim().toLowerCase();
-  if (d === 'done' || d === 'mark done' || d === 'mark-done') return 'mark-done';
-  if (d === 'fleet can do it' || d === 'to-fleet' || d === 'fleet') return 'to-fleet';
+  const hit = splitOptionAnswer(decision, [...DONE_WORDS, ...STEP_FLEET_WORDS]);
+  if (hit) return DONE_WORDS.includes(hit.option) ? 'mark-done' : 'to-fleet';
   return next === 'done' ? 'mark-done' : next === 'mine' ? 'needs-human' : 'to-fleet';
 }
 
@@ -438,17 +461,21 @@ export function derivedAnswerPreview(
         return ['Node: done, 100 % (the linked issue closes via sync)'];
       case 'requeue':
         return ['Node: back to the queue — todo, progress kept, the fleet can take it'];
-      default:
+      default: {
+        const note = stalledAnswerNote(d);
         return [
-          STALLED_ASK_OPTIONS.some((o) => o.toLowerCase() === d.toLowerCase()) || !d
+          !note
             ? 'Node: tagged needs-human — the fleet leaves it; it moves to Your steps'
-            : `Node: tagged needs-human, "Next step (a person): ${d}" at the top of the description`,
+            : `Node: tagged needs-human, "Next step (a person): ${note}" at the top of the description`,
         ];
+      }
     }
   }
   if (stepAskNodeId(a.id)) {
-    const decided = d && !isStepOption(d) && next !== 'mine' ? [`Node: "Decision (…): ${d}" in place of the next step, and as a comment on the linked issue`] : [];
-    switch (stepAnswerAction(d, next)) {
+    const action = stepAnswerAction(d, next);
+    const text = stepAnswerText(d);
+    const decided = text && action !== 'needs-human' ? [`Node: "Decision (…): ${text}" in place of the next step, and as a comment on the linked issue`] : [];
+    switch (action) {
       case 'mark-done':
         return [...decided, 'Node: done, 100 % (the linked issue closes via sync)'];
       case 'to-fleet':
@@ -458,15 +485,21 @@ export function derivedAnswerPreview(
     }
   }
   if (blockerAskNodeId(a.id)) {
-    switch (blockerAnswerAction(d)) {
+    const action = blockerAnswerAction(d);
+    const text = blockerAnswerText(d);
+    const noted =
+      text && action !== 'needs-human'
+        ? [`Node: "Decision (…): ${text}" as a comment on the linked issue${action === 'clear-blocker' ? '' : ', and at the top of the description'}`]
+        : [];
+    switch (action) {
       case 'fleet-fix':
         return a.question && blockerFleetAction({ question: a.question }) === 'fleet-check'
-          ? ['Node: tagged fleet-check — the fleet takes it next, the blocker in its brief: it gets past it, or writes down what a person must do']
-          : ['Node: blocker cleared, tagged fleet-fix — the worker holding the PR runs its agent on the branch again (CI log in the prompt) and pushes'];
+          ? [...noted, 'Node: tagged fleet-check — the fleet takes it next, the blocker in its brief: it gets past it, or writes down what a person must do']
+          : [...noted, 'Node: blocker cleared, tagged fleet-fix — the worker holding the PR runs its agent on the branch again (CI log in the prompt) and pushes'];
       case 'clear-blocker':
-        return ['Node: blocker cleared — a worker holding it carries on (an open PR merges once CI is green)'];
+        return [...noted, 'Node: blocker cleared — a worker holding it carries on (an open PR merges once CI is green)'];
       case 'mark-done':
-        return ['Node: done, 100 % (the linked issue closes via sync)'];
+        return [...noted, 'Node: done, 100 % (the linked issue closes via sync)'];
       default:
         return [`Node: blocker becomes "Next step (a person): …" plus your note "${d || '…'}", tagged needs-human`];
     }

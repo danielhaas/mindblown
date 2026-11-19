@@ -99,10 +99,10 @@ import {
   GATE_VERSION_PREFIX,
   GATE_OR,
   blockerAnswerAction,
+  blockerAnswerText,
   blockerFleetAction,
   FLEET_CHECK_TAG,
   blockerAskNodeId,
-  BLOCKER_ASK_OPTIONS,
   buildBlockerAsk,
   buildIsDonePredicate,
   buildStalledAsk,
@@ -122,7 +122,7 @@ import {
   stalledAnswerNote,
   stalledAskNodeId,
   STEP_ASK_OPTIONS,
-  isStepOption,
+  stepAnswerText,
   stepAnswerAction,
   stepAskNodeId,
   lintDailyOptedIn,
@@ -357,31 +357,43 @@ function storedFilters(stored: AskRow[], now: Date): { snoozed: Set<string>; ask
   return { snoozed, asked };
 }
 
-/** Which fix an answer runs, the note it carries, and whether the text is a step's decision. */
-function plannedFix(ask: AskRow['ask'], input: AskAnswerInput, decision: string): { action: LintActionId; note: string | undefined; decided: boolean } | null {
+/**
+ * Which fix an answer runs, the note it carries, whether the text is a
+ * decision, and that text — an answer that starts with an option runs the
+ * option and its rest is the decision ("Fleet can fix it — rebase on main").
+ */
+function plannedFix(
+  ask: AskRow['ask'],
+  input: AskAnswerInput,
+  decision: string,
+): { action: LintActionId; note: string | undefined; decided: boolean; text: string } | null {
   const askId = ask.id;
   const lint = parseLintAskId(askId);
   if (lint) {
     // An option runs its fix; "Leave it" (or text the rule has no fix for) is recorded only.
     const fix = lintAnswerAction(LINT_FIX_ACTIONS[lint.ruleId] ?? [], decision);
-    return fix ? { action: fix.action, note: fix.note, decided: false } : null;
+    return fix ? { action: fix.action, note: fix.note, decided: false, text: decision } : null;
   }
-  if (stalledAskNodeId(askId)) return { action: stalledAnswerAction(decision), note: stalledAnswerNote(decision) ?? undefined, decided: false };
+  if (stalledAskNodeId(askId)) return { action: stalledAnswerAction(decision), note: stalledAnswerNote(decision) ?? undefined, decided: false, text: decision };
   if (briefAskNodeId(askId)) {
     const brief = briefAnswerAction(decision);
-    return { action: brief, note: brief === 'write-brief' ? briefFromAnswer(ask, decision) : undefined, decided: false };
+    return { action: brief, note: brief === 'write-brief' ? briefFromAnswer(ask, decision) : undefined, decided: false, text: decision };
   }
   if (stepAskNodeId(askId)) {
     // noRequeue (answer_ask's "a human step still precedes the fleet") keeps the step.
     const next = input.next ?? (input.noRequeue ? 'mine' : 'fleet');
     const action = stepAnswerAction(decision, next);
-    const free = !!decision && !isStepOption(decision);
-    return { action, note: action === 'needs-human' && free ? decision : undefined, decided: free && action !== 'needs-human' };
+    const text = stepAnswerText(decision);
+    return { action, note: action === 'needs-human' && text ? text : undefined, decided: !!text && action !== 'needs-human', text };
   }
   let action: LintActionId = blockerAnswerAction(decision);
   if (action === 'fleet-fix') action = blockerFleetAction(ask);
-  const isOption = [...STEP_ASK_OPTIONS, ...BLOCKER_ASK_OPTIONS].some((o) => o.toLowerCase() === decision.toLowerCase());
-  return { action, note: action === 'needs-human' && !isOption && decision ? decision : undefined, decided: false };
+  if (action === 'needs-human') {
+    const isOption = STEP_ASK_OPTIONS.some((o) => o.toLowerCase() === decision.toLowerCase());
+    return { action, note: !isOption && decision ? decision : undefined, decided: false, text: decision };
+  }
+  const text = blockerAnswerText(decision);
+  return { action, note: undefined, decided: !!text, text };
 }
 
 /** Labels a hand-back takes off the linked issue: the hold the node just left. */
@@ -454,8 +466,8 @@ export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput
     writes.push({ kind: 'ledger-only', target: row.ask.id, detail: (input.decision ?? '').trim() || 'answered', done: true });
   } else if (input.action === 'answered') {
     const decision = (input.decision ?? '').trim();
-    const { action, note, decided } = plannedFix(row.ask, input, decision)!;
-    const line = decisionLine(by, decision, date);
+    const { action, note, decided, text } = plannedFix(row.ask, input, decision)!;
+    const line = decisionLine(by, text || decision, date);
     const w: AskWrite = { kind: 'mb-put', target: nodeId.slice(0, 8), detail: `${action} — ${line}`, done: false };
     writes.push(w);
     const heldTags = stepAskNodeId(key.askId) ? ((await nodeDb.getNode(nodeId).catch(() => null))?.tags ?? []) : [];
@@ -468,11 +480,11 @@ export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput
     } catch (err) {
       w.error = err instanceof Error ? err.message : String(err);
     }
-    if (node && stepAskNodeId(key.askId)) {
+    if (node && (stepAskNodeId(key.askId) || (blockerAskNodeId(key.askId) && decided))) {
       await stepIssueWrites(
         key.mapId,
         node,
-        { comment: decided ? decisionCommentBody(by, decision, date) : null, line, dropLabels: action === 'to-fleet', heldTags },
+        { comment: decided ? decisionCommentBody(by, text, date) : null, line, dropLabels: action === 'to-fleet', heldTags },
         writes,
       );
     }

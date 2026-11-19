@@ -208,6 +208,18 @@ describe('applyLintFix — node-side actions', () => {
     expect(r.changedFields).toEqual(['blockedReason', 'tags']);
   });
 
+  it('fleet-fix with a note ("Fleet can fix it — …") puts the decision on top of the description', async () => {
+    seed({ id: 'a', status: 'wip', description: 'Earlier text', blockedReason: 'Fleet worker h: PR #9 has a conflict.', tags: ['blocked'] });
+    const r = await applyLintFix('m1', 'a', 'fleet-fix', 'u1', { decision: 'Decision (Dan, 2026-11-19): resolve the conflict with main' });
+    expect(updateNode).toHaveBeenCalledWith('a', {
+      blockedReason: null,
+      tagsAppend: ['fleet-fix'],
+      tagsRemove: ['blocked'],
+      description: '**Decision (Dan, 2026-11-19): resolve the conflict with main**\n\nEarlier text',
+    });
+    expect(r.changedFields).toEqual(['blockedReason', 'tags', 'description']);
+  });
+
   it('fleet-check tags the node and leaves the blocker until the queue hands it out', async () => {
     seed({ id: 'a', status: 'wip', blockedReason: 'Waiting for the vendor', tags: [] });
     const r = await applyLintFix('m1', 'a', 'fleet-check', 'u1');

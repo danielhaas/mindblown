@@ -15,7 +15,7 @@
  * when the claim was dropped.
  */
 
-import type { Ask } from './asks.js';
+import { splitOptionAnswer, type Ask } from './asks.js';
 import { BLOCKED_TAG, dispatchSkipTag } from './dispatch.js';
 import { resolveStatusDef } from './statusWorkflow.js';
 import { isForgeLink, type ExternalLink } from './types.js';
@@ -225,16 +225,18 @@ export function buildStalledAsk(
   };
 }
 
-/** Which fix an answer means: one of the three options, else free text = a person's next step. */
+const STALLED_WORDS = ['done', 'mark done', 'mark-done', 'back to the queue', 'requeue', 'queue', 'for a person'];
+
+/** Which fix an answer means: one of the three options (alone or leading the answer), else free text = a person's next step. */
 export function stalledAnswerAction(decision: string): StalledAnswer {
-  const d = decision.trim().toLowerCase();
-  if (d === 'done' || d === 'mark done' || d === 'mark-done') return 'mark-done';
-  if (d === 'back to the queue' || d === 'requeue' || d === 'queue') return 'requeue';
+  const hit = splitOptionAnswer(decision, STALLED_WORDS);
+  if (hit && ['done', 'mark done', 'mark-done'].includes(hit.option)) return 'mark-done';
+  if (hit && ['back to the queue', 'requeue', 'queue'].includes(hit.option)) return 'requeue';
   return 'needs-human';
 }
 
-/** The note a free-text answer leaves; the options themselves carry none. */
+/** The note an answer leaves: the rest after a leading option, else free text; a bare option carries none. */
 export function stalledAnswerNote(decision: string): string | null {
-  const d = decision.trim();
-  return STALLED_ASK_OPTIONS.some((o) => o.toLowerCase() === d.toLowerCase()) ? null : d || null;
+  const hit = splitOptionAnswer(decision, STALLED_WORDS);
+  return (hit ? hit.rest : decision.trim()) || null;
 }

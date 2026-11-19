@@ -6,7 +6,7 @@
  * Rule semantics live in docs/plan-linter.md; the engine is
  * packages/server/src/lint/engine.ts.
  */
-import type { Ask } from './asks.js';
+import { splitOptionAnswer, type Ask } from './asks.js';
 
 export const LINT_RULE_IDS = [
   'unestimated-leaf',
@@ -169,16 +169,17 @@ export function lintAskNodeId(askId: string): string | null {
 export const LINT_ASK_LEAVE = 'Leave it';
 
 /**
- * Which fix an answer to a lint ask means: an option (a fix's label or id)
- * → that fix; anything else → null (recorded only), except free text on a
+ * Which fix an answer to a lint ask means: an option (a fix's label or id),
+ * alone or leading the answer (the rest its note) → that fix; anything else → null (recorded only), except free text on a
  * rule that offers `needs-human`, which becomes that person's next step.
  */
 export function lintAnswerAction(offered: LintActionId[], decision: string): { action: LintActionId; note?: string } | null {
   const d = decision.trim().toLowerCase();
-  if (!d || d === LINT_ASK_LEAVE.toLowerCase()) return null;
-  for (const id of offered) {
-    if (d === id || d === LINT_ACTIONS[id].label.toLowerCase()) return { action: id };
-  }
+  if (!d || splitOptionAnswer(d, [LINT_ASK_LEAVE])) return null;
+  // An answer that starts with an option is that option; the rest is its note.
+  const hit = splitOptionAnswer(decision, offered.flatMap((id) => [id, LINT_ACTIONS[id].label]));
+  const id = hit && offered.find((o) => o === hit.option || LINT_ACTIONS[o].label === hit.option);
+  if (hit && id) return hit.rest ? { action: id, note: hit.rest } : { action: id };
   if (offered.includes('needs-human')) return { action: 'needs-human', note: decision.trim() };
   return null;
 }

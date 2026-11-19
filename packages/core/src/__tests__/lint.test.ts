@@ -62,6 +62,8 @@ describe('lint asks', () => {
     expect(lintAnswerAction([...offered], 'mark-done')).toEqual({ action: 'mark-done' });
     expect(lintAnswerAction([...offered], 'Leave it')).toBeNull();
     expect(lintAnswerAction([...offered], 'Rita deploys it')).toEqual({ action: 'needs-human', note: 'Rita deploys it' });
+    expect(lintAnswerAction([...offered], 'mark-done: shipped yesterday')).toEqual({ action: 'mark-done', note: 'shipped yesterday' });
+    expect(lintAnswerAction([...offered], 'Leave it — fine as is')).toBeNull();
     expect(lintAnswerAction(['reopen'], 'whatever')).toBeNull();
   });
 

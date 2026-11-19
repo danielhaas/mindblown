@@ -260,6 +260,16 @@ describe('a person\'s steps', () => {
     expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'phone', 'needs-human', 'u1', { note: 'ask Rita' });
   });
 
+  it('an answer that starts with an option is that option, the rest its decision', async () => {
+    const date = new Date().toISOString().slice(0, 10);
+    await answerDerivedAsk(stepKey, { action: 'answered', decision: 'Fleet can do it: x', next: 'mine' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'phone', 'to-fleet', 'u1', { note: undefined, decision: `Decision (Dan, ${date}): x` });
+    await answerDerivedAsk(stepKey, { action: 'answered', decision: 'Done.' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'phone', 'mark-done', 'u1', { note: undefined });
+    await answerDerivedAsk(stepKey, { action: 'answered', decision: 'Something else', next: 'mine' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'phone', 'needs-human', 'u1', { note: 'Something else' });
+  });
+
   it('the decision goes on the linked issue and a hand-back takes the hold labels off', async () => {
     ghCtx.value = { owner: 'o', repo: 'r', forge };
     const issue = { provider: 'github', externalId: 'o/r#619', isPullRequest: false };
@@ -323,6 +333,27 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
     expect(recordAnswer).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.objectContaining({
       writes: [expect.objectContaining({ detail: expect.stringMatching(/^fleet-check — Decision \(Dan, \d{4}-\d\d-\d\d\): Fleet can fix it$/) })],
     }));
+  });
+
+  it('an answer that starts with an option is that option, the rest its note on the issue and the description', async () => {
+    const date = new Date().toISOString().slice(0, 10);
+    ghCtx.value = { owner: 'o', repo: 'r', forge };
+    const issue = { provider: 'github', externalId: 'o/r#191', isPullRequest: false };
+    applyLintFix.mockResolvedValueOnce({ action: 'fleet-fix', node: { id: 'ci', mapId: 'm1', externalLinks: [issue] } as never, changedFields: ['tags'] });
+    await answerDerivedAsk(blockerKey, { action: 'answered', decision: 'Fleet can fix it — resolve the conflict of PR #191 with main' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'ci', 'fleet-fix', 'u1', {
+      note: undefined,
+      decision: `Decision (Dan, ${date}): resolve the conflict of PR #191 with main`,
+    });
+    expect(commentOnGitHubIssue).toHaveBeenLastCalledWith('o', 'r', 191, expect.stringContaining('resolve the conflict of PR #191 with main'), forge);
+    expect(commentOnGitHubIssue).not.toHaveBeenLastCalledWith('o', 'r', 191, expect.stringContaining('Fleet can fix it'), forge);
+    expect(forge.removeIssueLabel).not.toHaveBeenCalled();
+    ghCtx.value = null;
+
+    await answerDerivedAsk(blockerKey, { action: 'answered', decision: 'Done.' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'ci', 'mark-done', 'u1', { note: undefined });
+    await answerDerivedAsk(blockerKey, { action: 'answered', decision: 'Something else' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'ci', 'needs-human', 'u1', { note: 'Something else' });
   });
 
   it('"Let the fleet check all": every blocker row, fix or check by its kind; steps and stalled rows stay', async () => {

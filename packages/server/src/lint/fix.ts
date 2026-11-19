@@ -78,7 +78,8 @@ export async function applyLintFix(
   /**
    * note: the text a fix carries (needs-human's next step, write-brief's brief).
    * decision: a "Decision (by, date): …" line that takes the place of the
-   * step's next-step lines — with mark-done and to-fleet (#619).
+   * step's next-step lines — with mark-done and to-fleet (#619); with
+   * fleet-fix and fleet-check it goes on top (a blocker answer's note).
    */
   opts: { note?: string; decision?: string } = {},
 ): Promise<LintFixOutcome> {
@@ -284,6 +285,10 @@ export async function applyLintFix(
 
   if (opts.decision?.trim() && (action === 'mark-done' || action === 'to-fleet')) {
     input.description = replaceNextStep(before.description, opts.decision.trim()) as nodeDb.UpdateNodeInput['description'];
+    changedFields.push('description');
+  } else if (opts.decision?.trim() && (action === 'fleet-fix' || action === 'fleet-check')) {
+    // "Fleet can fix it — <note>": the note on top, where the worker reads it.
+    input.description = prependDecision(before.description, opts.decision.trim()) as nodeDb.UpdateNodeInput['description'];
     changedFields.push('description');
   }
 

@@ -157,6 +157,9 @@ describe('stalled asks', () => {
     expect(stalledAnswerAction('run the import on prod first')).toBe('needs-human');
     expect(stalledAnswerNote('For a person')).toBeNull();
     expect(stalledAnswerNote('run the import on prod first')).toBe('run the import on prod first');
+    expect(stalledAnswerAction('Back to the queue — the key is there now')).toBe('requeue');
+    expect(stalledAnswerAction('For a person: Rita deploys it')).toBe('needs-human');
+    expect(stalledAnswerNote('For a person: Rita deploys it')).toBe('Rita deploys it');
     expect(stalledAskNodeId('#6823')).toBeNull();
     expect(stalledAskNodeId('stalled-')).toBeNull();
   });
