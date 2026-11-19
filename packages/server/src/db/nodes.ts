@@ -4,7 +4,7 @@ import { linksAnyExternalId } from './externalLinkFilter.js';
 import { db } from './connection.js';
 import { nodes, maps, changeEvents, mediaOwners, reporterChecks } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
-import { hasCycle, resolveStatusDef, isForgeLink, isPrematureCloseLink } from '@mindblown/core';
+import { hasCycle, resolveStatusDef, isForgeLink, isPrematureCloseLink, BLOCKED_TAG, WORKER_WAIT_NOTE } from '@mindblown/core';
 import type { Node as CoreNode, BlockerInfo, Dependency, DependencyType, ExternalLink, LinkedPrState, NodeApproval, NodeReporter, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
 import { approvalForNewNode } from '../services/trustPolicy.js';
@@ -142,6 +142,41 @@ export function mergeTags(
   const kept = current.filter((t) => !removeSet.has(t));
   if (!append || append.length === 0) return kept;
   return [...kept, ...append.filter((t) => !kept.includes(t))];
+}
+
+// ── Done is 100 % ─────────────────────────────────────────────────
+//
+// A leaf in a done-category status is 100 % complete: views group by
+// status, forecasts and rollups read % complete, so the two must agree.
+// A write that moves a leaf into done without a percentComplete gets
+// 100; one that names both a done status and less than 100 is refused
+// (DoneProgressConflictError → 400) rather than guessed at. Parents
+// compute their progress from their children and are left alone.
+
+export class DoneProgressConflictError extends Error {
+  constructor(status: string, percentComplete: number) {
+    super(
+      `Status "${status}" is done but percentComplete is ${percentComplete} — a done leaf is 100 % complete. ` +
+        `Send percentComplete 100 (or leave it out), or pick a status that is not done.`,
+    );
+    this.name = 'DoneProgressConflictError';
+  }
+}
+
+/**
+ * Progress for a leaf written with a done status: 100 unless the write
+ * names a number, and a number below 100 is refused.
+ */
+function doneLeafProgress(status: string, percentComplete: number | null | undefined): number {
+  if (typeof percentComplete === 'number' && percentComplete < 100) {
+    throw new DoneProgressConflictError(status, percentComplete);
+  }
+  return typeof percentComplete === 'number' ? percentComplete : 100;
+}
+
+/** A blocker the fleet worker wrote itself (core WORKER_WAIT_NOTE, same rule as holdsCapSlot). */
+export function isWorkerNote(blockedReason: string | null | undefined): boolean {
+  return WORKER_WAIT_NOTE.test((blockedReason ?? '').trim());
 }
 
 // ── Phase reference validation ────────────────────────────────────
@@ -309,18 +344,28 @@ export async function createNode(
     await assertPhaseIdKnown(handle, input.mapId, input.phaseId);
   }
 
-  // A node created already in flight (agents pass status / progress on
-  // create_node) starts now — same rule as updateNode.
-  let startedAt: Date | null = null;
-  if (input.percentComplete != null && input.percentComplete > 0 && input.percentComplete < 100) {
-    startedAt = now;
-  } else if (input.status != null) {
+  let statusDef: StatusDef | undefined;
+  if (input.status != null) {
     const [mapRow] = await handle
       .select({ statusWorkflow: maps.statusWorkflow })
       .from(maps)
       .where(eq(maps.id, input.mapId));
-    const def = resolveStatusDef((mapRow?.statusWorkflow as StatusDef[]) ?? [], input.status);
-    if (def?.category === 'in_progress') startedAt = now;
+    statusDef = resolveStatusDef((mapRow?.statusWorkflow as StatusDef[]) ?? [], input.status);
+  }
+
+  // A new node is a leaf: created done means 100 % (see doneLeafProgress).
+  let percentComplete = input.percentComplete ?? null;
+  if (statusDef?.category === 'done') {
+    percentComplete = doneLeafProgress(input.status as string, input.percentComplete);
+  }
+
+  // A node created already in flight (agents pass status / progress on
+  // create_node) starts now — same rule as updateNode.
+  let startedAt: Date | null = null;
+  if (percentComplete != null && percentComplete > 0 && percentComplete < 100) {
+    startedAt = now;
+  } else if (statusDef?.category === 'in_progress') {
+    startedAt = now;
   }
 
   // The approval stamp (#492), from the reporter against the map's trust
@@ -340,7 +385,7 @@ export async function createNode(
       y: input.y ?? null,
       effortEstimate: input.effortEstimate ?? null,
       estimateSource: input.effortEstimate != null && input.estimateSource === 'ai' ? 'ai' : null,
-      percentComplete: input.percentComplete ?? null,
+      percentComplete,
       status: input.status ?? null,
       priority: input.priority ?? null,
       startDate: input.startDate ?? null,
@@ -623,6 +668,40 @@ export async function updateNode(
         handle,
       );
       if (derived !== undefined) input.status = derived;
+    }
+  }
+
+  // Done is 100 % on a leaf, and done ends the fleet worker's own wait
+  // note ("Fleet worker <session>: …") with its `blocked` tag — the
+  // ticket finished another way (merged by a person, marked done,
+  // superseded). A blocker a person wrote stays. Reopening touches
+  // neither: progress stays where it was.
+  if (input.status != null || (input.percentComplete != null && input.percentComplete >= 100)) {
+    const [cur] = await handle
+      .select({
+        status: nodes.status,
+        childrenOrder: nodes.childrenOrder,
+        blockedReason: nodes.blockedReason,
+        tags: nodes.tags,
+        statusWorkflow: maps.statusWorkflow,
+      })
+      .from(nodes)
+      .innerJoin(maps, eq(maps.id, nodes.mapId))
+      .where(and(eq(nodes.id, nodeId), notDeleted));
+    if (cur) {
+      const workflow = (cur.statusWorkflow as StatusDef[]) ?? [];
+      const target = input.status !== undefined ? input.status : ((cur.status as string | null) ?? null);
+      if (resolveStatusDef(workflow, target)?.category === 'done') {
+        const isLeaf = ((cur.childrenOrder as string[] | null) ?? []).length === 0;
+        if (isLeaf && input.status != null) {
+          input.percentComplete = doneLeafProgress(input.status, input.percentComplete);
+        }
+        if (input.blockedReason === undefined && isWorkerNote(cur.blockedReason as string | null)) {
+          input.blockedReason = null;
+          const tags = input.tags ?? ((cur.tags as string[] | null) ?? []);
+          if (tags.includes(BLOCKED_TAG)) input.tags = tags.filter((t) => t !== BLOCKED_TAG);
+        }
+      }
     }
   }
 

@@ -15,7 +15,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CommentKind, NodeComment, RequirementGate } from '@mindblown/core';
 import type { FlagBlockerInput, FlagBlockerResult, FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult, MoveNodeToMapResult } from '@mindblown/tool-kit';
-import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookSubscription } from '@mindblown/core';
+import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookEventStat, WebhookSubscription } from '@mindblown/core';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -2083,6 +2083,10 @@ export function auditClosedIssues(
 
 export async function listWebhooks(mapId: string): Promise<WebhookSubscription[]> {
   return (await request<{ webhooks: WebhookSubscription[] }>(`/api/maps/${mapId}/webhooks`)).webhooks;
+}
+
+export async function webhookStats(mapId: string): Promise<WebhookEventStat[]> {
+  return (await request<{ stats: WebhookEventStat[] }>(`/api/maps/${mapId}/webhooks/stats`)).stats;
 }
 
 export async function createWebhook(mapId: string, input: CreateWebhookInput): Promise<WebhookSubscription & { secret: string }> {

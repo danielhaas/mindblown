@@ -28,7 +28,7 @@ export const createNodeTool = defineTool({
       .nullable()
       .optional()
       .describe("'ai' marks the estimate as an AI draft; null accepts it as a person's estimate. Writing effortEstimate without this field makes it a person's estimate."),
-    percentComplete: z.number().optional().describe('Percent complete (0-100)'),
+    percentComplete: z.number().optional().describe('Percent complete (0-100). A leaf set to a done status is 100 % — leave this out, or send 100.'),
     priority: z.enum(['P0', 'P1', 'P2', 'P3']).optional().describe('Priority level'),
     status: z.string().optional().describe("Status (must match map's status workflow)"),
     dueDate: z.string().optional().describe('Due date (ISO 8601)'),
@@ -170,7 +170,7 @@ export const updateNodeTool = defineTool({
       .nullable()
       .optional()
       .describe("'ai' marks the estimate as an AI draft; null accepts it as a person's estimate. Writing effortEstimate without this field makes it a person's estimate."),
-    percentComplete: z.number().nullable().optional().describe('Percent complete (0-100)'),
+    percentComplete: z.number().nullable().optional().describe('Percent complete (0-100). A leaf set to a done status is 100 % — leave this out, or send 100.'),
     status: z.string().nullable().optional().describe('Status'),
     blockedReason: z
       .string()

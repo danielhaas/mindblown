@@ -8,8 +8,10 @@
  *   PATCH  /api/maps/:id/webhooks/:webhookId  → { url?, events?, active?, description? }
  *   DELETE /api/maps/:id/webhooks/:webhookId
  *   POST   /api/maps/:id/webhooks/:webhookId/ping → one signed `ping` now, no retries
+ *   GET    /api/maps/:id/webhooks/stats      → { stats: WebhookEventStat[] } — per event, sent this
+ *                                               hour, sent / held back by the dedupe ledger in 24 h
  *
- * Every route needs admin on the map (#403 guard): a subscription sends
+ * Every route but stats needs admin on the map (#403 guard): a subscription sends
  * the map's activity to a URL of the caller's choosing. A workspace-wide
  * one also needs the workspace owner (it hears maps the caller may not
  * see) — the service checks that.
@@ -23,6 +25,7 @@ import {
   listWebhooks,
   pingWebhook,
   updateWebhook,
+  webhookStats,
   WebhookForbiddenError,
   WebhookValidationError,
   type CreateWebhookInput,
@@ -43,6 +46,11 @@ type One = { Params: { id: string; webhookId: string } };
 
 export async function webhookRoutes(app: FastifyInstance): Promise<void> {
   guardMapRoutes(app);
+
+  // Counts only, no URL or payload — whoever sees the Fleet tab may read them.
+  app.get<{ Params: { id: string } }>('/api/maps/:id/webhooks/stats', { config: { mapAccess: 'view' as const } }, async (req, reply) => {
+    return reply.send({ stats: await webhookStats(req.params.id) });
+  });
 
   app.get<{ Params: { id: string } }>('/api/maps/:id/webhooks', ADMIN, async (req, reply) => {
     return reply.send({ webhooks: await listWebhooks(req.params.id) });

@@ -167,6 +167,7 @@ function makeRecorder(): Recorder {
     readRepoDoc: async () => { throw new Error('not used'); },
     proposeRepoDocEdit: async () => { throw new Error('not used'); },
     listWebhooks: async () => { throw new Error('not used'); },
+    webhookStats: async () => { throw new Error('not used'); },
     createWebhook: async () => { throw new Error('not used'); },
     updateWebhook: async () => { throw new Error('not used'); },
     deleteWebhook: async () => { throw new Error('not used'); },

@@ -156,6 +156,7 @@ export {
   BLOCKED_TAG,
   FLEET_FIX_TAG,
   holdsCapSlot,
+  WORKER_WAIT_NOTE,
   fleetCanFix,
   FLEET_CHECK_TAG,
   fleetFixAction,
@@ -508,7 +509,7 @@ export type { BoardSummary, BoardSummaryItem, BoardSummaryBlocked } from './boar
 
 // Outgoing webhooks: per map/workspace event subscriptions
 export { WEBHOOK_EVENTS, WEBHOOK_PING_EVENT, isWebhookEvent, statusCategory, webhookNodeRef, webhookEventsForNodeUpdate } from './webhooks.js';
-export type { WebhookEvent, WebhookSubscription, WebhookPayload, WebhookNodeRef, FleetWaitingOnHumanData } from './webhooks.js';
+export type { WebhookEvent, WebhookEventStat, WebhookSubscription, WebhookPayload, WebhookNodeRef, FleetWaitingOnHumanData } from './webhooks.js';
 
 // Waiting on humans: is a fleet idle, and what do people hold up
 export {

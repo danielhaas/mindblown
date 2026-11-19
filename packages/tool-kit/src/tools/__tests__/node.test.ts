@@ -146,6 +146,7 @@ function makeRecordingBackend(): {
     readRepoDoc: async () => { throw new Error('not implemented'); },
     proposeRepoDocEdit: async () => { throw new Error('not implemented'); },
     listWebhooks: async () => { throw new Error('not implemented'); },
+    webhookStats: async () => { throw new Error('not implemented'); },
     createWebhook: async () => { throw new Error('not implemented'); },
     updateWebhook: async () => { throw new Error('not implemented'); },
     deleteWebhook: async () => { throw new Error('not implemented'); },

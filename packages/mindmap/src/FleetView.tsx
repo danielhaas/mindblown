@@ -39,6 +39,7 @@ import { FleetTelemetry } from './FleetTelemetry.js';
 import { FleetScopeContext } from './fleetScope.js';
 import { PairMachine } from './PairMachine.js';
 import { DeployDriftBanner } from './DeployDriftBanner.js';
+import { WebhookTraffic } from './WebhookTraffic.js';
 import type { FleetScope } from './fleetScope.js';
 
 /** Claims move without a telemetry push, and the fleet page has no socket room — poll. */
@@ -140,6 +141,7 @@ export function FleetView() {
         <div style={{ marginTop: 16 }}>
           <FleetJournalSection />
         </div>
+        <WebhookTraffic mapId={currentMap.id} />
       </Shell>
     </FleetScopeContext.Provider>
   );

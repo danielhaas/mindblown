@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import * as nodeDb from '../db/nodes.js';
-import { DependencyValidationError, PhaseIdValidationError, RequirementIdConflictError, RevisionConflictError, TagsModeConflictError } from '../db/nodes.js';
+import { DependencyValidationError, DoneProgressConflictError, PhaseIdValidationError, RequirementIdConflictError, RevisionConflictError, TagsModeConflictError } from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import * as events from '../db/events.js';
 import { unblockNode, UnblockNotFoundError } from '../services/unblock.js';
@@ -298,6 +298,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       if (err instanceof PhaseIdValidationError) {
         return reply.status(400).send({
           error: { code: 'UNKNOWN_PHASE_ID', message: err.message },
+        });
+      }
+      if (err instanceof DoneProgressConflictError) {
+        return reply.status(400).send({
+          error: { code: 'DONE_PROGRESS_CONFLICT', message: err.message },
         });
       }
       throw err;
@@ -1135,6 +1140,9 @@ async function applyNodeUpdate(
     }
     if (err instanceof PhaseIdValidationError) {
       return { ok: false, status: 400, error: { code: 'UNKNOWN_PHASE_ID', message: err.message } };
+    }
+    if (err instanceof DoneProgressConflictError) {
+      return { ok: false, status: 400, error: { code: 'DONE_PROGRESS_CONFLICT', message: err.message } };
     }
     if (err instanceof RevisionConflictError) {
       return {
