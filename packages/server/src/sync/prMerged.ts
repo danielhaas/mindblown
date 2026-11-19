@@ -6,12 +6,20 @@
  * commit stamped on the link (close evidence; the reporter check's
  * discovery), node.pr_merged; `Refs #N` → the PR attributed without a
  * status change; title-only closing refs → the issue closed by us.
+ * A PR without a forge issue names its node instead — `MindBlown: <id>`
+ * closes it, `MindBlown refs: <id>` attributes it (applyNodeIdRefs).
  *
  * Idempotent: a replay finds the node done with the sha stored and writes
  * nothing. The default-branch gate is the caller's.
  */
 
-import { closeGitHubIssue, extractClosingIssueRefs, extractReferencedIssueRefs } from '@mindblown/integrations';
+import {
+  closeGitHubIssue,
+  extractClosingIssueRefs,
+  extractClosingNodeRefs,
+  extractReferencedIssueRefs,
+  extractReferencedNodeRefs,
+} from '@mindblown/integrations';
 import { isForgeLink } from '@mindblown/core';
 import * as nodeDb from '../db/nodes.js';
 import * as events from '../db/events.js';
@@ -212,6 +220,8 @@ export async function applyMergedPr(
     transitions.push({ externalId, nodeId, status: 'referenced', recorded });
   }
 
+  await applyNodeIdRefs(repoFullName, pr, opts, transitions);
+
   // GitHub's own auto-close honors closing keywords only in the PR
   // BODY. Title-only refs leave the issue open after the merge —
   // and since handlePrClosed just cleared the mirror and the node
@@ -249,4 +259,105 @@ export async function applyMergedPr(
   }
 
   return transitions;
+}
+
+/**
+ * `MindBlown: <id>` (and the fleet's `MindBlown node: <id>`) closes the
+ * node it names, `MindBlown refs: <id>` attributes the PR to it — the
+ * same trail as `Closes #N` / `Refs #N`, for PRs made without a forge
+ * issue. The id (full or a prefix) is looked up only on maps bound to
+ * this repo; unknown or ambiguous → not_linked. A node an issue ref of
+ * the same PR already handled is skipped. The replay guard is the node's
+ * own node.pr_merged row for this PR, so it is written awaited.
+ * Appends to `transitions`.
+ */
+async function applyNodeIdRefs(
+  repoFullName: string,
+  pr: MergedPr,
+  opts: ApplyMergedPrOptions,
+  transitions: MergedPrTransition[],
+): Promise<void> {
+  const text = `${pr.title ?? ''} ${pr.body ?? ''}`;
+  const closing = extractClosingNodeRefs(text);
+  const refs = [
+    ...closing.map((ref) => ({ ref, closes: true })),
+    ...extractReferencedNodeRefs(text)
+      .filter((r) => !closing.includes(r))
+      .map((ref) => ({ ref, closes: false })),
+  ];
+  if (refs.length === 0) return;
+  const mergeCommitSha = pr.merge_commit_sha ?? null;
+  const handled = new Set(transitions.map((t) => t.nodeId).filter(Boolean));
+
+  for (const { ref, closes } of refs) {
+    const externalId = `mindblown:${ref}`;
+    const ids = await nodeDb.findNodeIdsByIdOnRepoMaps(ref, repoFullName);
+    const node = ids.length === 1 ? await nodeDb.getNode(ids[0]) : null;
+    if (!node) {
+      console.log(
+        `[gh-webhook] PR #${pr.number} in ${repoFullName} names MindBlown node ${ref}: ${ids.length > 1 ? 'ambiguous' : 'no such node'} on this repo's maps → not_linked`,
+      );
+      transitions.push({ externalId, nodeId: '', status: 'not_linked' });
+      continue;
+    }
+    const nodeId = node.id;
+    if (handled.has(nodeId)) continue;
+    handled.add(nodeId);
+
+    const wasDone = node.status === 'done' && node.percentComplete === 100;
+    const status: MergedPrTransition['status'] = !closes ? 'referenced' : wasDone ? 'already_done' : 'transitioned';
+    const seen = (
+      await events.listEvents({ mapId: node.mapId, nodeId, eventType: 'node.pr_merged', limit: 50 })
+    ).some((e) => {
+      const v = e.newValue as { prNumber?: number; repo?: string } | null;
+      return v?.prNumber === pr.number && v?.repo === repoFullName;
+    });
+    if (seen) {
+      // A replay writes nothing — not even a node reopened since the merge.
+      transitions.push({ externalId, nodeId, status: closes ? 'already_done' : 'referenced', recorded: false });
+      continue;
+    }
+
+    // The node's forge links of this repo carry the merge as close
+    // evidence for the outbound sync, as on the closing-ref branch.
+    const doneAfter = wasDone || closes;
+    const links = node.externalLinks.map((l) =>
+      isForgeLink(l) && l.externalId.toLowerCase().startsWith(`${repoFullName.toLowerCase()}#`)
+        ? { ...l, mergedPrNumber: pr.number, ...(doneAfter && mergeCommitSha ? { mergeCommitSha } : {}) }
+        : l,
+    );
+    const linksChanged = JSON.stringify(links) !== JSON.stringify(node.externalLinks);
+    const updates: nodeDb.UpdateNodeInput =
+      status === 'transitioned'
+        ? { percentComplete: 100, status: 'done', ...(linksChanged ? { externalLinks: links } : {}) }
+        : linksChanged ? { externalLinks: links } : {};
+    const updated = Object.keys(updates).length > 0 ? await nodeDb.updateNode(nodeId, updates) : null;
+    if (status === 'transitioned' && updated) {
+      broadcast(updated.mapId, {
+        type: 'node:updated',
+        nodeId,
+        fields: Object.keys(updates),
+        node: updated,
+        source: 'github_webhook_pr_merge',
+      });
+      events.recordFieldChanges(updated.mapId, nodeId, opts.actorUserId, node, updated).catch(() => {});
+      events
+        .recordClaimTransition(updated.mapId, nodeId, opts.actorUserId, node, updated, {
+          reason: 'done',
+          note: `PR #${pr.number} merged${opts.mergedBy ? ` by ${opts.mergedBy}` : ''}`,
+        })
+        .catch(() => {});
+      console.log(`[gh-webhook] PR #${pr.number} merged → transitioned node ${nodeId} (${externalId}) to done`);
+    }
+    await events.recordPrMerged(node.mapId, nodeId, opts.actorUserId, {
+      prNumber: pr.number,
+      repo: repoFullName,
+      url: pr.html_url ?? null,
+      ...(opts.mergedBy ? { mergedBy: opts.mergedBy } : {}),
+      mergeCommitSha,
+      externalId,
+      alreadyDone: wasDone,
+    });
+    transitions.push({ externalId, nodeId, status, recorded: true });
+  }
 }

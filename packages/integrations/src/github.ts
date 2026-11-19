@@ -800,6 +800,35 @@ export function extractReferencedIssueRefs(text: string): number[] {
   return [...refs];
 }
 
+/** A node id as a PR names it: a full UUID or its first 8 hex chars. */
+const NODE_ID = '([0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?)(?![0-9a-z-])';
+
+function matchAll(pattern: RegExp, text: string): string[] {
+  const refs = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) refs.add(match[1].toLowerCase());
+  return [...refs];
+}
+
+/**
+ * MindBlown node ids a PR closes on merge, from its body/title — the
+ * forge-less twin of `Closes #N` for PRs made without an issue:
+ * `MindBlown: <id>`, and the fleet worker's own wording
+ * `MindBlown node: <id>` / "for MindBlown node `<id>`". `<id>` is a full
+ * UUID or an 8-char prefix, lowercased; resolving it is the caller's.
+ */
+export function extractClosingNodeRefs(text: string): string[] {
+  return matchAll(new RegExp(`\\bMindBlown(?:\\s+node\\s*:?|\\s*:)\\s*\`?${NODE_ID}`, 'gi'), text);
+}
+
+/**
+ * `MindBlown refs: <id>` (also `ref` / `references`) — the node's PR,
+ * attributed without a status change, like `Refs #N`.
+ */
+export function extractReferencedNodeRefs(text: string): string[] {
+  return matchAll(new RegExp(`\\bMindBlown\\s+ref(?:s|erences?)?\\s*:?\\s*\`?${NODE_ID}`, 'gi'), text);
+}
+
 // ── Label helpers ────────────────────────────────────────────────
 
 /**

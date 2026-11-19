@@ -16,6 +16,8 @@ import {
   parseLinkNext,
   extractClosingIssueRefs,
   extractReferencedIssueRefs,
+  extractClosingNodeRefs,
+  extractReferencedNodeRefs,
   type IssueLandingProbe,
 } from './github.js';
 import { GitHubForge } from './forge/github.js';
@@ -1357,5 +1359,31 @@ describe('extractReferencedIssueRefs', () => {
 
   it('is not a closing keyword', () => {
     expect(extractClosingIssueRefs('Refs #1196')).toEqual([]);
+  });
+});
+
+describe('extractClosingNodeRefs / extractReferencedNodeRefs', () => {
+  const ID = '0d5bf841-789e-40a4-8509-9ef109d19e00';
+
+  it('reads `MindBlown: <id>` with a full id or an 8-char prefix', () => {
+    expect(extractClosingNodeRefs(`fix: y\n\nMindBlown: ${ID}`)).toEqual([ID]);
+    expect(extractClosingNodeRefs('MindBlown: 0D5BF841')).toEqual(['0d5bf841']);
+  });
+
+  it("reads the fleet worker's wording", () => {
+    expect(extractClosingNodeRefs(`MindBlown node: ${ID} (map df1d3294-09a1-4d08-9099-0899b76efaed)`)).toEqual([ID]);
+    expect(extractClosingNodeRefs(`Worked by fleet-worker on claudia (claude) for MindBlown node \`${ID}\`.`)).toEqual([ID]);
+  });
+
+  it('ignores a cut-off id, a bare mention and a reference', () => {
+    expect(extractClosingNodeRefs('MindBlown: 0d5bf841-789e')).toEqual([]);
+    expect(extractClosingNodeRefs(`MindBlown ${ID}`)).toEqual([]);
+    expect(extractClosingNodeRefs(`MindBlown refs: ${ID}`)).toEqual([]);
+  });
+
+  it('reads `MindBlown refs: <id>` as a reference only', () => {
+    expect(extractReferencedNodeRefs(`MindBlown refs: ${ID}`)).toEqual([ID]);
+    expect(extractReferencedNodeRefs('MindBlown ref 0d5bf841')).toEqual(['0d5bf841']);
+    expect(extractReferencedNodeRefs(`MindBlown: ${ID}`)).toEqual([]);
   });
 });

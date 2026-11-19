@@ -95,6 +95,8 @@ export {
   processWebhook,
   extractClosingIssueRefs,
   extractReferencedIssueRefs,
+  extractClosingNodeRefs,
+  extractReferencedNodeRefs,
   importGitHubIssues,
   _clearIssueListCacheForTests,
   fetchChangedIssues,
