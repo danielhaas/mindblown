@@ -219,7 +219,7 @@ describe('a person\'s steps', () => {
     applyLintFix.mockResolvedValueOnce({ action: 'to-fleet', node: { id: 'phone', mapId: 'm1', externalLinks: [issue] } as never, changedFields: ['tags'] });
     const out = await answerDerivedAsk(stepKey, { action: 'answered', decision: 'yes' }, 'u1');
     expect(commentOnGitHubIssue).toHaveBeenCalledWith('o', 'r', 619, expect.stringContaining('Decision (Dan, '), forge);
-    expect(forge.removeIssueLabel.mock.calls.map((c) => (c as unknown[])[3])).toEqual(['blocked', 'kira-skip', 'needs-human', 'needs-daniel-input', 'needs-rita-review']);
+    expect(forge.removeIssueLabel.mock.calls.map((c) => (c as unknown[])[3])).toEqual(['blocked', 'kira-skip', 'needs-human', 'needs-daniel-input', 'needs-rita-review', 'misfiled?']);
     expect(out.ok).toBe(true);
     const writes = (recordAnswer.mock.calls.at(-1)![2] as unknown as { writes: Array<{ kind: string; done: boolean }> }).writes;
     expect(writes.map((w) => [w.kind, w.done])).toEqual([['mb-put', true], ['gh-comment', true], ['gh-edit', true]]);

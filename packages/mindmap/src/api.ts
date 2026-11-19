@@ -26,6 +26,7 @@ import type {
   DeployedResult,
   ApproveInput,
   RejectInput,
+  MisfiledRepo,
 } from '@mindblown/core';
 import { cachedResponse, clearApiCache, markOffline, markOnline, saveResponse } from './offline.js';
 
@@ -1454,6 +1455,29 @@ export function moveNode(
   });
 }
 
+/** move_node_to_map's answer (server services/moveToMap.ts). */
+export interface MoveNodeToMapResponse {
+  node: Node;
+  movedIds: string[];
+  fromMapId: string;
+  toMapId: string;
+  toMapName: string;
+  notes: string[];
+}
+
+/** Re-home a node (and its subtree) in another map of the workspace — the wrong-map guard's Move. */
+export function moveNodeToMap(
+  fromMapId: string,
+  nodeId: string,
+  toMapId: string,
+  parentId?: string,
+): Promise<MoveNodeToMapResponse> {
+  return request<MoveNodeToMapResponse>(`/api/maps/${fromMapId}/nodes/${nodeId}/move-to-map`, {
+    method: 'POST',
+    body: JSON.stringify({ toMapId, ...(parentId ? { parentId } : {}) }),
+  });
+}
+
 export function reorderChildren(
   mapId: string,
   parentId: string,
@@ -2033,6 +2057,8 @@ export interface IntakeAcceptResponse {
   } | null;
   issueError?: string;
   dependencyErrors?: string[];
+  /** Set when the ticket names the repo another map plans (wrong-map guard). */
+  misfiled?: MisfiledRepo;
 }
 
 export function aiIntake(

@@ -40,13 +40,34 @@ export function Toaster() {
             pointerEvents: 'auto',
           }}
         >
-          <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: '#22c55e' }} />
+          <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: t.warn ? '#f59e0b' : '#22c55e' }} />
           {t.href ? (
             <a href={t.href} target="_blank" rel="noreferrer" style={{ color: '#f8fafc' }}>
               {t.text}
             </a>
           ) : (
             <span>{t.text}</span>
+          )}
+          {t.action && (
+            <button
+              onClick={() => {
+                dismissToast(t.id);
+                t.action!.run();
+              }}
+              style={{
+                flexShrink: 0,
+                background: '#f8fafc',
+                border: 'none',
+                borderRadius: 6,
+                color: '#1e293b',
+                fontSize: 12,
+                fontWeight: 600,
+                padding: '3px 10px',
+                cursor: 'pointer',
+              }}
+            >
+              {t.action.label}
+            </button>
           )}
           <button
             onClick={() => dismissToast(t.id)}

@@ -1574,7 +1574,7 @@ server.tool(
 
 server.tool(
   'plan_fix',
-  'Apply one of the fixes a plan_lint finding offers (the [fix: …] ids in its output). The write goes through the normal node path — change history, live update, outbound issue sync — exactly like an edit by hand; issue-side fixes write to the forge and stamp the link state. Actions: mark-done (status to the done state + 100 %), reopen (status to todo, 0 %, the linked issue reopens via sync), close-issue / reopen-issue (on the forge directly), clear-blocker (blockedReason + blocked tag, status back to todo if it was blocked), park (status blocked + tag, claim released — for a ticket a broken worker keeps bouncing), requeue (back to the pull queue: todo, progress kept, claim released), needs-human (the next step is for a person: needs-human tag, the blocker text — and the note — go to the top of the description as "Next step (a person)", blocker cleared). The server refuses an action the rule does not offer. Nothing is applied without this explicit call; run plan_lint first and pick per finding.',
+  'Apply one of the fixes a plan_lint finding offers (the [fix: …] ids in its output). The write goes through the normal node path — change history, live update, outbound issue sync — exactly like an edit by hand; issue-side fixes write to the forge and stamp the link state. Actions: mark-done (status to the done state + 100 %), reopen (status to todo, 0 %, the linked issue reopens via sync), close-issue / reopen-issue (on the forge directly), clear-blocker (blockedReason + blocked tag, status back to todo if it was blocked), park (status blocked + tag, claim released — for a ticket a broken worker keeps bouncing), requeue (back to the pull queue: todo, progress kept, claim released), needs-human (the next step is for a person: needs-human tag, the blocker text — and the note — go to the top of the description as "Next step (a person)", blocker cleared), move-to-map (misfiled-repo: the ticket moves to the map that plans the repo it names — as move_node_to_map). The server refuses an action the rule does not offer. Nothing is applied without this explicit call; run plan_lint first and pick per finding.',
   {
     mapId: z.string().describe('The map ID'),
     ruleId: z.enum(LINT_RULES).describe('The rule the finding belongs to (validates that the action fits)'),
@@ -1590,6 +1590,10 @@ server.tool(
         lines.push(`Changed: ${r.changedFields.join(', ')} → status ${r.node.status ?? 'unset'}, ${r.node.percentComplete ?? 0}%`);
       }
       if (r.issue) lines.push(`Issue ${r.issue.externalId} is now ${r.issue.state}`);
+      if (r.moved) {
+        lines.push(`Moved to map ${r.moved.toMapName} (${r.moved.toMapId})${r.moved.movedIds.length > 1 ? ` with ${r.moved.movedIds.length - 1} node(s) below it` : ''}`);
+        for (const n of r.moved.notes) lines.push(`- ${n}`);
+      }
       lines.push('Re-run plan_lint to confirm the finding cleared.');
       return toolResult(lines.join('\n'));
     } catch (err) {

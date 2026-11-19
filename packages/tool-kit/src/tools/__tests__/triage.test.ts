@@ -98,6 +98,7 @@ function makeRecorder(): Recorder {
     updateNode: async () => { throw new Error('not used'); },
     deleteNode: async () => { throw new Error('not used'); },
     moveNode: async () => { throw new Error('not used'); },
+    moveNodeToMap: async () => { throw new Error('not used'); },
     restoreNode: async () => { throw new Error('not used'); },
     listDeleted: async () => { throw new Error('not used'); },
     listTriageDecisions: async (mapId, filters) => {

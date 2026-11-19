@@ -21,8 +21,10 @@ import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { unblockNode, UnblockNotFoundError } from '../services/unblock.js';
 import { issueLinkOf } from '../services/issueLabels.js';
 import { buildDonePredicate } from './engine.js';
+import { detectMisfiled } from '../services/misfiled.js';
+import { moveNodeToMap } from '../services/moveToMap.js';
 
-export type LintFixErrorCode = 'NODE_NOT_FOUND' | 'NO_FORGE_LINK' | 'NO_FORGE' | 'BAD_ACTION';
+export type LintFixErrorCode = 'NODE_NOT_FOUND' | 'NO_FORGE_LINK' | 'NO_FORGE' | 'BAD_ACTION' | 'NOT_MISFILED';
 
 export class LintFixError extends Error {
   constructor(
@@ -43,6 +45,8 @@ export interface LintFixOutcome {
   issue?: { externalId: string; state: 'open' | 'closed' };
   /** clear-blocker: the `blocked` label taken off the linked issue (#622). */
   labelWrite?: AskWrite;
+  /** move-to-map: where the node went and what did not come along. */
+  moved?: { toMapId: string; toMapName: string; movedIds: string[]; notes: string[] };
 }
 
 const PARK_REASON = 'Parked from Plan health';
@@ -92,6 +96,22 @@ export async function applyLintFix(
       if (err instanceof UnblockNotFoundError) throw new LintFixError('NODE_NOT_FOUND', err.message);
       throw err;
     }
+  }
+
+  if (action === 'move-to-map') {
+    // Detected again now: the finding may be stale, and the target is the
+    // map that plans the named repo as the mover sees it. Refusals of the
+    // move itself (no edit on the target, an agent running) propagate as
+    // MoveToMapError.
+    const hit = await detectMisfiled(before, mapId, userId);
+    if (!hit) throw new LintFixError('NOT_MISFILED', `"${before.text}" no longer names the repo another map plans`);
+    const r = await moveNodeToMap({ nodeId, fromMapId: mapId, toMapId: hit.suggestedMapId, userId });
+    return {
+      action,
+      node: r.node,
+      changedFields: ['mapId'],
+      moved: { toMapId: r.toMapId, toMapName: r.toMapName, movedIds: r.movedIds, notes: r.notes },
+    };
   }
 
   if (action === 'close-issue' || action === 'reopen-issue') {

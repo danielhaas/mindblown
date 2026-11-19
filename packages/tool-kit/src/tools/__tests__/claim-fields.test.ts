@@ -62,6 +62,7 @@ function backendFor(detail: MapDetail): ToolBackend {
     updateNode: unimplemented,
     deleteNode: unimplemented,
     moveNode: unimplemented,
+    moveNodeToMap: unimplemented,
     restoreNode: unimplemented,
     listDeleted: unimplemented,
     listTriageDecisions: unimplemented,

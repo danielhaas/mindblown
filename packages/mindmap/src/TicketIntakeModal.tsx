@@ -19,6 +19,7 @@ import {
   type DraftEdits,
 } from './intakeDraft.js';
 import { showToast } from './toast.js';
+import { showMisfiledToast } from './misfiledToast.js';
 
 interface Props {
   mapId: string;
@@ -125,6 +126,7 @@ export function TicketIntakeModal({ mapId, parentId, parentText, onClose }: Prop
         existing: first ? { nodeId: first.nodeId, issueNumber: first.issueNumber } : null,
       });
       await loadMap(mapId);
+      if (r.misfiled) showMisfiledToast(mapId, r.node, r.misfiled);
       // A clean accept ends the intake; only a warning keeps the window open, showing just that result.
       if (!r.issueError && !r.dependencyErrors?.length && !r.issue?.author?.fallbackReason) {
         showToast(

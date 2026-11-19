@@ -155,6 +155,10 @@ export {
 } from './dispatch.js';
 export type { DispatchPolicyKey, GateEntry, GateTerm, DispatchState, DispatchQueueSnapshot, DispatchHold, ParentHold, UnblockPlan } from './dispatch.js';
 
+// Wrong-map guard — a ticket that names another map's repo
+export { MISFILED_TAG, namedRepos, parseRepoRef, findMisfiledRepo, misfiledHint } from './misfiled.js';
+export type { NamedRepo, RepoBinding, MapRepoCandidate, MisfiledRepo } from './misfiled.js';
+
 // Leidang fleet telemetry — rollup/tick shapes + the reading the Fleet card shows
 export {
   ROLLUP_STALE_MIN,

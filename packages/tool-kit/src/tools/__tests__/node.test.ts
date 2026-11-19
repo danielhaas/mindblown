@@ -86,6 +86,7 @@ function makeRecordingBackend(): {
     },
     deleteNode: async () => { throw new Error('not implemented'); },
     moveNode: async () => { throw new Error('not implemented'); },
+    moveNodeToMap: async () => { throw new Error('not implemented'); },
     restoreNode: async () => { throw new Error('not implemented'); },
     listDeleted: async () => { throw new Error('not implemented'); },
     listTriageDecisions: async () => { throw new Error('not implemented'); },

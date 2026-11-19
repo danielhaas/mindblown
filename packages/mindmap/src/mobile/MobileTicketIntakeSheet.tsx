@@ -19,6 +19,7 @@ import {
   type DraftEdits,
 } from '../intakeDraft.js';
 import { showToast } from '../toast.js';
+import { showMisfiledToast } from '../misfiledToast.js';
 
 interface Props {
   map: MindMap;
@@ -117,6 +118,7 @@ export function MobileTicketIntakeSheet({ map, nodes, versions, onClose, onCreat
         existing: first ? { nodeId: first.nodeId, issueNumber: first.issueNumber } : null,
       });
       onCreated(r.node);
+      if (r.misfiled) showMisfiledToast(map.id, r.node, r.misfiled);
       // A clean accept ends the intake; only a warning keeps the sheet open, showing just that result.
       if (!r.issueError && !r.dependencyErrors?.length && !r.issue?.author?.fallbackReason) {
         showToast(

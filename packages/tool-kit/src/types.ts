@@ -85,6 +85,30 @@ export interface NodeWithComputed {
    * the attachment tools only read it to report a count.
    */
   attachments?: AttachmentSummary[];
+  /**
+   * Set on create_node's answer when the node names the repo another map
+   * plans (wrong-map guard): the node was created but held from the fleet
+   * (tag `misfiled?`) — move it with move_node_to_map.
+   */
+  misfiled?: MisfiledRepoInfo | null;
+}
+
+/** The repo a misfiled node names and the map that plans it (mirrors core MisfiledRepo). */
+export interface MisfiledRepoInfo {
+  repo: string;
+  suggestedMapId: string;
+  suggestedMapName: string;
+}
+
+/** move_node_to_map's answer. */
+export interface MoveNodeToMapResult {
+  node: NodeWithComputed;
+  movedIds: string[];
+  fromMapId: string;
+  toMapId: string;
+  toMapName: string;
+  /** What did not come along: dropped issue links and dependencies, a released claim. */
+  notes: string[];
 }
 
 /** One attachment as the tools report it (mirrors core `Attachment`). */

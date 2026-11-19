@@ -30,6 +30,7 @@ export const httpBackend: ToolBackend = {
   updateNode: (mapId, nodeId, fields) => api.updateNode(mapId, nodeId, fields),
   deleteNode: (mapId, nodeId) => api.deleteNode(mapId, nodeId),
   moveNode: (mapId, nodeId, newParentId, position) => api.moveNode(mapId, nodeId, newParentId, position),
+  moveNodeToMap: (fromMapId, nodeId, toMapId, parentId) => api.moveNodeToMap(fromMapId, nodeId, toMapId, parentId),
   // ── Soft-delete + restore (#107) ────────────────────────────────
   restoreNode: (mapId, nodeId, opts) => api.restoreNode(mapId, nodeId, opts),
   listDeleted: (mapId, opts) => api.listDeleted(mapId, opts),
