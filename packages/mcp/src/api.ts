@@ -13,7 +13,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { CommentKind, NodeComment, RequirementGate } from '@mindblown/core';
+import type { CommentKind, LintRun, NodeComment, RequirementGate } from '@mindblown/core';
 import type { FlagBlockerInput, FlagBlockerResult, FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult, MoveNodeToMapResult } from '@mindblown/tool-kit';
 import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookEventStat, WebhookSubscription } from '@mindblown/core';
 
@@ -547,6 +547,7 @@ export function updateMap(
     githubRepoName?: string | null;
     aiPolicy?: 'any' | 'local' | 'none';
     aiEstimateDrafts?: boolean;
+    lintAutoFix?: Partial<Record<string, boolean>>;
     holidayJurisdiction?: string | null;
     holidayOverrides?: { add: string[]; remove: string[] };
     phases?: PhaseDef[];
@@ -1098,6 +1099,19 @@ export function getLint(
   if (opts.scope) params.set('scope', opts.scope);
   const qs = params.toString();
   return request<LintReport>(`/api/maps/${mapId}/lint${qs ? `?${qs}` : ''}`);
+}
+
+// ── Daily self-check runs (server lint/daily.ts) ──────────────
+
+/** The runs of one map, or of every map the caller can view (no mapId), from `days` days back. */
+export function listLintRuns(opts: { mapId?: string; days?: number } = {}): Promise<{ runs: LintRun[] }> {
+  const qs = opts.days != null ? `?days=${opts.days}` : '';
+  return request<{ runs: LintRun[] }>(opts.mapId ? `/api/maps/${opts.mapId}/lint/runs${qs}` : `/api/lint/runs${qs}`);
+}
+
+/** Run the daily self-check on one map now (applies the safe fixes). */
+export function runLintNow(mapId: string): Promise<LintRun> {
+  return request<LintRun>(`/api/maps/${mapId}/lint/runs`, { method: 'POST', body: '{}' });
 }
 
 // ── Velocity (empirical focus factor) ─────────────────────────

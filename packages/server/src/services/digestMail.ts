@@ -8,7 +8,10 @@
  * the tickets waiting for approval, on maps they can view — plus the PRs
  * open longer than STALE_PR_DAYS (default 7, bots and drafts left out) on
  * the repo of each map they administer (#499 sat open a month because
- * nothing outside the fleet loop looked at it). Nothing open, no mail.
+ * nothing outside the fleet loop looked at it) — and, per map they
+ * administer, one plan-hygiene line from the daily self-check (lint/daily.ts):
+ * "Navy App: 24 without estimate, 3 oversized", linking to the map's lint
+ * panel. Nothing open and no hygiene line, no mail.
  * Fleet service users get none; a person can switch it off
  * (routes/digestMail.ts).
  *
@@ -19,11 +22,12 @@
  * tries again, up to DIGEST_MAX_ATTEMPTS per day (#602).
  * Without SMTP_HOST the round does nothing.
  */
-import { isNoQuestion } from '@mindblown/core';
-import type { AskRow, PendingApproval } from '@mindblown/core';
+import { isNoQuestion, lintDigestLine } from '@mindblown/core';
+import type { AskRow, LintRun, PendingApproval } from '@mindblown/core';
 import { paginateGitHub } from '@mindblown/integrations';
 import * as digestDb from '../db/digestMails.js';
 import * as mapDb from '../db/maps.js';
+import * as lintRunsDb from '../db/lintRuns.js';
 import { emailConfigured, escapeHtml, sendEmail } from '../lib/email.js';
 import { getGitHubContextForMap, type ForgeMapContext } from '../lib/githubContext.js';
 import { checkMapAccess } from '../lib/mapAccess.js';
@@ -31,6 +35,7 @@ import { listPendingApprovals } from './approvals.js';
 import { fleetInbox } from './asksInbox.js';
 import { listFleetsForUser } from './fleets.js';
 import { waitingMaps } from '../lib/waitingMaps.js';
+import { localDay, localHour } from '../lib/localDay.js';
 
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5180';
 
@@ -48,14 +53,7 @@ export function digestConfig(env: NodeJS.ProcessEnv = process.env): DigestConfig
   };
 }
 
-/** The calendar day at `now` in `timeZone`, as YYYY-MM-DD. */
-export function localDay(now: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
-}
-
-export function localHour(now: Date, timeZone: string): number {
-  return Number(new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', hourCycle: 'h23' }).format(now));
-}
+export { localDay, localHour };
 
 /** Is today's mail still to go for someone last sent on `lastSentOn`? Pure; the clock comes in as `now`. */
 export function digestDue(now: Date, lastSentOn: string | null, cfg: DigestConfig): boolean {
@@ -270,6 +268,39 @@ async function stalePrItemsForUser(
   return items;
 }
 
+/** One map's plan-hygiene line from its newest daily check. */
+export interface HygieneLine {
+  mapId: string;
+  mapName: string;
+  line: string;
+  url: string;
+}
+
+/** A run older than this says nothing about today's map. */
+const HYGIENE_MAX_AGE_MS = 2 * DAY_MS;
+
+/** The hygiene lines of these runs (maps by name), runs older than two days left out. */
+export function hygieneLines(runs: LintRun[], maps: Map<string, string>, now: Date): HygieneLine[] {
+  const out: HygieneLine[] = [];
+  for (const run of runs) {
+    const name = maps.get(run.mapId);
+    if (!name || run.error || now.getTime() - Date.parse(run.ranAt) > HYGIENE_MAX_AGE_MS) continue;
+    const line = lintDigestLine(run.digest);
+    if (line) out.push({ mapId: run.mapId, mapName: name, line, url: `${FRONTEND_URL}/?map=${run.mapId}&lint=1` });
+  }
+  return out.sort((a, b) => a.mapName.localeCompare(b.mapName));
+}
+
+/** Hygiene lines for the live maps this person administers — the people who decide about the plan, like stale PRs. */
+export async function hygieneForUser(userId: string, now: Date = new Date()): Promise<HygieneLine[]> {
+  const liveMaps = waitingMaps(await mapDb.listMapsForUser(userId));
+  const mine: Array<{ id: string; name: string }> = [];
+  for (const m of liveMaps) if (!(await checkMapAccess(userId, m.id, 'admin'))) mine.push(m);
+  if (mine.length === 0) return [];
+  const runs = await lintRunsDb.latestRuns(mine.map((m) => m.id));
+  return hygieneLines([...runs.values()], new Map(mine.map((m) => [m.id, m.name])), now);
+}
+
 export interface DigestGroup {
   name: string;
   items: DigestItem[];
@@ -298,9 +329,9 @@ export function waitingFor(since: string | null, now: Date): string | null {
   return `${Math.floor(hours / 24)} days`;
 }
 
-export function buildDigestMail(items: DigestItem[], now: Date): { subject: string; html: string; text: string } {
+export function buildDigestMail(items: DigestItem[], now: Date, hygiene: HygieneLine[] = []): { subject: string; html: string; text: string } {
   const n = items.length;
-  const subject = `${n} open ${n === 1 ? 'item' : 'items'} in MindBlown`;
+  const subject = n > 0 ? `${n} open ${n === 1 ? 'item' : 'items'} in MindBlown` : 'Plan hygiene in MindBlown';
   const settingsUrl = `${FRONTEND_URL}/?settings=account`;
   const groups = groupByMap(items);
 
@@ -327,7 +358,24 @@ export function buildDigestMail(items: DigestItem[], now: Date): { subject: stri
         `<ul style="margin:0;padding-left:18px;">${lis.join('')}</ul>`,
     );
   }
-  const footer = 'You get this mail once a day while questions or pull requests in MindBlown wait for you. To turn it off, open Settings → Daily mail';
+  if (hygiene.length > 0) {
+    textLines.push('## Plan hygiene');
+    for (const h of hygiene) textLines.push(`- ${h.mapName}: ${h.line}`, `  ${h.url}`);
+    textLines.push('');
+    htmlGroups.push(
+      `<h2 style="margin:24px 0 10px;font-size:15px;font-weight:700;">Plan hygiene</h2>` +
+        `<ul style="margin:0;padding-left:18px;">` +
+        hygiene
+          .map(
+            (h) =>
+              `<li style="margin:0 0 8px;font-size:14px;line-height:1.5;"><strong>${escapeHtml(h.mapName)}:</strong> ${escapeHtml(h.line)} ` +
+              `<a href="${escapeHtml(h.url)}" style="font-size:12px;color:#4f46e5;">Open</a></li>`,
+          )
+          .join('') +
+        `</ul>`,
+    );
+  }
+  const footer = 'You get this mail once a day while questions, pull requests or plan hygiene in MindBlown wait for you. To turn it off, open Settings → Daily mail';
   textLines.push('--', `${footer}: ${settingsUrl}`);
 
   const html = `<!DOCTYPE html>
@@ -385,11 +433,13 @@ export async function runDigestMails(now: Date = new Date(), cfg: DigestConfig =
     if (!digestDue(now, r.lastSentOn, cfg)) continue;
     try {
       const items = await openItemsForUser(r.id, now, cache);
+      // Best effort: without the daily check's runs the mail still goes.
+      const hygiene = await hygieneForUser(r.id, now).catch(() => []);
       // Taken even when nothing is open: the day's round is done for them.
       if (!(await digestDb.claimDigestDay(r.id, day))) continue;
       out.checked++;
-      if (items.length === 0) continue;
-      const res = await sendEmail({ to: r.email, ...buildDigestMail(items, now) });
+      if (items.length === 0 && hygiene.length === 0) continue;
+      const res = await sendEmail({ to: r.email, ...buildDigestMail(items, now, hygiene) });
       if (res.ok) {
         out.sent++;
         continue;

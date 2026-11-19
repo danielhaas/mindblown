@@ -126,6 +126,9 @@ export const maps = pgTable('maps', {
   aiPolicy: text('ai_policy').notNull().default('any'),
   // Draft estimates for committed work (#318).
   aiEstimateDrafts: boolean('ai_estimate_drafts').notNull().default(true),
+  // Daily self-check (lint/daily.ts): rule id → false switches that rule's
+  // auto-fix off. {} = every safe fix on.
+  lintAutoFix: jsonb('lint_auto_fix').notNull().default({}),
   // Public holidays (#110): date-holidays code ('LI', 'CH-ZH') + the map's own
   // days off. Either one set = the schedule runs on a working calendar.
   holidayJurisdiction: text('holiday_jurisdiction'),
@@ -910,3 +913,22 @@ export const mapWikiDocuments = pgTable('map_wiki_documents', {
   publishedAt: timestamp('published_at', { withTimezone: true }).notNull().defaultNow(),
   publishedBy: uuid('published_by').references(() => users.id, { onDelete: 'set null' }),
 });
+
+// ── Daily self-check (lint/daily.ts) ─────────────────────────────
+// One row per map and local day: the fixes the run applied, the findings
+// it put on the Questions card (lint-<rule>-<node>, derived from the
+// newest row) and the hygiene counts for the daily mail. A second run the
+// same day (on demand) replaces the row.
+export const lintRuns = pgTable(
+  'lint_runs',
+  {
+    mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+    day: text('day').notNull(),
+    ranAt: timestamp('ran_at', { withTimezone: true }).notNull().defaultNow(),
+    fixed: jsonb('fixed').notNull().default([]),
+    asked: jsonb('asked').notNull().default([]),
+    digest: jsonb('digest').notNull().default({}),
+    error: text('error'),
+  },
+  (t) => [primaryKey({ columns: [t.mapId, t.day] })],
+);

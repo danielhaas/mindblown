@@ -5,7 +5,7 @@
  * claim; the inbox and approvals are stubbed per user.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { AskRow, PendingApproval } from '@mindblown/core';
+import type { AskRow, LintRun, PendingApproval } from '@mindblown/core';
 
 const state = vi.hoisted(() => ({
   smtp: true,
@@ -30,6 +30,8 @@ const state = vi.hoisted(() => ({
   role: {} as Record<string, 'view' | 'edit' | 'admin'>,
   /** Repos whose PR list never answers. */
   hang: new Set<string>(),
+  /** map id → newest daily-check run (lint/daily.ts). */
+  lintRuns: {} as Record<string, LintRun>,
 }));
 const forgeCalls = vi.hoisted(() => [] as string[]);
 type SendResult = { ok: true } | { ok: false; error: string };
@@ -88,6 +90,9 @@ vi.mock('@mindblown/integrations', () => ({
     return { pages: 1, truncated: false };
   },
 }));
+vi.mock('../../db/lintRuns.js', () => ({
+  latestRuns: async (ids: string[]) => new Map(ids.filter((id) => state.lintRuns[id]).map((id) => [id, state.lintRuns[id]])),
+}));
 vi.mock('../approvals.js', () => ({ listPendingApprovals: async (u: string) => ({ items: state.approvals[u] ?? [] }) }));
 
 import {
@@ -95,6 +100,7 @@ import {
   approvalItems,
   buildDigestMail,
   digestConfig,
+  hygieneLines,
   digestDue,
   groupByMap,
   localDay,
@@ -160,6 +166,7 @@ function approval(nodeId: string, mapId: string): PendingApproval {
 }
 
 beforeEach(() => {
+  state.lintRuns = {};
   sendEmail.mockReset();
   sendEmail.mockImplementation(async () => ({ ok: true }));
   state.smtp = true;
@@ -501,5 +508,33 @@ describe('stale pull requests', () => {
     state.role['u1|m1'] = 'view';
     expect(await openItemsForUser('u1', MORNING, newDigestRunCache())).toEqual([]);
     expect(forgeCalls).toEqual([]);
+  });
+});
+
+describe('plan hygiene (daily self-check)', () => {
+  const run = (mapId: string, digest: LintRun['digest'], ranAt = '2026-10-31T05:00:00Z'): LintRun => ({
+    mapId, day: ranAt.slice(0, 10), ranAt, fixed: [], asked: [], digest, error: null,
+  });
+
+  it('one line per administered map, linking to its lint panel — a mail even with nothing else open', async () => {
+    state.lintRuns.m1 = run('m1', { 'unestimated-leaf': 24, 'oversized-leaf': 3, 'ai-draft-estimate': 7 });
+    state.lintRuns.m2 = run('m2', { 'unestimated-leaf': 5 });
+    state.role['u1|m2'] = 'edit';
+    const r = await runDigestMails(MORNING, CFG);
+    expect(r).toMatchObject({ checked: 1, sent: 1 });
+    const mail = (sendEmail.mock.calls[0] as unknown as [{ subject: string; text: string; html: string }])[0];
+    expect(mail.subject).toBe('Plan hygiene in MindBlown');
+    expect(mail.text).toContain('## Plan hygiene');
+    expect(mail.text).toContain('- Alpha: 24 without estimate, 7 AI drafts to confirm, 3 oversized');
+    expect(mail.text).toContain('?map=m1&lint=1');
+    // Beta: only an editor there — the line goes to its admins.
+    expect(mail.text).not.toContain('Beta');
+  });
+
+  it('a stale or failed run says nothing', () => {
+    const maps = new Map([['m1', 'Alpha']]);
+    expect(hygieneLines([run('m1', { 'unestimated-leaf': 2 }, '2026-10-20T05:00:00Z')], maps, MORNING)).toEqual([]);
+    expect(hygieneLines([{ ...run('m1', { 'unestimated-leaf': 2 }), error: 'boom' }], maps, MORNING)).toEqual([]);
+    expect(hygieneLines([run('m1', {})], maps, MORNING)).toEqual([]);
   });
 });

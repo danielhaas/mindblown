@@ -519,6 +519,7 @@ export interface ToolBackend {
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
       aiEstimateDrafts?: boolean;
+      lintAutoFix?: Partial<Record<string, boolean>>;
       holidayJurisdiction?: string | null;
       holidayOverrides?: { add: string[]; remove: string[] };
       phases?: PhaseDef[];

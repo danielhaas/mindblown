@@ -1698,5 +1698,26 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS blocker_info JSONB
   `);
 
+  // ── Daily self-check (lint/daily.ts) ──────────────────────────
+  // maps.lint_auto_fix: rule id → false switches a rule's auto-fix off.
+  // lint_runs: one row per map and local day — what the run fixed, asked
+  // and counted; its asks are the lint-<rule>-<node> rows on the
+  // Questions card until the next run replaces them.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS lint_auto_fix JSONB NOT NULL DEFAULT '{}'::jsonb
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS lint_runs (
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      day TEXT NOT NULL,
+      ran_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      fixed JSONB NOT NULL DEFAULT '[]'::jsonb,
+      asked JSONB NOT NULL DEFAULT '[]'::jsonb,
+      digest JSONB NOT NULL DEFAULT '{}'::jsonb,
+      error TEXT,
+      PRIMARY KEY (map_id, day)
+    )
+  `);
+
   console.log('[db] Migrations complete.');
 }

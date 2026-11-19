@@ -15,6 +15,10 @@
  *                   an unkinded blocker classified after an hour) — to its
  *                   answerer, default the map owner (core blockerKinds.ts)
  *   external-<node> a wait on a party outside whose re-check date has come
+ *   lint-<rule>-<node> a finding the daily self-check (lint/daily.ts) left
+ *                   for a person — read from the map's newest run, so it
+ *                   stays the same row while the finding stays; a node
+ *                   with any other row here gets none (that row is the ask)
  *
  * Nothing is stored while a row is open, so a fleet push (which replaces
  * the open set) cannot wipe it and there is no second list to keep in step:
@@ -39,6 +43,10 @@
  * mark-done, free text = write-brief.
  */
 import {
+  buildLintAsk,
+  LINT_FIX_ACTIONS,
+  lintAnswerAction,
+  parseLintAskId,
   buildExternalAsk,
   buildQuestionAsk,
   externalAnswerAction,
@@ -85,9 +93,10 @@ import {
   stepAnswerAction,
   stepAskNodeId,
 } from '@mindblown/core';
-import type { AskAnswerInput, AskRow, AskWrite, LintActionId, Node as CoreNode } from '@mindblown/core';
+import type { AskAnswerInput, AskRow, AskWrite, LintActionId, LintRun, Node as CoreNode } from '@mindblown/core';
 import { commentOnGitHubIssue } from '@mindblown/integrations';
 import * as asksDb from '../db/asks.js';
+import * as lintRunsDb from '../db/lintRuns.js';
 import * as mapDb from '../db/maps.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { stalledForMap } from '../lib/stalled.js';
@@ -120,9 +129,15 @@ function openRow(ask: AskRow['ask'], mapId: string, now: Date, firstSeenAt: stri
 /** The derived rows of these maps. A map whose change log can't be read still gets its steps. */
 export async function derivedAskRows(mapIds: string[], now: Date = new Date()): Promise<AskRow[]> {
   const out: AskRow[] = [];
+  // The daily check's asks; a failed read only drops them, not the rest.
+  const lintRuns = await lintRunsDb.latestRuns(mapIds).catch((err) => {
+    console.warn(`[asks] daily check runs unreadable, lint asks skipped: ${err instanceof Error ? err.message : String(err)}`);
+    return new Map<string, LintRun>();
+  });
   for (const mapId of mapIds) {
     const data = await mapDb.getMap(mapId);
     if (!data || data.map.archivedAt) continue;
+    const mapStart = out.length;
     const byId = new Map(data.nodes.map((n) => [n.id, n]));
 
     const stalled = await stalledForMap(data.map, data.nodes, now).catch(() => []);
@@ -158,6 +173,20 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
       const node = byId.get(id);
       if (node) out.push(openRow(buildBriefAsk(node, mapId), mapId, now, node.updatedAt));
     }
+
+    // The daily check's findings for a person — one row per finding, none
+    // for a node that already has a row above (that row is its question).
+    const run = lintRuns.get(mapId);
+    if (run && run.asked.length > 0) {
+      const covered = new Set(out.slice(mapStart).map((r) => r.ask.unblocks.node_id));
+      const seen = new Set<string>();
+      for (const a of run.asked) {
+        const id = `${a.ruleId}|${a.nodeId}`;
+        if (!byId.has(a.nodeId) || covered.has(a.nodeId) || seen.has(id)) continue;
+        seen.add(id);
+        out.push(openRow(buildLintAsk(a, mapId, await answerer(), now), mapId, now, a.firstSeenAt));
+      }
+    }
   }
   return out;
 }
@@ -166,8 +195,14 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
 export async function openDerivedAsks(scope: asksDb.AskScope, mapIds: string[], now: Date = new Date()): Promise<AskRow[]> {
   const derived = await derivedAskRows(mapIds, now);
   if (derived.length === 0) return derived;
-  const { snoozed, asked } = storedFilters(await asksDb.listAsks(scope, { status: 'all' }), now);
-  return derived.filter((r) => !snoozed.has(rowKey(r)) && !asked(r));
+  const stored = await asksDb.listAsks(scope, { status: 'all' });
+  const { snoozed, asked } = storedFilters(stored, now);
+  // A daily-check finding answered once stays answered while it reads the
+  // same — "Leave it" must not bring it back with tomorrow's run.
+  const settled = new Set(
+    stored.filter((r) => r.status === 'answered' && parseLintAskId(r.ask.id)).map((r) => `${rowKey(r)}|${r.ask.question}`),
+  );
+  return derived.filter((r) => !snoozed.has(rowKey(r)) && !asked(r) && !settled.has(`${rowKey(r)}|${r.ask.question}`));
 }
 
 /** Rows snoozed by Later / Delegate, and whether a collector's open question already covers a derived row's node. */
@@ -185,8 +220,14 @@ function storedFilters(stored: AskRow[], now: Date): { snoozed: Set<string>; ask
 }
 
 /** Which fix an answer runs, the note it carries, and whether the text is a step's decision. */
-function plannedFix(ask: AskRow['ask'], input: AskAnswerInput, decision: string): { action: LintActionId; note: string | undefined; decided: boolean } {
+function plannedFix(ask: AskRow['ask'], input: AskAnswerInput, decision: string): { action: LintActionId; note: string | undefined; decided: boolean } | null {
   const askId = ask.id;
+  const lint = parseLintAskId(askId);
+  if (lint) {
+    // An option runs its fix; "Leave it" (or text the rule has no fix for) is recorded only.
+    const fix = lintAnswerAction(LINT_FIX_ACTIONS[lint.ruleId] ?? [], decision);
+    return fix ? { action: fix.action, note: fix.note, decided: false } : null;
+  }
   if (stalledAskNodeId(askId)) return { action: stalledAnswerAction(decision), note: stalledAnswerNote(decision) ?? undefined, decided: false };
   if (briefAskNodeId(askId)) {
     const brief = briefAnswerAction(decision);
@@ -266,9 +307,12 @@ export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput
     const out = await answerBlockerQuestion(key.mapId, nodeId, key.askId, { by, decision, date, now }, userId, writes);
     node = out.node;
     changedFields = out.changedFields;
+  } else if (input.action === 'answered' && !plannedFix(row.ask, input, (input.decision ?? '').trim())) {
+    // A daily-check finding answered "Leave it": recorded, nothing written.
+    writes.push({ kind: 'ledger-only', target: row.ask.id, detail: (input.decision ?? '').trim() || 'answered', done: true });
   } else if (input.action === 'answered') {
     const decision = (input.decision ?? '').trim();
-    const { action, note, decided } = plannedFix(row.ask, input, decision);
+    const { action, note, decided } = plannedFix(row.ask, input, decision)!;
     const line = decisionLine(by, decision, date);
     const w: AskWrite = { kind: 'mb-put', target: nodeId.slice(0, 8), detail: `${action} — ${line}`, done: false };
     writes.push(w);

@@ -313,3 +313,19 @@ describe('update_map tool — holiday calendar (#110)', () => {
     });
   });
 });
+
+// Daily self-check (server lint/daily.ts): the per-rule auto-fix switch.
+describe('update_map tool — lintAutoFix', () => {
+  const schema = z.object(updateMapTool.schema);
+
+  it('accepts auto rules with a boolean and forwards them', async () => {
+    const recorder = makeRecordingBackend();
+    const parsed = schema.parse({ mapId: 'm1', lintAutoFix: { 'stalled-unclaimed': false } });
+    await updateMapTool.handler(recorder.backend, parsed as never);
+    expect(recorder.lastUpdate?.fields.lintAutoFix).toEqual({ 'stalled-unclaimed': false });
+  });
+
+  it('rejects a rule that has no auto-fix', () => {
+    expect(() => schema.parse({ mapId: 'm1', lintAutoFix: { 'unestimated-leaf': false } })).toThrow();
+  });
+});
