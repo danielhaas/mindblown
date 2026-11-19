@@ -43,6 +43,9 @@ import {
   holdsCapSlot,
   parseMixBugs,
   DEFAULT_DISPATCH_POLICY,
+  defaultDispatchPolicy,
+  milestoneOrder,
+  milestoneFence,
   MIX_BUGS_REGEX,
   NEEDS_BRIEF_TAG,
   FLEET_CHECK_TAG,
@@ -51,7 +54,7 @@ import {
   advanceFleetPull,
 } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
-import type { Node as CoreNode, StatusDef, NodeMap, ProfilePolicy, EffortUnit, DispatchHold, FleetPullDeficits, GatedOutReady } from '@mindblown/core';
+import type { Node as CoreNode, StatusDef, NodeMap, ProfilePolicy, EffortUnit, DispatchHold, FleetPullDeficits, GatedOutReady, MilestoneRef, PhaseDef } from '@mindblown/core';
 import type {
   ReadyNodesResult,
   ClaimNodeResult,
@@ -404,7 +407,9 @@ const PRIORITY_ORDER: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
  * Sort the gated ready set by the map's dispatchPolicy — an ordered list
  * of sort keys, compared left to right: `bugs` (bug-tagged first),
  * `priority` (priorityRank ASC NULLS LAST, then P0–P3), `size` (effort
- * estimate ascending, nulls last), `age` (oldest createdAt first).
+ * estimate ascending, nulls last), `milestone` (earlier milestone first,
+ * core `milestoneOrder` via `milestoneOf`; none = last), `age` (oldest
+ * createdAt first).
  * Ties after all keys fall back to createdAt, then id (stable output).
  *
  * `mix:bugs=<N>` (the one parametric entry, parsed by core's
@@ -428,7 +433,12 @@ const PRIORITY_ORDER: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
  * until the features drain (spec inversion). Default 0 keeps batch
  * consumers (tests, previews) on the pattern's natural start.
  */
-export function sortByDispatchPolicy(candidates: CoreNode[], policy: string[], startAcc = 0): CoreNode[] {
+export function sortByDispatchPolicy(
+  candidates: CoreNode[],
+  policy: string[],
+  startAcc = 0,
+  milestoneOf: (nodeId: string) => MilestoneRef | null = () => null,
+): CoreNode[] {
   const mix = parseMixBugs(policy);
   // The mix entry is a weave instruction, not a comparator — strip every
   // valid mix-shaped entry before the per-class sort. (Only the FIRST one
@@ -459,6 +469,12 @@ export function sortByDispatchPolicy(candidates: CoreNode[], policy: string[], s
         if (ea === null) return 1;
         if (eb === null) return -1;
         return ea - eb;
+      }
+      case 'milestone': {
+        // Earlier milestone first (#675); a ticket in no milestone after all of them.
+        const ma = milestoneOf(a.id)?.rank ?? Infinity;
+        const mb = milestoneOf(b.id)?.rank ?? Infinity;
+        return ma === mb ? 0 : ma < mb ? -1 : 1;
       }
       case 'age':
         return a.createdAt.localeCompare(b.createdAt);
@@ -610,6 +626,8 @@ interface PullDecision {
   skipped: CoreNode[];
   /** Refused because a human must act (#266 skip tag or a manual blocker) — reported, never tagged. */
   humanOnly: Array<{ node: CoreNode } & DispatchHold>;
+  /** `milestone:current` (#675): grantable tickets in a later milestone, waiting for `current`. */
+  milestoneWait?: { current: MilestoneRef; nodes: CoreNode[] };
 }
 
 /**
@@ -636,6 +654,8 @@ export function selectPullCandidates(
     mixAcc?: number;
     /** The map's fleet has no capacity left (#478) — refused after the map's own hold/cap. */
     fleetFull?: boolean;
+    /** The map's phases — the milestones of the `milestone` key and gate (#675). */
+    phases?: PhaseDef[] | null;
   },
 ): PullDecision {
   const active = allNodes.filter(holdsCapSlot).length;
@@ -658,7 +678,11 @@ export function selectPullCandidates(
     return hold ? [{ node: n, ...hold }] : [];
   });
   const held = new Set(humanOnly.map((h) => h.node.id));
-  const gated = gatedAll.filter((n) => !held.has(n.id));
+  // milestone:current (#675): later milestones wait while the current one has agent work.
+  const milestoneOf = milestoneOrder(allNodes, opts.phases);
+  const fence = milestoneFence(allNodes, opts, milestoneOf);
+  const waiting = gatedAll.filter((n) => !held.has(n.id) && hasBrief(n) && fence.waits(n.id));
+  const gated = gatedAll.filter((n) => !held.has(n.id) && !fence.waits(n.id));
   // Profile routing (#262): a configured policy FILTERS eligibility here;
   // ranking below is untouched. No policy = no filter = pre-#262 behavior.
   const profilePolicy = opts.profilePolicy ?? null;
@@ -677,8 +701,8 @@ export function selectPullCandidates(
   // The weave runs AFTER the profile-eligibility filter: the mix pattern
   // is woven from what THIS puller may actually be granted, so a filtered
   // ticket can never occupy (and waste) a pattern slot.
-  const policy = opts.policy.length > 0 ? opts.policy : DEFAULT_DISPATCH_POLICY;
-  const rankedAll = sortByDispatchPolicy(eligible, policy, opts.mixAcc ?? 0);
+  const policy = opts.policy.length > 0 ? opts.policy : defaultDispatchPolicy(opts.phases, allNodes);
+  const rankedAll = sortByDispatchPolicy(eligible, policy, opts.mixAcc ?? 0, milestoneOf);
 
   // "Fleet can fix it" on a blocker (FLEET_CHECK_TAG): a person sent it, so
   // it goes first — past the gate, the blocker and the status rule; the
@@ -703,6 +727,7 @@ export function selectPullCandidates(
     ranked: [...checks, ...rankedAll.filter((n) => hasBrief(n) && !checkIds.has(n.id))],
     skipped: rankedAll.filter((n) => !hasBrief(n)),
     humanOnly,
+    ...(fence.current !== null && waiting.length > 0 ? { milestoneWait: { current: fence.current, nodes: waiting } } : {}),
   };
 }
 
@@ -1005,6 +1030,7 @@ async function evaluateMapPull(
     // lock, advanced in claimFromMap only on an actual grant.
     mixAcc: (mapRow.dispatchMixAcc as number) ?? 0,
     fleetFull,
+    phases: (mapRow.phases as PhaseDef[] | null) ?? [],
   });
 
   const tagged: CoreNode[] = [];
@@ -1028,6 +1054,12 @@ async function evaluateMapPull(
       ...(blockedReason !== null ? { blockedReason } : {}),
       ...(approval !== null ? { approval } : {}),
       ...(heldBy !== null ? { heldBy } : {}),
+    })),
+    ...(decision.milestoneWait?.nodes ?? []).map((n) => ({
+      id: n.id,
+      text: n.text,
+      reason: 'milestone' as const,
+      waitingFor: decision.milestoneWait!.current.name,
     })),
   ];
 

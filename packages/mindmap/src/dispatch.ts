@@ -8,7 +8,7 @@
  * come from @mindblown/core `dispatchQueueSnapshot`, the same predicate the
  * server's get_next_ticket applies.
  */
-import type { Node, Version, DispatchState } from '@mindblown/core';
+import type { Node, Version, DispatchState, PhaseDef } from '@mindblown/core';
 import {
   parseGateEntry,
   GATE_OR,
@@ -16,8 +16,10 @@ import {
   compareVersions,
   GATE_BUGS_ONLY,
   GATE_VERSION_PREFIX,
+  GATE_MILESTONE_CURRENT,
   DISPATCH_POLICY_KEYS,
   DEFAULT_DISPATCH_POLICY,
+  defaultDispatchPolicy,
   MIX_BUGS_PREFIX,
   MIX_BUGS_REGEX,
 } from '@mindblown/core';
@@ -52,7 +54,7 @@ export const STALE_CLAIM_HOURS = 4;
 
 export interface GateChip {
   raw: string;
-  kind: 'version' | 'bugs' | 'any' | 'unknown';
+  kind: 'version' | 'bugs' | 'any' | 'milestone' | 'unknown';
   label: string;
   /** Second line: version status + target date. */
   detail: string | null;
@@ -89,6 +91,7 @@ export function gateChips(gate: string[], versions: Version[]): GateChip[] {
       };
     }
     if (p.kind === 'bugs') return { raw, kind: 'bugs', label: 'Bugs only', detail: null, warning: null };
+    if (p.kind === 'milestone') return { raw, kind: 'milestone', label: 'Current milestone', detail: null, warning: null };
     if (p.kind === 'version') {
       const v = byId.get(p.versionId);
       if (!v) {
@@ -126,7 +129,7 @@ export function versionGateEntry(versionId: string): string {
   return `${GATE_VERSION_PREFIX}${versionId}`;
 }
 
-export { GATE_BUGS_ONLY };
+export { GATE_BUGS_ONLY, GATE_MILESTONE_CURRENT };
 
 /**
  * Versions offered for a gate, in the order a PM picks them: the lane
@@ -219,10 +222,10 @@ export function setMixBugs(policy: string[], ratio: number | null): string[] {
   return out;
 }
 
-/** What the queue actually sorts by: an empty policy means the default. */
-export function effectivePolicy(policy: string[]): string[] {
+/** What the queue actually sorts by: an empty policy means the map's default (core `defaultDispatchPolicy`). */
+export function effectivePolicy(policy: string[], phases?: readonly PhaseDef[] | null, nodes: Node[] = []): string[] {
   const p = normalizePolicy(policy);
-  return p.length > 0 ? p : [...DEFAULT_DISPATCH_POLICY];
+  return p.length > 0 ? p : defaultDispatchPolicy(phases, nodes);
 }
 
 export function movePolicyKey(policy: string[], key: string, dir: -1 | 1): string[] {
@@ -248,6 +251,8 @@ export function policyKeyLabel(key: string): string {
       return 'small first';
     case 'priority':
       return 'priority';
+    case 'milestone':
+      return 'earlier milestone first';
     case 'age':
       return 'oldest first';
     default:

@@ -361,9 +361,12 @@ export interface SkippedTicket {
   /**
    * needs-brief: no description and no linked issue; human-only: tagged for
    * a person (#266) or flagged with a blocker; awaiting-approval: not
-   * approved yet (#492), on the ticket or an open ancestor.
+   * approved yet (#492), on the ticket or an open ancestor; milestone: the
+   * gate `milestone:current` holds it until `waitingFor` is done (#675).
    */
-  reason: 'needs-brief' | 'human-only' | 'awaiting-approval';
+  reason: 'needs-brief' | 'human-only' | 'awaiting-approval' | 'milestone';
+  /** The milestone a `milestone` ticket waits for. */
+  waitingFor?: string;
   /** The skip tag, for human-only. */
   tag?: string;
   /** The manual blocker text, for human-only. */
