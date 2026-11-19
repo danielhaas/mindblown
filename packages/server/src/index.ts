@@ -68,7 +68,7 @@ import { onBroadcast, registerWebSocket } from './ws.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { wikiRoutes } from './routes/wiki.js';
 import { deployDriftRoutes } from './routes/deployDrift.js';
-import { driftGit, driftSummary, latestDeployDrift, runDeployDriftCheck } from './services/deployDrift.js';
+import { driftGit, runDeployDriftCheck, setLatestDeployDrift } from './services/deployDrift.js';
 import { handleBroadcast, startWebhooks } from './services/webhooks.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -106,9 +106,7 @@ async function main(): Promise<void> {
 
   // ── Health check (before auth middleware) ───────────────────────
   app.get('/api/health', async () => {
-    // `deploy`: the running commit and how many merged commits wait for a
-    // deploy (prod only; null elsewhere and before the first check).
-    return { status: 'ok', timestamp: new Date().toISOString(), deploy: driftSummary(latestDeployDrift()) };
+    return { status: 'ok', timestamp: new Date().toISOString() };
   });
 
   // ── AI backend health (#429) — for the monitor, before auth ────
@@ -563,7 +561,9 @@ async function main(): Promise<void> {
   // checkout's upstream, count the commits the running process doesn't
   // have, and push once the oldest has waited DEPLOY_DRIFT_ALERT_HOURS
   // (default 2), again daily while it still waits. Feeds /api/health and
-  // the Fleet tab of the maps bound to this repo.
+  // the Fleet tab of the maps bound to this repo (signed in, view access —
+  // not /api/health: the repo is public, and an unauthenticated "prod is N
+  // merges behind since X" says whether a published fix is live yet).
   const DEPLOY_DRIFT_INTERVAL_MS = 15 * 60 * 1000;
   const selfDriftGit = selfGit ? driftGit(selfGit) : null;
   let deployDriftRunning = false;
@@ -576,6 +576,8 @@ async function main(): Promise<void> {
         console.log(`[deploy-drift] ${drift.undeployed.length} undeployed since ${drift.undeployed[0].at}${pushed ? ' (pushed)' : ''}`);
       }
     } catch (err) {
+      // No stale numbers on the Fleet tab: a failed check shows nothing.
+      setLatestDeployDrift(null);
       console.warn('[deploy-drift] check failed:', err instanceof Error ? err.message : err);
     } finally {
       deployDriftRunning = false;

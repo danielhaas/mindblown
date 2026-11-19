@@ -10,8 +10,8 @@
  * process started on (pinnedGit), so a `git pull` that hasn't been
  * restarted into still counts as not deployed. When the oldest undeployed
  * commit has waited past the threshold, one Pushover goes out, and again
- * once a day while the same commit still waits. `/api/health` and the
- * Fleet tab of the maps bound to this repo show the count.
+ * once a day while the same commit still waits. The Fleet tab of the maps
+ * bound to this repo shows it (signed in — not /api/health, see index.ts).
  *
  * Production only: a dev server in a worktree is always "behind".
  */
@@ -51,7 +51,10 @@ export function driftGit(git: Pick<Git, 'head' | 'origin'>): DriftGit {
   return {
     ...git,
     undeployed: async (head) => {
-      await run('git', ['fetch', '--quiet', 'origin'], { timeout: 60_000 });
+      // No prompt can ever block the tick (no tty under systemd anyway). Not
+      // GIT_SSH_COMMAND: it would override the deploy key pinned in the
+      // repo's core.sshCommand.
+      await run('git', ['fetch', '--quiet', 'origin'], { timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
       const { stdout } = await run(
         'git',
         ['log', '--reverse', '--format=%H%x09%cI%x09%s', `${head}..@{upstream}`],
@@ -74,7 +77,7 @@ export function parseLog(stdout: string): UndeployedCommit[] {
 
 let latest: DeployDrift | null = null;
 
-/** The last tick's result, for /api/health and the Fleet tab; null before the first. */
+/** The last tick's result, for the Fleet tab; null before the first and after a failed one. */
 export function latestDeployDrift(): DeployDrift | null {
   return latest;
 }
@@ -158,7 +161,7 @@ export async function runDeployDriftCheck(
   return { drift, pushed };
 }
 
-/** What a client may see: no commit subjects on the public health route. */
+/** The counts without the commit list. */
 export interface DeployDriftSummary {
   sha: string;
   undeployed: number;
