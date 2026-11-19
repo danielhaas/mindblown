@@ -154,6 +154,7 @@ export {
   BLOCKED_TAG,
   FLEET_FIX_TAG,
   holdsCapSlot,
+  WORKER_WAIT_NOTE,
   fleetCanFix,
   FLEET_CHECK_TAG,
   fleetFixAction,

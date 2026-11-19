@@ -32,7 +32,7 @@ vi.mock('@mindblown/integrations', () => ({ updateGitHubIssue: vi.fn(), getGitHu
 vi.mock('../integrations.js', () => ({ getGitHubContextForMap: vi.fn(async () => null) }));
 
 import { nodeRoutes } from '../nodes.js';
-import { RevisionConflictError } from '../../db/nodes.js';
+import { DoneProgressConflictError, RevisionConflictError } from '../../db/nodes.js';
 
 async function patch(payload: unknown) {
   const app: FastifyInstance = Fastify({ logger: false });
@@ -97,5 +97,10 @@ describe('PATCH /nodes/bulk (#115)', () => {
     const res = await patch({ updates: [{ id: 'a', fields: { text: 'x' } }, { id: 'b', fields: { text: 'y' } }] });
     expect(res.statusCode).toBe(200);
     expect(res.json().results.map((r: { ok: boolean; status?: number }) => [r.ok, r.status])).toEqual([[false, 500], [true, undefined]]);
+  });
+  it('done with progress below 100 is that item\'s 400 DONE_PROGRESS_CONFLICT (PUT shares the path)', async () => {
+    mocks.updateNode.mockRejectedValueOnce(new DoneProgressConflictError('done', 50));
+    const res = await patch({ updates: [{ id: 'a', fields: { status: 'done', percentComplete: 50 } }] });
+    expect(res.json().results[0]).toMatchObject({ ok: false, status: 400, error: { code: 'DONE_PROGRESS_CONFLICT' } });
   });
 });
