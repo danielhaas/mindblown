@@ -1504,6 +1504,34 @@ export async function findNodeIdByExternalId(
   return null;
 }
 
+/**
+ * The node a merged PR names by id (`MindBlown: <id>`): a full UUID or a
+ * prefix, looked up only on active maps bound to the PR's repo, so a PR
+ * in one repo can never reach another project's nodes. Every match is
+ * returned; more than one means the prefix is ambiguous.
+ */
+export async function findNodeIdsByIdOnRepoMaps(idOrPrefix: string, repoFullName: string): Promise<string[]> {
+  const slash = repoFullName.indexOf('/');
+  if (slash <= 0 || !/^[0-9a-f-]{8,36}$/.test(idOrPrefix)) return [];
+  const owner = repoFullName.slice(0, slash).toLowerCase();
+  const repo = repoFullName.slice(slash + 1).toLowerCase();
+  const rows = await db
+    .select({ id: nodes.id })
+    .from(nodes)
+    .innerJoin(maps, eq(maps.id, nodes.mapId))
+    .where(
+      and(
+        notDeleted,
+        isNull(maps.archivedAt),
+        sql`lower(${maps.githubRepoOwner}) = ${owner}`,
+        sql`lower(${maps.githubRepoName}) = ${repo}`,
+        sql`${nodes.id}::text LIKE ${`${idOrPrefix}%`}`,
+      ),
+    )
+    .limit(2);
+  return rows.map((r) => r.id as string);
+}
+
 // ── Delete (with descendants) ──────────────────────────────────────
 
 /**
