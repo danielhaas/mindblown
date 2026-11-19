@@ -231,19 +231,22 @@ export async function getForgeBindingForMap(mapId: string): Promise<{ repo: Tick
  * gets a fresh token narrowed to this one repo (contents + pull requests,
  * plus workflows when the map lets the fleet change CI);
  * a PAT/OAuth row can't be narrowed, so its token goes out as is.
+ * `canEditCi` is the map's `fleetCanEditCi` on every forge, for the worker
+ * to enforce where the token can't (PAT, Gitea, a push over SSH).
  */
-export async function getFleetRepoCredentials(mapId: string): Promise<{ repo: TicketRepo; token: string } | null> {
+export async function getFleetRepoCredentials(mapId: string): Promise<{ repo: TicketRepo; token: string; canEditCi: boolean } | null> {
   const map = await loadMapBinding(mapId);
   if (!map) return null;
+  const canEditCi = map.fleetCanEditCi === true;
   if (map.githubInstallationId && map.githubRepoOwner && map.githubRepoName) {
-    const minted = await mintScopedRepoToken(map.githubInstallationId, map.githubRepoName, { workflows: map.fleetCanEditCi });
-    return { repo: ticketRepo(GITHUB_ENDPOINT, map.githubRepoOwner, map.githubRepoName), token: minted.token };
+    const minted = await mintScopedRepoToken(map.githubInstallationId, map.githubRepoName, { workflows: canEditCi });
+    return { repo: ticketRepo(GITHUB_ENDPOINT, map.githubRepoOwner, map.githubRepoName), token: minted.token, canEditCi };
   }
   const integration = await patIntegrationForMap(map);
   if (!integration || !isServableIntegrationConfig(integration.config)) return null;
   const forge = await forgeFromIntegration(integration);
   if (!forge) return null;
-  return { repo: ticketRepo(forge.endpoint, integration.config.owner, integration.config.repo), token: forge.token };
+  return { repo: ticketRepo(forge.endpoint, integration.config.owner, integration.config.repo), token: forge.token, canEditCi };
 }
 
 /**
