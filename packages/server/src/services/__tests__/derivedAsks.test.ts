@@ -21,6 +21,8 @@ const state = vi.hoisted(() => ({
   /** In a fleet with a repo — the deploy-probe question's precondition. */
   fleetRepo: false,
   probe: null as string | null,
+  /** The map's newest daily-check run (lint_runs); the map is opted in while one is set. */
+  lintRun: null as unknown,
 }));
 const NAVY = '11111111-2222-3333-4444-555555555555';
 
@@ -58,6 +60,7 @@ vi.mock('../../db/maps.js', () => ({
             statusWorkflow: [{ id: 'todo', name: 'Todo', category: 'todo' }, { id: 'wip', name: 'In progress', category: 'in_progress' }, { id: 'done', name: 'Done', category: 'done' }],
             ...(state.fleetRepo ? { fleetId: 'f1', githubRepoOwner: 'danielhaas', githubRepoName: 'navy' } : {}),
             deployProbe: state.probe,
+            ...(state.lintRun ? { lintAutoFix: { 'stale-blocked-reason': true } } : {}),
           },
           nodes: state.nodes,
         }
@@ -88,8 +91,8 @@ vi.mock('../../lib/githubContext.js', () => ({ getGitHubContextForMap: vi.fn(asy
 const commentOnGitHubIssue = vi.hoisted(() => vi.fn(async () => ({ id: 1, html_url: 'x' })));
 vi.mock('@mindblown/integrations', () => ({ commentOnGitHubIssue, ForgeApiError: class extends Error {} }));
 const recordAnswer = vi.fn(async (k: { askId: string; mapId: string }, ask: unknown, p: { status: string }) => ({ ask, mapId: k.mapId, status: p.status }));
-// The daily check's runs: none here (lint asks have their own pglite test).
-vi.mock('../../db/lintRuns.js', () => ({ latestRuns: async () => new Map() }));
+// The daily check's runs: none unless a test sets one (the run itself has its own pglite test).
+vi.mock('../../db/lintRuns.js', () => ({ latestRuns: async () => new Map(state.lintRun ? [['m1', state.lintRun]] : []) }));
 
 vi.mock('../../db/asks.js', () => ({
   ANSWER_RETENTION_DAYS: 14,
@@ -124,6 +127,7 @@ beforeEach(() => {
   state.versions = [];
   state.fleetRepo = false;
   state.probe = null;
+  state.lintRun = null;
 });
 
 describe('stalled questions', () => {
@@ -616,5 +620,64 @@ describe('how is the map deployed? (deploy probe)', () => {
     expect(state.probe).toBeNull();
     state.stored = [{ ask: { id: 'deploy-probe-m1', unblocks: {} }, mapId: 'm1', status: 'later', answeredAt: hoursAgo(1) }];
     expect((await openDerivedAsks(scope, ['m1'])).filter((r) => r.ask.id.startsWith('deploy-probe-'))).toEqual([]);
+  });
+});
+
+describe('parked branches leave the card (#655)', () => {
+  it('a parked needs-human leaf has no step row; un-parked it is back', async () => {
+    const phone = (state.nodes as Array<Record<string, unknown>>).find((n) => n.id === 'phone')!;
+    phone.parked = true;
+    expect((await derivedAskRows(['m1'])).map((r) => r.ask.id)).not.toContain('step-phone');
+    phone.parked = false;
+    expect((await derivedAskRows(['m1'])).map((r) => r.ask.id)).toContain('step-phone');
+  });
+
+  it('under a parked ancestor: no step, stalled or blocker row', async () => {
+    state.nodes.push(
+      node('v2', { parked: true, childrenIds: ['brand', 'old', 'wait'] }),
+      node('brand', { parentId: 'v2', tags: ['needs-human'] }),
+      node('wait', { parentId: 'v2', blockedReason: 'Waiting for the vendor' }),
+    );
+    (state.nodes as Array<Record<string, unknown>>).find((n) => n.id === 'old')!.parentId = 'v2';
+    const ids = (await derivedAskRows(['m1'])).map((r) => r.ask.id);
+    expect(ids).not.toContain('step-brand');
+    expect(ids).not.toContain('stalled-old');
+    expect(ids).not.toContain('blocker-wait');
+    expect(ids).toContain('step-phone');
+  });
+});
+
+describe('daily-check asks are re-checked against the live ticket', () => {
+  const N = '60c5c71d-0000-4000-8000-000000000001';
+  const lintId = `lint-blocker-without-question-${N}`;
+  const ranAt = hoursAgo(6);
+  beforeEach(() => {
+    state.nodes.push(node(N, { status: 'todo', blockedReason: 'Which sports first?' }));
+    state.lintRun = {
+      mapId: 'm1',
+      day: ranAt.slice(0, 10),
+      ranAt,
+      fixed: [],
+      digest: {},
+      error: null,
+      asked: [{ ruleId: 'blocker-without-question', nodeId: N, nodeText: N, title: 'Blocked, but nobody is asked', detail: '"Which sports first?"', actions: ['needs-human'], firstSeenAt: ranAt }],
+    };
+  });
+
+  it('shown while the blocker stands; gone once it is cleared, without a new run', async () => {
+    // The blocker row covers the node on the card; the lint row stands for it only in the stored run's view.
+    const lintRows = async () => (await openDerivedAsks(scope, ['m1'])).map((r) => r.ask.id).filter((id) => id.startsWith('lint-'));
+    (state.nodes as Array<Record<string, unknown>>).find((n) => n.id === N)!.tags = ['fleet-check'];
+    expect(await lintRows()).toEqual([lintId]);
+    (state.nodes as Array<Record<string, unknown>>).find((n) => n.id === N)!.blockedReason = null;
+    expect(await lintRows()).toEqual([]);
+  });
+
+  it('another ask on the node answered since the run drops it; one answered before the run does not', async () => {
+    (state.nodes as Array<Record<string, unknown>>).find((n) => n.id === N)!.tags = ['fleet-check'];
+    state.stored = [{ ask: { id: 'fleet-x', unblocks: { node_id: N } }, mapId: 'm1', status: 'answered', answeredAt: hoursAgo(8) }];
+    expect((await openDerivedAsks(scope, ['m1'])).map((r) => r.ask.id)).toContain(lintId);
+    state.stored = [{ ask: { id: 'fleet-x', unblocks: { node_id: N } }, mapId: 'm1', status: 'answered', answeredAt: hoursAgo(1) }];
+    expect((await openDerivedAsks(scope, ['m1'])).map((r) => r.ask.id)).not.toContain(lintId);
   });
 });
