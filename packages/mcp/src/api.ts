@@ -393,16 +393,28 @@ async function requestText(path: string): Promise<string> {
   const headers: Record<string, string> = {};
   if (ctx.token) headers['Authorization'] = `Bearer ${ctx.token}`;
 
+  // The error body is JSON ({ error: { code, message } }) even when the
+  // success body is not — surface its message ("Unknown time zone …").
+  const fail = (status: number, body: string, fallback: string): never => {
+    let parsed: { error?: { message?: string; code?: string } } = {};
+    try {
+      parsed = body ? JSON.parse(body) : {};
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(status, parsed.error?.message ?? fallback, parsed.error?.code);
+  };
+
   if (ctx.injector) {
     const res = await ctx.injector({ method: 'GET', url: path, headers });
     if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw new ApiError(res.statusCode, `HTTP ${res.statusCode}`);
+      return fail(res.statusCode, res.body ?? '', `HTTP ${res.statusCode}`);
     }
     return res.body ?? '';
   }
 
   const res = await fetch(`${ctx.baseUrl}${path}`, { headers });
-  if (!res.ok) throw new ApiError(res.status, res.statusText);
+  if (!res.ok) return fail(res.status, await res.text().catch(() => ''), res.statusText);
   return res.text();
 }
 
@@ -574,6 +586,26 @@ export async function freezeBaseline(
   );
   const b = map.baselines[map.baselines.length - 1];
   return { id: b.id, name: b.name, createdAt: b.createdAt, nodeCount: Object.keys(b.nodes ?? {}).length, dropped: map.droppedBaselines ?? [] };
+}
+
+/** The map (or a subtree) as a Markdown timeline (#637). */
+export function exportMarkdown(
+  mapId: string,
+  opts: { rootNodeId?: string; detail?: 'summary' | 'full'; timeZone?: string } = {},
+): Promise<string> {
+  const qs = new URLSearchParams();
+  if (opts.rootNodeId) qs.set('root', opts.rootNodeId);
+  if (opts.detail) qs.set('detail', opts.detail);
+  if (opts.timeZone) qs.set('tz', opts.timeZone);
+  const q = qs.toString();
+  return requestText(`/api/maps/${encodeURIComponent(mapId)}/export.md${q ? `?${q}` : ''}`);
+}
+
+/** Publish the timeline to the workspace's wiki (#637). */
+export function publishToWiki(
+  mapId: string,
+): Promise<{ documentId: string; documentUrl: string; created: boolean; publishedAt: string }> {
+  return request(`/api/maps/${encodeURIComponent(mapId)}/wiki/publish`, { method: 'POST', body: JSON.stringify({}) });
 }
 
 export function getSchedule(mapId: string, versionId?: string): Promise<ScheduleResult> {

@@ -199,6 +199,11 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
       const d = barDays(s);
       return { start: dayToDate(d.start), end: dayToDate(d.end) };
     },
+    /** The same bar as a person reads it: first day and LAST day, both inclusive. */
+    barSpan: (s: { computedStart: number; computedEnd: number; duration: number }) => {
+      const d = barDays(s);
+      return { start: dayToDate(d.start), end: mapper.lastDay(Math.max(d.end, d.start + 1)).toISOString().slice(0, 10) };
+    },
   };
 }
 

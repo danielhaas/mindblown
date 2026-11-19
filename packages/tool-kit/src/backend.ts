@@ -422,6 +422,25 @@ export interface ConflictScanResult {
   duplicateLinks: DuplicateLinkGroup[];
 }
 
+/** Options of the Markdown timeline export (#637). */
+export interface ExportMarkdownOptions {
+  /** Render this subtree instead of the whole map. */
+  rootNodeId?: string;
+  /** 'summary' (default) leaves out node ids and effort; 'full' adds them. */
+  detail?: 'summary' | 'full';
+  /** IANA zone for the "generated" stamp; default UTC. */
+  timeZone?: string;
+}
+
+/** What publish_to_wiki did (#637). */
+export interface WikiPublishResult {
+  documentId: string;
+  documentUrl: string;
+  /** true = the first publish created the page; false = it updated the same one. */
+  created: boolean;
+  publishedAt: string;
+}
+
 export interface FrozenBaseline {
   id: string;
   name: string;
@@ -477,6 +496,10 @@ export interface ToolBackend {
   updateFleet(fleetId: string, fields: { name?: string; maxActiveClaims?: number; autoCheckBlockers?: boolean }): Promise<FleetWithMaps>;
   /** Freeze the current projected schedule as a named baseline (#113). */
   freezeBaseline(mapId: string, name?: string): Promise<FrozenBaseline>;
+  /** The map (or a subtree) as a Markdown timeline for readers outside the project (#637). */
+  exportMarkdown(mapId: string, opts?: ExportMarkdownOptions): Promise<string>;
+  /** Push the timeline to the workspace's wiki: create the page once, update it after (#637). */
+  publishToWiki(mapId: string): Promise<WikiPublishResult>;
 
   createNode(
     mapId: string,

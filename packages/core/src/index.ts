@@ -492,3 +492,15 @@ export type {
   WaitingOnHumansResult,
   WaitingAlertState,
 } from './waitingOnHumans.js';
+
+// A map (or subtree) as a Markdown timeline for readers outside the project (#637)
+export {
+  renderTimelineMarkdown,
+  timelineMilestones,
+  formatTimelineDay,
+  isTimeZone,
+  isWaitingLeaf,
+  TIMELINE_DETAILS,
+  EXTERNAL_TAG,
+} from './timelineExport.js';
+export type { TimelineDetail, TimelineSpan, TimelineInput, TimelineMilestone, TimelineWaiting, MilestoneStatus } from './timelineExport.js';

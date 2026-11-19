@@ -888,6 +888,70 @@ export async function exportRequirements(mapId: string): Promise<string> {
   return res.text();
 }
 
+// ── Markdown timeline + wiki publish (#637) ──────────────────────
+
+/** The viewer's IANA zone, for the "generated" stamp (#595). */
+export function viewerTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+/** The map as a Markdown timeline for readers outside the project. */
+export async function exportTimelineMarkdown(
+  mapId: string,
+  opts: { rootNodeId?: string; detail?: 'summary' | 'full' } = {},
+): Promise<string> {
+  const token = getToken();
+  const qs = new URLSearchParams({ tz: viewerTimeZone() });
+  if (opts.rootNodeId) qs.set('root', opts.rootNodeId);
+  if (opts.detail) qs.set('detail', opts.detail);
+  const res = await fetch(`${BASE_URL}/api/maps/${mapId}/export.md?${qs}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body?.error?.message ?? `Export failed: HTTP ${res.status}`, body?.error?.code);
+  }
+  return res.text();
+}
+
+export interface WikiStatus {
+  configured: boolean;
+  provider: 'outline';
+  baseUrl: string | null;
+  collectionId: string | null;
+  document: { id: string; url: string; publishedAt: string } | null;
+}
+
+export interface WikiPublishResult {
+  documentId: string;
+  documentUrl: string;
+  created: boolean;
+  publishedAt: string;
+}
+
+export async function getWikiStatus(mapId: string): Promise<WikiStatus> {
+  return (await request<{ wiki: WikiStatus }>(`/api/maps/${mapId}/wiki`)).wiki;
+}
+
+/** Workspace owner: the Outline connection. Leave token empty to keep the stored one. */
+export async function saveWikiSettings(
+  mapId: string,
+  input: { baseUrl: string; token?: string; collectionId: string },
+): Promise<WikiStatus> {
+  return (await request<{ wiki: WikiStatus }>(`/api/maps/${mapId}/wiki`, { method: 'PUT', body: JSON.stringify(input) })).wiki;
+}
+
+export function publishToWiki(mapId: string): Promise<WikiPublishResult> {
+  return request<WikiPublishResult>(`/api/maps/${mapId}/wiki/publish`, {
+    method: 'POST',
+    body: JSON.stringify({ tz: viewerTimeZone() }),
+  });
+}
+
 // ── Media uploads ────────────────────────────────────────────────
 
 export interface UploadedMedia {
