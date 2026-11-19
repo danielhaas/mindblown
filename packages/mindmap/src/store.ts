@@ -280,6 +280,13 @@ export interface MindmapState {
    */
   stopFleetTicket: (id: string, blockedReason: string) => Promise<boolean>;
   /**
+   * Flag a blocker with a kind (the Block choices): question, a person's
+   * step, external, or a wait on another ticket. Not optimistic — the
+   * server routes it (tag, dependency, ask); the returned node is applied.
+   * Resolves false on failure (error is set).
+   */
+  flagBlocker: (id: string, body: api.FlagBlockerBody) => Promise<boolean>;
+  /**
    * Replace a node with what the server just returned, without writing
    * back. For sub-resource endpoints (attachments, dependencies) that have
    * already persisted the change and answered with the whole node —
@@ -1097,6 +1104,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       percentComplete: null,
       status: null,
       blockedReason: null,
+      blockedAt: null,
+      blockerInfo: null,
       assigneeIds: [],
       priority: null,
       dueDate: null,
@@ -1253,6 +1262,26 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       return true;
     } catch (e: any) {
       set({ error: e?.message ?? 'Failed to release the ticket' });
+      return false;
+    }
+  },
+
+  flagBlocker: async (id, body) => {
+    const state = get();
+    const mapId = state.currentMapId;
+    if (!mapId || !state.nodes[id]) {
+      set({ error: 'That ticket is no longer on this map.' });
+      return false;
+    }
+    try {
+      const { node } = await api.flagBlocker(mapId, id, body);
+      const current = get();
+      if (current.currentMapId !== mapId) return true;
+      const nodes = { ...current.nodes, [id]: node };
+      set({ nodes, computed: recomputeValues(nodes) });
+      return true;
+    } catch (e: any) {
+      set({ error: e?.message ?? 'Failed to flag the blocker' });
       return false;
     }
   },

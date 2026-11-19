@@ -10,6 +10,7 @@
  */
 import {
   isForgeLink,
+  isUnkindedBlocker,
   LINT_ACTIONS,
   LINT_FIX_ACTIONS,
   LINT_RULE_IDS,
@@ -805,15 +806,22 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
   // a wait on another ticket, and a leftover. Only the first two need a
   // person, and only an ask reaches one; a wait on a ticket is a
   // dependency (it clears itself).
+  //
+  // Since flag_blocker takes a kind (19.11.2026) a blocker with one reaches
+  // its person by itself (a question row, a re-check date), and one without
+  // is classified an hour after it was set — so this finds only blockers
+  // younger than an hour (and ones from before blockedAt, until the
+  // one-time classification ran). A fleet worker's own note keeps its path:
+  // the blocker row on Your steps and the worker's asks.
   rules.push({
     ruleId: 'blocker-without-question',
     severity: 'warn',
     title: 'Blocked, but nobody is asked',
     why: 'A blocker holds the ticket (and everything below it) out of the queue, but only an ask on the Questions card reaches a person — the text alone waits until someone happens to open the node.',
-    fix: 'A question → ask it on the card (the fleet worker does this for its own tickets). A person\'s step → "For a person" (needs-human, the text becomes the next step). Waiting on another ticket → add a dependency and clear the blocker.',
+    fix: 'Give it a kind (flag_blocker, or the Block choices in the panel): a question → an ask on the card; a person\'s step → "For a person" (needs-human, the text becomes the next step); waiting on a party outside → external, re-checked on a date; waiting on another ticket → a dependency, no blocker. Left alone it is classified an hour after it was set.',
     findings: opts.openAskNodeIds
       ? scopedNodes
-          .filter((n) => (n.blockedReason ?? '').trim() !== '' && !isDone(n) && !opts.openAskNodeIds!.has(n.id))
+          .filter((n) => isUnkindedBlocker(n) && !isDone(n) && !opts.openAskNodeIds!.has(n.id))
           .map((n) => {
             const reason = n.blockedReason!.trim();
             return finding(n, `"${reason.length > 80 ? reason.slice(0, 77) + '…' : reason}"`, act('needs-human'));

@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { createNodeTool, updateNodeTool, restoreNodeTool, listRecentlyDeletedTool, searchNodesTool, clearBlockerTool, flagBlockerTool, etaFromMinutes } from '../node.js';
-import type { ToolBackend } from '../../backend.js';
+import type { FlagBlockerInput, ToolBackend } from '../../backend.js';
 import type { MapDetail, NodeWithComputed } from '../../types.js';
 
 /**
@@ -23,11 +23,13 @@ function makeRecordingBackend(): {
   lastCreate: { mapId: string; parentId: string; text: string; fields?: Record<string, unknown> } | null;
   lastUpdate: { mapId: string; nodeId: string; fields: Record<string, unknown> } | null;
   lastUnblock: { mapId: string; nodeId: string } | null;
+  lastFlag: { mapId: string; nodeId: string; input: FlagBlockerInput } | null;
 } {
   const state = {
     lastCreate: null as ReturnType<typeof makeRecordingBackend>['lastCreate'],
     lastUpdate: null as ReturnType<typeof makeRecordingBackend>['lastUpdate'],
     lastUnblock: null as ReturnType<typeof makeRecordingBackend>['lastUnblock'],
+    lastFlag: null as ReturnType<typeof makeRecordingBackend>['lastFlag'],
   };
   const stubNode: NodeWithComputed = {
     id: 'node-stub',
@@ -104,6 +106,20 @@ function makeRecordingBackend(): {
       state.lastUnblock = { mapId, nodeId };
       return { node: { id: nodeId, text: 'stub', status: 'todo', claimedBySession: null }, statusReset: true };
     },
+    flagBlocker: async (mapId, nodeId, input) => {
+      state.lastFlag = { mapId, nodeId, input };
+      const blockerInfo =
+        input.kind === 'question'
+          ? { kind: 'question' as const, answerer: input.answerer ?? 'Dan', ...(input.options ? { options: input.options } : {}) }
+          : input.kind === 'external'
+            ? { kind: 'external' as const, recheckAt: '2026-11-26T08:00:00.000Z' }
+            : null;
+      return {
+        node: { ...stubNode, id: nodeId, blockedReason: input.reason, blockerInfo },
+        kind: input.kind ?? null,
+        ...(input.kind === 'waits-on' ? { dependsOn: { id: 'dep-1', text: 'Merge the API PR' } } : {}),
+      };
+    },
     conflictScan: async () => { throw new Error('not implemented'); },
     getFleetStatus: async () => { throw new Error('not implemented'); },
     getFleetJournal: async () => { throw new Error('not implemented'); },
@@ -144,6 +160,7 @@ function makeRecordingBackend(): {
     get lastCreate() { return state.lastCreate; },
     get lastUpdate() { return state.lastUpdate; },
     get lastUnblock() { return state.lastUnblock; },
+    get lastFlag() { return state.lastFlag; },
   };
 }
 
@@ -1380,18 +1397,67 @@ describe('clear_blocker tool', () => {
 });
 
 describe('flag_blocker tool', () => {
-  it('sets only blockedReason and says nothing more on a leaf', async () => {
+  it('without a kind: the plain blocker, and says it is classified in an hour', async () => {
     const rec = makeRecordingBackend();
     const out = await flagBlockerTool.handler(rec.backend, { mapId: 'm1', nodeId: 'leaf', reason: 'waiting on legal' } as never);
-    expect(rec.lastUpdate).toEqual({ mapId: 'm1', nodeId: 'leaf', fields: { blockedReason: 'waiting on legal' } });
-    expect(out).toBe('Flagged leaf as blocked: "waiting on legal".');
+    expect(rec.lastFlag).toEqual({ mapId: 'm1', nodeId: 'leaf', input: { reason: 'waiting on legal' } });
+    expect(rec.lastUpdate).toBeNull();
+    expect(out).toContain('Flagged leaf as blocked: "waiting on legal".');
+    expect(out).toContain('classified in an hour');
+  });
+
+  it('question: passes kind, answerer and options, and names the card', async () => {
+    const rec = makeRecordingBackend();
+    const out = await flagBlockerTool.handler(rec.backend, {
+      mapId: 'm1', nodeId: 'leaf', reason: 'Stripe or Adyen?', kind: 'question', answerer: 'Rita', options: ['Stripe', 'Adyen'],
+    } as never);
+    expect(rec.lastFlag?.input).toEqual({ reason: 'Stripe or Adyen?', kind: 'question', answerer: 'Rita', options: ['Stripe', 'Adyen'] });
+    expect(out).toContain('Questions card');
+    expect(out).toContain('answerer: Rita');
+    expect(out).toContain('Stripe | Adyen');
+  });
+
+  it('person-step: needs-human, no blocker', async () => {
+    const rec = makeRecordingBackend();
+    const out = await flagBlockerTool.handler(rec.backend, { mapId: 'm1', nodeId: 'leaf', reason: 'Upload the build to the store', kind: 'person-step' } as never);
+    expect(rec.lastFlag?.input.kind).toBe('person-step');
+    expect(out).toContain('needs-human');
+    expect(out).toContain('Next step (a person): Upload the build to the store');
+  });
+
+  it('external: passes recheckDays and names the re-check date', async () => {
+    const rec = makeRecordingBackend();
+    const out = await flagBlockerTool.handler(rec.backend, { mapId: 'm1', nodeId: 'leaf', reason: 'LOKE sends the keys', kind: 'external', recheckDays: 7 } as never);
+    expect(rec.lastFlag?.input).toEqual({ reason: 'LOKE sends the keys', kind: 'external', recheckDays: 7 });
+    expect(out).toContain('asked again on 2026-11-26');
+  });
+
+  it('waits-on: a dependency, no blocker — reason may be empty', async () => {
+    const rec = makeRecordingBackend();
+    const out = await flagBlockerTool.handler(rec.backend, { mapId: 'm1', nodeId: 'leaf', reason: '', kind: 'waits-on', waitsOn: '#62' } as never);
+    expect(rec.lastFlag?.input).toEqual({ reason: '', kind: 'waits-on', waitsOn: '#62' });
+    expect(out).toContain('now depends on "Merge the API PR" (dep-1)');
+    expect(out).toContain('no blocker');
+  });
+
+  it('refuses an empty reason for every kind but waits-on', async () => {
+    const rec = makeRecordingBackend();
+    await expect(flagBlockerTool.handler(rec.backend, { mapId: 'm1', nodeId: 'leaf', reason: '  ', kind: 'question' } as never)).rejects.toThrow('reason');
+    expect(rec.lastFlag).toBeNull();
+  });
+
+  it('the zod schema takes the four kinds and nothing else', () => {
+    const kind = flagBlockerTool.schema.kind;
+    for (const k of ['question', 'person-step', 'external', 'waits-on']) expect(kind.safeParse(k).success).toBe(true);
+    expect(kind.safeParse('vendor').success).toBe(false);
+    expect(kind.safeParse(undefined).success).toBe(true);
   });
 
   it('warns that a blocker on a container holds its subtree (Phase 2.5, 25.10.2026)', async () => {
     const rec = makeRecordingBackend();
     const backend = {
       ...rec.backend,
-      updateNode: async () => ({ id: 'phase', childrenIds: ['a', 'b', 'c'] }) as unknown as NodeWithComputed,
+      flagBlocker: async () => ({ node: { id: 'phase', childrenIds: ['a', 'b', 'c'] } as unknown as NodeWithComputed, kind: null }),
     } as ToolBackend;
     const out = await flagBlockerTool.handler(backend, { mapId: 'm1', nodeId: 'phase', reason: 'cannot do a container' } as never);
     expect(out).toContain('Flagged phase as blocked');
