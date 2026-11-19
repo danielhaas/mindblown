@@ -279,6 +279,12 @@ interface MindmapNodeProps {
    */
   textScale?: number;
   onRefineClick?: () => void;
+  /** Click on the "+N" pill (children hidden by the depth limit). */
+  onShowHidden?: () => void;
+  /** Click on the "+" circle (branch folded by hand). */
+  onExpand?: () => void;
+  /** The editor's hover "add child" handle sits on the node's right edge (tree-lr, radial). */
+  createHandleRight?: boolean;
   onSelect: (shiftKey: boolean) => void;
   onDoubleClick: () => void;
   onTextChange: (text: string) => void;
@@ -304,6 +310,9 @@ export function MindmapNode({
   wideFanoutCount,
   textScale = 1,
   onRefineClick,
+  onShowHidden,
+  onExpand,
+  createHandleRight = false,
   onSelect,
   onDoubleClick,
   onTextChange,
@@ -461,7 +470,18 @@ export function MindmapNode({
 
       {/* Collapse indicator */}
       {collapsed && !hasHiddenChildren && (
-        <g transform={`translate(${x + width - 8 * textScale}, ${y + height / 2})`}>
+        <g
+          data-testid="node-expand"
+          transform={`translate(${x + width - 8 * textScale}, ${y + height / 2})`}
+          style={{ cursor: 'pointer' }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onExpand?.();
+          }}
+        >
+          <title>Expand</title>
           <circle r={8 * textScale} fill="#f1f5f9" stroke="#cbd5e1" strokeWidth="1" />
           <text
             textAnchor="middle"
@@ -479,8 +499,26 @@ export function MindmapNode({
       {hasHiddenChildren && hiddenDescendantCount > 0 && (() => {
         const badgeW = (hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40) * textScale;
         const badgeH = 20 * textScale;
+        // When the editor's hover "add child" handle sits on the right
+        // (unscaled circle at x+width+8, r=10, 2px stroke → painted to
+        // x+width+19), start past it: it draws on top, so an overlap
+        // turns a click on the pill into a new child.
+        const badgeX = x + width + (createHandleRight ? Math.max(21, 6 * textScale) : 6 * textScale);
         return (
-        <g transform={`translate(${x + width + 6 * textScale}, ${y + height / 2 - badgeH / 2})`}>
+        <g
+          data-testid="node-show-hidden"
+          transform={`translate(${badgeX}, ${y + height / 2 - badgeH / 2})`}
+          style={{ cursor: 'pointer' }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onShowHidden?.();
+          }}
+        >
+          <title>
+            Show {hiddenDescendantCount} hidden node{hiddenDescendantCount === 1 ? '' : 's'}
+          </title>
           <rect
             x={0}
             y={0}
