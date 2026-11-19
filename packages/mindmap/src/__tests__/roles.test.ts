@@ -40,16 +40,16 @@ describe('ROLE_CONFIG invariants', () => {
   });
 
   it('persona Round 1 outcomes are encoded', () => {
-    // Gantt / Hill / Workload were dropped by all three personas
+    // Hill / Workload were dropped by all three personas (Gantt came back
+    // for PM + stakeholder on 2026-11-19 — see the Gantt test below)
     for (const role of ['stakeholder', 'pm', 'developer'] as const) {
-      expect(isTabVisible(role, 'gantt')).toBe(false);
       expect(isTabVisible(role, 'hill')).toBe(false);
       expect(isTabVisible(role, 'workload')).toBe(false);
     }
     // Developer wanted List, not Kanban, as the default
     expect(defaultViewForRole('developer')).toBe('list');
-    // Stakeholder: digest landing page + Releases, no panels (Round 2)
-    expect(ROLE_CONFIG.stakeholder.tabs).toEqual(['digest', 'releases']);
+    // Stakeholder: digest landing page + Gantt + Releases, no panels (Round 2)
+    expect(ROLE_CONFIG.stakeholder.tabs).toEqual(['digest', 'gantt', 'releases']);
     expect(defaultViewForRole('pm')).toBe('cockpit');
     expect(ROLE_CONFIG.stakeholder.panels).toEqual(['property']);
     expect(isPanelVisible('stakeholder', 'triage')).toBe(false);
@@ -62,6 +62,16 @@ describe('ROLE_CONFIG invariants', () => {
     expect(isTabVisible('pm', 'fleet')).toBe(true);
     expect(isTabVisible('developer', 'fleet')).toBe(true);
     expect(isTabVisible('stakeholder', 'fleet')).toBe(false);
+  });
+
+  it('Gantt tab (Dan, 2026-11-19): PM and stakeholder see it, developer stays as is', () => {
+    expect(isTabVisible('pm', 'gantt')).toBe(true);
+    expect(isTabVisible('stakeholder', 'gantt')).toBe(true);
+    expect(isTabVisible('developer', 'gantt')).toBe(false);
+    // List keeps its name and its place in PM; landing tabs unchanged
+    expect(isTabVisible('pm', 'list')).toBe(true);
+    expect(defaultViewForRole('stakeholder')).toBe('digest');
+    expect(defaultViewForRole('pm')).toBe('cockpit');
   });
 
   it('Files tab: PM and developer see it, stakeholder does not', () => {
