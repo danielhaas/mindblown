@@ -7,6 +7,7 @@ import {
   lintAnswerAction,
   lintAskId,
   lintAutoFixOn,
+  lintDailyOptedIn,
   lintDigestLine,
   parseLintAskId,
   sanitizeLintAutoFix,
@@ -22,10 +23,16 @@ describe('daily-check handling', () => {
     expect([...LINT_AUTO_RULES].sort()).toEqual(['stale-blocked-reason', 'stalled-unclaimed', 'status-progress-mismatch']);
   });
 
-  it('autoFix: missing = on, false = off, never on for a rule that is not auto', () => {
-    expect(lintAutoFixOn({}, 'stalled-unclaimed')).toBe(true);
+  it('autoFix is opt-in: missing = off, true = on, never on for a rule that is not auto', () => {
+    expect(lintAutoFixOn({}, 'stalled-unclaimed')).toBe(false);
+    expect(lintAutoFixOn(undefined, 'stalled-unclaimed')).toBe(false);
+    expect(lintAutoFixOn({ 'stalled-unclaimed': true }, 'stalled-unclaimed')).toBe(true);
     expect(lintAutoFixOn({ 'stalled-unclaimed': false }, 'stalled-unclaimed')).toBe(false);
-    expect(lintAutoFixOn(undefined, 'issue-state-mismatch')).toBe(false);
+    expect(lintAutoFixOn({ 'issue-state-mismatch': true } as never, 'issue-state-mismatch')).toBe(false);
+    expect(lintDailyOptedIn({})).toBe(false);
+    expect(lintDailyOptedIn(null)).toBe(false);
+    expect(lintDailyOptedIn({ 'stalled-unclaimed': false })).toBe(false);
+    expect(lintDailyOptedIn({ 'stalled-unclaimed': true })).toBe(true);
     expect(sanitizeLintAutoFix({ 'stalled-unclaimed': false, 'unestimated-leaf': false, x: true, 'stale-blocked-reason': 'no' })).toEqual({ 'stalled-unclaimed': false });
     expect(sanitizeLintAutoFix(null)).toEqual({});
   });

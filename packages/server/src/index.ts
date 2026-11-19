@@ -652,15 +652,15 @@ async function main(): Promise<void> {
   setInterval(digestMailTick, DIGEST_MAIL_INTERVAL_MS);
 
   // ── Daily self-check (lint/daily.ts) ──────────────────────────
-  // Every 10 min: from LINT_DAILY_HOUR (default 06:00 in DIGEST_MAIL_TZ)
-  // plan_lint runs once a day on every active map not yet checked that day
+  // Every 10 min: from LINT_DAILY_HOUR (default 06:00 in DIGEST_MAIL_TZ; "off" = never)
+  // plan_lint runs once a day on every active map that opted in (lintAutoFix) not yet checked that day
   // — safe fixes applied, person-needed findings onto the Questions card,
   // hygiene counts for the 08:00 mail. On demand: POST /api/maps/:id/lint/runs.
   const lintCfg = dailyLintConfig();
   let dailyLintRunning = false;
   const dailyLintTick = async (): Promise<void> => {
     const now = new Date();
-    if (dailyLintRunning || localHour(now, lintCfg.timeZone) < lintCfg.hour) return;
+    if (lintCfg.hour === null || dailyLintRunning || localHour(now, lintCfg.timeZone) < lintCfg.hour) return;
     dailyLintRunning = true;
     try {
       const r = await runDailyLint({ now, day: localDay(now, lintCfg.timeZone) });

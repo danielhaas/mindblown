@@ -118,6 +118,7 @@ import {
   isStepOption,
   stepAnswerAction,
   stepAskNodeId,
+  lintDailyOptedIn,
 } from '@mindblown/core';
 import type { AskAnswerInput, AskRow, AskWrite, LintActionId, LintRun, MindMap, Node as CoreNode, Version } from '@mindblown/core';
 import { commentOnGitHubIssue } from '@mindblown/integrations';
@@ -207,7 +208,9 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
 
     // The daily check's findings for a person — one row per finding, none
     // for a node that already has a row above (that row is its question).
-    const run = lintRuns.get(mapId);
+    // Only while the map is opted in: a map that switched every rule off
+    // (or never opted in) keeps no lint asks from an old run.
+    const run = lintDailyOptedIn(data.map.lintAutoFix) ? lintRuns.get(mapId) : undefined;
     if (run && run.asked.length > 0) {
       const covered = new Set(out.slice(mapStart).map((r) => r.ask.unblocks.node_id));
       const seen = new Set<string>();

@@ -970,9 +970,9 @@ export interface MindMap {
    */
   aiEstimateDrafts?: boolean;
   /**
-   * The daily self-check's auto-fixes (server lint/daily.ts): rule id →
-   * false switches that rule's safe fix off, so its findings become asks.
-   * A missing key is on. Only rules whose handling is `auto`
+   * The daily self-check's auto-fixes (server lint/daily.ts), opt-in: rule
+   * id → true switches that rule's safe fix on; missing or false = off, its
+   * findings become asks. No rule on = the map is not in the daily run. Only rules whose handling is `auto`
    * (core LINT_DAILY) are read. Server source: `maps.lint_auto_fix`.
    */
   lintAutoFix?: LintAutoFix;

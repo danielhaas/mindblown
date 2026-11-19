@@ -22,7 +22,7 @@ vi.mock('../../lib/githubContext.js', () => ({
 import { db } from '../../db/connection.js';
 import { users, workspaces, maps, nodes, fleets, changeEvents, lintRuns } from '../../db/schema.js';
 import { truncateAll } from '../../test/pgliteDb.js';
-import { runDailyLint } from '../daily.js';
+import { dailyLintConfig, runDailyLint } from '../daily.js';
 import { derivedAskRows, openDerivedAsks } from '../../services/derivedAsks.js';
 import { answerAsk } from '../../services/asks.js';
 import { hygieneLines } from '../../services/digestMail.js';
@@ -31,6 +31,8 @@ import { lintAskId, lintDigestLine } from '@mindblown/core';
 const HOUR = 3_600_000;
 const NOW = new Date('2026-11-20T05:30:00Z');
 const ago = (h: number) => new Date(NOW.getTime() - h * HOUR);
+
+const ALL_ON = { 'status-progress-mismatch': true, 'stale-blocked-reason': true, 'stalled-unclaimed': true };
 
 async function seed() {
   const [user] = await db.insert(users).values({ email: 'dan@example.com', name: 'Dan Haas' }).returning();
@@ -52,7 +54,7 @@ async function seed() {
   };
 
   // Navy: one finding per category. A repo named but nothing binds it → broken-repo-connection.
-  const navy = await newMap('Navy App', { githubRepoOwner: 'o', githubRepoName: 'r' });
+  const navy = await newMap('Navy App', { githubRepoOwner: 'o', githubRepoName: 'r', lintAutoFix: ALL_ON });
   const doneLow = await navy.add('Done at 60 %', { status: 'done', percentComplete: 60, effortEstimate: 1 });
   const workerNote = await navy.add('Done, worker note left', {
     status: 'done', percentComplete: 100, effortEstimate: 1, blockedReason: 'Fleet worker w1: CI failed on PR #9',
@@ -76,13 +78,17 @@ async function seed() {
   const doneParent = await navy.add('Onboarding', { status: 'done' });
   await child(doneParent.id, 'Welcome mail');
 
-  const archived = await newMap('Old', { archivedAt: ago(100) });
+  const archived = await newMap('Old', { archivedAt: ago(100), lintAutoFix: ALL_ON });
   const archivedLeaf = await archived.add('Done at 10 %', { status: 'done', percentComplete: 10 });
 
-  const manual = await newMap('Manual', { lintAutoFix: { 'status-progress-mismatch': false } });
+  const manual = await newMap('Manual', { lintAutoFix: { 'status-progress-mismatch': false, 'stale-blocked-reason': true } });
   const manualLeaf = await manual.add('Done at 70 %', { status: 'done', percentComplete: 70, effortEstimate: 1 });
 
-  return { user, fleet, navy, doneLow, workerNote, merged, orphan, issueOpen, heldParent, doneParent, archived, archivedLeaf, manual, manualLeaf };
+  // Not opted in (someone else's project): the scheduled run never touches it.
+  const foreign = await newMap('Someone else', {});
+  const foreignLeaf = await foreign.add('Done at 20 %', { status: 'done', percentComplete: 20, effortEstimate: 1 });
+
+  return { user, fleet, navy, doneLow, workerNote, merged, orphan, issueOpen, heldParent, doneParent, archived, archivedLeaf, manual, manualLeaf, foreign, foreignLeaf };
 }
 
 async function node(id: string) {
@@ -104,6 +110,8 @@ describe('daily self-check', () => {
     expect(day1.runs.map((r) => r.mapName).sort()).toEqual(['Manual', 'Navy App']);
     expect((await node(s.archivedLeaf.id)).percentComplete).toBe(10);
     expect(await db.select().from(lintRuns).where(eq(lintRuns.mapId, s.archived.map.id))).toEqual([]);
+    expect((await node(s.foreignLeaf.id)).percentComplete).toBe(20);
+    expect(await db.select().from(lintRuns).where(eq(lintRuns.mapId, s.foreign.map.id))).toEqual([]);
 
     const navy = day1.runs.find((r) => r.mapName === 'Navy App')!;
     expect(navy.error).toBeNull();
@@ -190,5 +198,14 @@ describe('daily self-check', () => {
     await runDailyLint({ now: NOW, day: '2026-11-20' });
     const rows = await derivedAskRows([s.navy.map.id], NOW);
     expect(rows.filter((r) => r.ask.unblocks.node_id === leaf.id).map((r) => r.ask.id)).toEqual([`blocker-${leaf.id}`]);
+  });
+});
+
+describe('dailyLintConfig', () => {
+  it('LINT_DAILY_HOUR=off switches the scheduled run off; default 6', () => {
+    expect(dailyLintConfig({ LINT_DAILY_HOUR: 'off' } as NodeJS.ProcessEnv).hour).toBeNull();
+    expect(dailyLintConfig({ LINT_DAILY_HOUR: 'OFF ' } as NodeJS.ProcessEnv).hour).toBeNull();
+    expect(dailyLintConfig({} as NodeJS.ProcessEnv).hour).toBe(6);
+    expect(dailyLintConfig({ LINT_DAILY_HOUR: '7' } as NodeJS.ProcessEnv).hour).toBe(7);
   });
 });

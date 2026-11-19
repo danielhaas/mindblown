@@ -1,6 +1,7 @@
 /**
  * The daily self-check (docs/plan-linter.md, "Daily self-check"): once a
- * day — and on demand — plan_lint (scope all) runs on every active map,
+ * day — and on demand — plan_lint (scope all) runs on every active map
+ * that opted in (map.lintAutoFix, at least one rule on),
  * and each finding is handled the way its rule declares it (core
  * LINT_DAILY):
  *
@@ -21,6 +22,7 @@ import {
   isOrphanRequeueable,
   LINT_DAILY,
   lintAutoFixOn,
+  lintDailyOptedIn,
   STALLED_ASK_AFTER_HOURS,
   WORKER_WAIT_NOTE,
   type LintActionId,
@@ -39,16 +41,21 @@ import { buildLintReport } from './report.js';
 const HOUR_MS = 3_600_000;
 
 export interface DailyLintConfig {
-  /** Local hour (0–23) from which the day's run starts — before the daily mail. */
-  hour: number;
+  /** Local hour (0–23) from which the day's run starts — before the daily mail. null = scheduled run off. */
+  hour: number | null;
   timeZone: string;
 }
 
-/** LINT_DAILY_HOUR (default 6) in DIGEST_MAIL_TZ (default Europe/Zurich): the run lands before the 08:00 mail. */
+/**
+ * LINT_DAILY_HOUR (default 6) in DIGEST_MAIL_TZ (default Europe/Zurich): the
+ * run lands before the 08:00 mail. LINT_DAILY_HOUR=off switches the
+ * scheduled run off (on-demand runs still work).
+ */
 export function dailyLintConfig(env: NodeJS.ProcessEnv = process.env): DailyLintConfig {
-  const hour = Number.parseInt(env.LINT_DAILY_HOUR ?? '', 10);
+  const raw = (env.LINT_DAILY_HOUR ?? '').trim().toLowerCase();
+  const hour = Number.parseInt(raw, 10);
   return {
-    hour: Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : 6,
+    hour: raw === 'off' ? null : Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : 6,
     timeZone: env.DIGEST_MAIL_TZ || 'Europe/Zurich',
   };
 }
@@ -188,11 +195,15 @@ export interface DailyLintResult {
 }
 
 /**
- * Every active map not yet checked on `day` (or every one with `force`).
- * One map's failure is recorded on its run and does not stop the others.
+ * Every active map that opted in (lintDailyOptedIn) and is not yet checked
+ * on `day` (or every one with `force`). Named `mapIds` are run whether
+ * opted in or not — someone asked for them. One map's failure is recorded
+ * on its run and does not stop the others.
  */
 export async function runDailyLint(opts: DailyLintOptions & { force?: boolean; mapIds?: string[] }): Promise<DailyLintResult> {
-  const maps = (await mapDb.listMaps()).filter((m) => !m.archivedAt && (!opts.mapIds || opts.mapIds.includes(m.id)));
+  const maps = (await mapDb.listMaps()).filter(
+    (m) => !m.archivedAt && (opts.mapIds ? opts.mapIds.includes(m.id) : lintDailyOptedIn(m.lintAutoFix)),
+  );
   const runs: LintRun[] = [];
   for (const m of maps) {
     if (!opts.force && (await lintRunsDb.hasRun(m.id, opts.day))) continue;
