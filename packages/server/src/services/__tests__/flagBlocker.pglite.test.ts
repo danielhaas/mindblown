@@ -18,7 +18,8 @@ import { db } from '../../db/connection.js';
 import { users, workspaces, maps, nodes, fleets } from '../../db/schema.js';
 import { truncateAll } from '../../test/pgliteDb.js';
 import * as nodeDb from '../../db/nodes.js';
-import { flagBlocker, classifyUnkindedBlockers, FlagBlockerError } from '../flagBlocker.js';
+import { flagBlocker, classifyUnkindedBlockers, FlagBlockerError, mapOwnerAnswerer } from '../flagBlocker.js';
+import { setAnswerer } from '../../db/answerer.js';
 import { derivedAskRows } from '../derivedAsks.js';
 import { answerAsk } from '../asks.js';
 
@@ -76,6 +77,23 @@ describe('flag_blocker with a kind', () => {
     expect(after.status).toBe('todo');
     expect(String(after.description)).toMatch(/^\*\*Decision \(Dan, \d{4}-\d{2}-\d{2}\): Stripe\*\*\n\nBuild it\.$/);
     expect((await derivedAskRows([map.id])).some((r) => r.ask.id === `question-${ticket.id}`)).toBe(false);
+  });
+
+  it('owner "Daniel Haas" with answerer name "Dan" → question and gate asks (and lint, same lookup) go to Dan, not Daniel', async () => {
+    const { user, map, ticket } = await seed();
+    await db.update(users).set({ name: 'Daniel Haas' }).where(eq(users.id, user.id));
+    expect(await mapOwnerAnswerer(map)).toBe('Daniel');
+    await setAnswerer(user.id, 'Dan');
+    expect(await mapOwnerAnswerer(map)).toBe('Dan');
+    const out = await flagBlocker(map.id, ticket.id, { kind: 'question', reason: 'Stripe or Adyen?' }, user.id);
+    expect(out.node.blockerInfo).toEqual({ kind: 'question', answerer: 'Dan' });
+    const rows = await derivedAskRows([map.id]);
+    expect(rows.find((r) => r.ask.id === `question-${ticket.id}`)?.ask.answerer).toBe('Dan');
+    // The gate ask: a ready ticket outside the map's gate.
+    await db.update(maps).set({ dispatchGate: ['00000000-0000-4000-8000-000000000000'] }).where(eq(maps.id, map.id));
+    const gate = (await derivedAskRows([map.id])).find((r) => r.ask.id.startsWith('gate-'));
+    expect(gate?.ask.answerer).toBe('Dan');
+    expect((await derivedAskRows([map.id])).every((r) => r.ask.answerer !== 'Daniel')).toBe(true);
   });
 
   it('question with an answerer keeps it', async () => {

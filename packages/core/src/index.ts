@@ -498,6 +498,8 @@ export {
   externalRecheckAt,
   externalRecheckDue,
   answererName,
+  validateAnswererName,
+  ANSWERER_NAME_MAX,
   isWorkerNote,
   isUnkindedBlocker,
   unkindedDue,
@@ -508,7 +510,7 @@ export {
   buildExternalAsk,
   externalAnswerAction,
 } from './blockerKinds.js';
-export type { BlockerRef, UnkindedPlan, ExternalAnswer } from './blockerKinds.js';
+export type { BlockerRef, UnkindedPlan, ExternalAnswer, AnswererSetting } from './blockerKinds.js';
 
 // Which uploaded files stay public capability URLs (#292, decision D)
 export { PUBLIC_MEDIA_EXTENSIONS, isPublicMediaFileName } from './media.js';

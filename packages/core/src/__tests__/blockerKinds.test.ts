@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   answererName,
+  validateAnswererName,
   blockerRefs,
   buildExternalAsk,
   buildQuestionAsk,
@@ -102,5 +103,15 @@ describe('the derived rows', () => {
   it('answerer names go by first name', () => {
     expect(answererName('Dan Haas')).toBe('Dan');
     expect(answererName(null)).toBe('Dan');
+  });
+
+  it("a user's own answerer name wins over the first name", () => {
+    expect(answererName('Daniel Haas', 'Dan')).toBe('Dan');
+    expect(answererName('Daniel Haas', '  ')).toBe('Daniel');
+    expect(answererName('Daniel Haas', null)).toBe('Daniel');
+    expect(validateAnswererName('Dan')).toBeNull();
+    expect(validateAnswererName(null)).toBeNull();
+    expect(validateAnswererName('Dan Haas')).toMatch(/one word/);
+    expect(validateAnswererName(3)).toMatch(/string/);
   });
 });

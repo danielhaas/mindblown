@@ -64,8 +64,14 @@ export const waitingOnHumansTool = defineTool({
   ].join('\n'),
   schema: {
     fleetId: z.string().optional().describe('One fleet (list_fleets); omit for every fleet you can see'),
+    person: z.string().min(1).max(100).optional().describe('Only this person\'s section — any name on the card (e.g. "Dan"; a map owner goes by their answerer_name), case-insensitive'),
   },
-  handler: async (backend, { fleetId }) => renderWaitingOnHumans(await backend.waitingOnHumans(fleetId)),
+  handler: async (backend, { fleetId, person }) => {
+    const res = await backend.waitingOnHumans(fleetId);
+    if (!person) return renderWaitingOnHumans(res);
+    const who = person.trim().toLowerCase();
+    return renderWaitingOnHumans({ ...res, fleets: res.fleets.map((f) => ({ ...f, people: f.people.filter((p) => p.person.toLowerCase() === who) })) });
+  },
 });
 
 export const waitingOnHumansTools = [waitingOnHumansTool];

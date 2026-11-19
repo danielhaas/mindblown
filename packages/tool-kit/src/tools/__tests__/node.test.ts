@@ -157,6 +157,8 @@ function makeRecordingBackend(): {
     listLeave: async () => { throw new Error('not implemented'); },
     addLeave: async () => { throw new Error('not implemented'); },
     removeLeave: async () => { throw new Error('not implemented'); },
+    getAnswererName: async () => { throw new Error('not implemented'); },
+    setAnswererName: async () => { throw new Error('not implemented'); },
   };
   return {
     backend,

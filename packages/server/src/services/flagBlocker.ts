@@ -27,7 +27,7 @@ import {
 } from '@mindblown/core';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
-import { getUserName } from '../db/fleetPairings.js';
+import { userAnswerer } from '../db/answerer.js';
 import { recordClaimTransition, recordFieldChanges } from '../db/events.js';
 import { broadcast } from '../ws.js';
 import { syncNodeToGitHub } from '../routes/nodes.js';
@@ -65,10 +65,9 @@ export interface FlagBlockerOutcome {
   dependsOn?: { id: string; text: string };
 }
 
-/** The map owner's first name — the default answerer of a blocker question. */
+/** The map owner's answerer name (db/answerer) — the default answerer of a blocker question, lint and gate asks. */
 export async function mapOwnerAnswerer(map: Pick<MindMap, 'createdBy'>): Promise<string> {
-  const name = map.createdBy ? await getUserName(map.createdBy).catch(() => null) : null;
-  return answererName(name);
+  return map.createdBy ? await userAnswerer(map.createdBy).catch(() => answererName(null)) : answererName(null);
 }
 
 async function fanOut(mapId: string, userId: string | null, before: CoreNode, updated: CoreNode, changedFields: string[]): Promise<void> {

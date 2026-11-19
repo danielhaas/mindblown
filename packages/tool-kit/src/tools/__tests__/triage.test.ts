@@ -178,6 +178,8 @@ function makeRecorder(): Recorder {
     listLeave: async () => { throw new Error('not used'); },
     addLeave: async () => { throw new Error('not used'); },
     removeLeave: async () => { throw new Error('not used'); },
+    getAnswererName: async () => { throw new Error('not used'); },
+    setAnswererName: async () => { throw new Error('not used'); },
   };
   return state;
 }

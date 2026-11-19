@@ -89,7 +89,6 @@ import {
   gatedOutReady,
   effectiveVersionId,
   gateVersionIds,
-  ownerPerson,
   parseGateEntry,
   GATE_VERSION_PREFIX,
   GATE_OR,
@@ -124,11 +123,8 @@ import {
 } from '@mindblown/core';
 import type { AskAnswerInput, AskRow, AskWrite, LintActionId, LintRun, MindMap, Node as CoreNode, Version } from '@mindblown/core';
 import { commentOnGitHubIssue } from '@mindblown/integrations';
-import { eq } from 'drizzle-orm';
 import * as asksDb from '../db/asks.js';
 import * as lintRunsDb from '../db/lintRuns.js';
-import { db } from '../db/connection.js';
-import { users } from '../db/schema.js';
 import * as mapDb from '../db/maps.js';
 import * as nodeDb from '../db/nodes.js';
 import * as versionDb from '../db/versions.js';
@@ -252,11 +248,10 @@ async function gateRow(map: MindMap, nodes: CoreNode[], mapId: string, now: Date
   if (gated.ids.length === 0) return null;
   const versions = await versionDb.listVersions(mapId);
   const names = new Map(versions.map((v) => [v.id, v.name]));
-  const [owner] = await db.select({ name: users.name }).from(users).where(eq(users.id, map.createdBy));
   const ask = buildGateAsk(map, gated, {
     versionName: (id) => names.get(id) ?? id.slice(0, 8),
     activeVersion: activeVersionOf(versions)?.name ?? null,
-    answerer: ownerPerson(owner?.name),
+    answerer: await mapOwnerAnswerer(map),
   });
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const latest = gated.ids.map((id) => byId.get(id)?.updatedAt ?? '').sort().pop() || now.toISOString();

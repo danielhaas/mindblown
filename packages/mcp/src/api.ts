@@ -13,7 +13,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { CommentKind, LintRun, NodeComment, RequirementGate, LeaveRange } from '@mindblown/core';
+import type { CommentKind, LintRun, NodeComment, RequirementGate, LeaveRange, AnswererSetting } from '@mindblown/core';
 import type { FlagBlockerInput, FlagBlockerResult, FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult, MoveNodeToMapResult } from '@mindblown/tool-kit';
 import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookEventStat, WebhookSubscription } from '@mindblown/core';
 
@@ -633,6 +633,14 @@ export function addLeave(input: { startDate: string; endDate: string; note?: str
 
 export async function removeLeave(leaveId: string): Promise<void> {
   await request<void>(`/api/me/leave/${encodeURIComponent(leaveId)}`, { method: 'DELETE' });
+}
+
+export function getAnswererName(): Promise<AnswererSetting> {
+  return request<AnswererSetting>('/api/me/answerer-name');
+}
+
+export function setAnswererName(answererName: string | null): Promise<AnswererSetting> {
+  return request<AnswererSetting>('/api/me/answerer-name', { method: 'PUT', body: JSON.stringify({ answererName }) });
 }
 
 /** The map (or a subtree) as a Markdown timeline (#637). */

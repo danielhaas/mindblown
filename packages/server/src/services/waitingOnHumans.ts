@@ -11,7 +11,7 @@
  *                      threshold (services/deployProbe) — a step
  *   idle               countActiveClaims + the fresh hosts' workers
  *
- * PR merges and approvals wait on the map owner (first name), or Dan.
+ * PR merges and approvals wait on the map owner (answerer name, else first name), or Dan.
  * A reader sees the maps they can view (the fleet read rule); fleet-level
  * asks only when they own the fleet or see all its maps — like list_asks.
  */
@@ -56,11 +56,11 @@ interface MapInfo {
 async function mapInfo(mapIds: string[]): Promise<Map<string, MapInfo>> {
   if (mapIds.length === 0) return new Map();
   const rows = await db
-    .select({ id: maps.id, name: maps.name, owner: users.name, repoOwner: maps.githubRepoOwner, repoName: maps.githubRepoName })
+    .select({ id: maps.id, name: maps.name, owner: users.name, ownAnswerer: users.answererName, repoOwner: maps.githubRepoOwner, repoName: maps.githubRepoName })
     .from(maps)
     .leftJoin(users, eq(users.id, maps.createdBy))
     .where(inArray(maps.id, mapIds));
-  return new Map(rows.map((r) => [r.id, { name: r.name, person: ownerPerson(r.owner), repo: r.repoOwner && r.repoName ? `${r.repoOwner}/${r.repoName}` : null }]));
+  return new Map(rows.map((r) => [r.id, { name: r.name, person: ownerPerson(r.owner, r.ownAnswerer), repo: r.repoOwner && r.repoName ? `${r.repoOwner}/${r.repoName}` : null }]));
 }
 
 /** `owner/repo#12`: the map's repo, else the repo of the node's forge link. */
