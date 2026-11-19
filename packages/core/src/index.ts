@@ -55,6 +55,8 @@ export {
   computeIsBlocked,
   computeTree,
 } from './compute.js';
+export { explainBlockedParent, outsideBranch } from './blockedParent.js';
+export type { BlockedRootCause, BlockedParentExplanation } from './blockedParent.js';
 
 // Tree operations
 export {
