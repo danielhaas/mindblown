@@ -45,3 +45,12 @@ describe('formatMapTree — holiday calendar (#110)', () => {
     expect(formatMapTree(detail({ holidayOverrides: { add: ['2026-12-31'], remove: [] } }))).toContain('Calendar: working days (Mon–Fri) — +1 own day(s) off');
   });
 });
+
+// Same harness: get_map names the deploy probe (merged, not live).
+describe('formatMapTree — deploy probe', () => {
+  it('names the probe URL, says none, and is silent when unset', () => {
+    expect(formatMapTree(detail({ deployProbe: 'https://navy.example/api/version' }))).toContain('Deploy probe: https://navy.example/api/version');
+    expect(formatMapTree(detail({ deployProbe: 'none' }))).toContain('Deploy probe: none (not deployed)');
+    expect(formatMapTree(detail({ deployProbe: null }))).not.toContain('Deploy probe');
+  });
+});

@@ -9,8 +9,8 @@ const MAP = 'mmmm-mmmm';
 const state = vi.hoisted(() => ({ perm: {} as Record<string, string | null> }));
 const svc = vi.hoisted(() => ({ forMap: vi.fn() }));
 
-vi.mock('../../services/deployDrift.js', () => ({
-  deployDriftForMap: (...a: unknown[]) => svc.forMap(...a),
+vi.mock('../../services/deployProbe.js', () => ({
+  deployDriftView: (...a: unknown[]) => svc.forMap(...a),
 }));
 vi.mock('../../db/permissions.js', () => ({
   getPermission: async (mapId: string) => state.perm[mapId] ?? null,
@@ -42,17 +42,17 @@ beforeEach(() => {
 describe('GET /api/maps/:id/deploy-drift', () => {
   it('a viewer gets the drift for that map', async () => {
     const drift = { sha: 'a'.repeat(40), undeployed: 1, undeployedSince: '2026-11-18T08:42:05Z', checkedAt: 'x', commits: [] };
-    svc.forMap.mockResolvedValue(drift);
+    svc.forMap.mockResolvedValue({ drift, probeError: null });
     const res = await (await buildApp()).inject({ method: 'GET', url: `/api/maps/${MAP}/deploy-drift` });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ drift });
+    expect(res.json()).toEqual({ drift, probeError: null });
     expect(svc.forMap).toHaveBeenCalledWith(MAP);
   });
 
-  it('null passes through', async () => {
-    svc.forMap.mockResolvedValue(null);
+  it('null and a probe error pass through', async () => {
+    svc.forMap.mockResolvedValue({ drift: null, probeError: 'probe answered HTTP 404' });
     const res = await (await buildApp()).inject({ method: 'GET', url: `/api/maps/${MAP}/deploy-drift` });
-    expect(res.json()).toEqual({ drift: null });
+    expect(res.json()).toEqual({ drift: null, probeError: 'probe answered HTTP 404' });
   });
 
   it('no access → 403, no login → 401, and the service is never asked', async () => {

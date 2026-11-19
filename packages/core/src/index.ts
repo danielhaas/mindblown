@@ -547,3 +547,18 @@ export {
   EXTERNAL_TAG,
 } from './timelineExport.js';
 export type { TimelineDetail, TimelineSpan, TimelineInput, TimelineMilestone, TimelineWaiting, MilestoneStatus } from './timelineExport.js';
+
+// Merged, not live — a per-map deploy probe (follow-up to #645)
+export {
+  DEPLOY_PROBE_NONE,
+  DEPLOY_PROBE_ASK_PREFIX,
+  DEPLOY_PROBE_ASK_OPTIONS,
+  isProbeUrl,
+  normalizeDeployProbe,
+  parseProbeBody,
+  notLiveLabel,
+  deployProbeAskId,
+  deployProbeAskMapId,
+  buildDeployProbeAsk,
+  deployProbeFromAnswer,
+} from './deployProbe.js';

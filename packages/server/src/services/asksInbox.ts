@@ -9,7 +9,7 @@
  * project, like a tick's prose. A fleet-wide push's meta (counts across
  * projects) is cut the same way.
  */
-import { countAsks, derivedAskNodeId, sortAsks } from '@mindblown/core';
+import { countAsks, deployProbeAskMapId, derivedAskNodeId, sortAsks } from '@mindblown/core';
 import type { AskDocumentMeta, AskRow } from '@mindblown/core';
 import * as asksDb from '../db/asks.js';
 import * as fleetEntityDb from '../db/fleets.js';
@@ -108,6 +108,8 @@ export async function resolveFleetAnswer(userId: string, fleetId: string, askId:
     const nodeMap = await nodeDb.getNodeMapId(derivedNode);
     if (nodeMap && view.maps.some((m) => m.id === nodeMap)) rows = [{ mapId: nodeMap }];
   }
+  const probeMap = deployProbeAskMapId(askId);
+  if (probeMap && rows.length === 0 && view.maps.some((m) => m.id === probeMap)) rows = [{ mapId: probeMap }];
   if (mapId !== undefined) rows = rows.filter((r) => (r.mapId ?? '') === mapId);
   if (rows.length === 0) return { status: 404, code: 'ASK_NOT_FOUND', message: `Ask ${askId} not found` };
   if (rows.length > 1) {

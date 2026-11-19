@@ -521,6 +521,7 @@ export interface ToolBackend {
       aiEstimateDrafts?: boolean;
       holidayJurisdiction?: string | null;
       holidayOverrides?: { add: string[]; remove: string[] };
+      deployProbe?: string | null;
       phases?: PhaseDef[];
       archived?: boolean;
       /** Guided onboarding: finish (true) or reopen (false) the setup checklist. */

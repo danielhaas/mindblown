@@ -17,11 +17,14 @@ const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString
 describe('DeployDriftBanner', () => {
   it('shows count, wait and the commits on click', async () => {
     vi.mocked(api.fetchDeployDrift).mockResolvedValue({
-      sha: 'abcdef1234567890', undeployed: 2, undeployedSince: hoursAgo(19), checkedAt: hoursAgo(0),
-      commits: [
-        { sha: '1', at: hoursAgo(19), subject: 'feat(fleet): waiting_on_humans (#634)' },
-        { sha: '2', at: hoursAgo(1), subject: 'fix(scheduler): blockers first (#638)' },
-      ],
+      drift: {
+        sha: 'abcdef1234567890', undeployed: 2, undeployedSince: hoursAgo(19), checkedAt: hoursAgo(0),
+        commits: [
+          { sha: '1', at: hoursAgo(19), subject: 'feat(fleet): waiting_on_humans (#634)' },
+          { sha: '2', at: hoursAgo(1), subject: 'fix(scheduler): blockers first (#638)' },
+        ],
+      },
+      probeError: null,
     });
     render(<DeployDriftBanner mapId="m1" />);
     const btn = await screen.findByRole('button', { name: /2 merged changes not deployed — oldest waiting 19 h/ });
@@ -34,8 +37,8 @@ describe('DeployDriftBanner', () => {
 
   it('renders nothing when nothing waits, for other maps (null), or on error', async () => {
     for (const r of [
-      async () => ({ sha: 'a', undeployed: 0, undeployedSince: null, checkedAt: 'x', commits: [] }),
-      async () => null,
+      async () => ({ drift: { sha: 'a', undeployed: 0, undeployedSince: null, checkedAt: 'x', commits: [] }, probeError: null }),
+      async () => ({ drift: null, probeError: null }),
       async () => {
         throw new Error('down');
       },
@@ -47,6 +50,12 @@ describe('DeployDriftBanner', () => {
       expect(container.innerHTML).toBe('');
       unmount();
     }
+  });
+
+  it("says when the map's probe failed", async () => {
+    vi.mocked(api.fetchDeployDrift).mockResolvedValue({ drift: null, probeError: 'probe answered HTTP 404' });
+    render(<DeployDriftBanner mapId="m1" />);
+    expect((await screen.findByTestId('deploy-probe-error')).textContent).toContain('probe answered HTTP 404');
   });
 
   it('labels the wait in hours, then days', () => {

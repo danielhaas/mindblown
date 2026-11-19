@@ -130,6 +130,8 @@ export const maps = pgTable('maps', {
   // days off. Either one set = the schedule runs on a working calendar.
   holidayJurisdiction: text('holiday_jurisdiction'),
   holidayOverrides: jsonb('holiday_overrides').notNull().default({ add: [], remove: [] }),
+  // Merged, not live: URL returning the deployed commit, 'none', or null = not set.
+  deployProbe: text('deploy_probe'),
   // Per-map opt-in for Phase 3 GitHub label write-back (#96). When true,
   // finalized triage decisions write `triage:placed` / `triage:skipped`
   // labels back to the source GitHub issue. Default false so existing

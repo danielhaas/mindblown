@@ -197,6 +197,8 @@ export interface UpdateMapInput {
   holidayJurisdiction?: string | null;
   /** #110 — full replacement of the map's own days off. */
   holidayOverrides?: { add: string[]; remove: string[] };
+  /** Deploy probe URL, 'none', or null. Validated by the route (core normalizeDeployProbe). */
+  deployProbe?: string | null;
   /**
    * Archive switch. `true` stamps `archivedAt` now (idempotent — an
    * already-archived map keeps its original stamp), `false` clears it.
@@ -281,6 +283,7 @@ export async function updateMap(
   else if (repoBindingChanges(before, input)) updates.fleetCanEditCi = false;
   if (input.holidayJurisdiction !== undefined) updates.holidayJurisdiction = input.holidayJurisdiction;
   if (input.holidayOverrides !== undefined) updates.holidayOverrides = input.holidayOverrides;
+  if (input.deployProbe !== undefined) updates.deployProbe = input.deployProbe;
   // Boolean only: a raw REST caller sending `archived: null` must not
   // unarchive by accident (the tool-kit schema already rejects it).
   if (typeof input.archived === 'boolean') {

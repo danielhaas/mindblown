@@ -11,6 +11,11 @@
  *                   (core humanSteps.ts)
  *   brief-<node>    a ready ticket inside the gate the pull refuses for
  *                   want of a brief (core dispatchQueueSnapshot)
+ *   deploy-probe-<map>  a map in a fleet with a repo and no deploy probe:
+ *                   "how is <map> deployed?" (core deployProbe.ts) — the
+ *                   answer (a URL, or none) is the map's probe, so it is
+ *                   asked until answered, once. Not for the repo this
+ *                   server runs from: its own checkout says (#645)
  *   question-<node> a blocker whose kind is a question (flag_blocker, or
  *                   an unkinded blocker classified after an hour) — to its
  *                   answerer, default the map owner (core blockerKinds.ts)
@@ -56,6 +61,9 @@ import {
   staleCheckable,
   briefAnswerAction,
   briefAskNodeId,
+  buildDeployProbeAsk,
+  deployProbeAskMapId,
+  deployProbeFromAnswer,
   buildBriefAsk,
   dispatchQueueSnapshot,
   blockerAnswerAction,
@@ -92,8 +100,9 @@ import * as mapDb from '../db/maps.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { stalledForMap } from '../lib/stalled.js';
 import { applyLintFix, issueLinkOf } from '../lint/fix.js';
-import { AskNotFoundError, type AnswerAskOutcome } from './asks.js';
+import { AskNotFoundError, AskValidationError, type AnswerAskOutcome } from './asks.js';
 import { removeIssueLabels } from './issueLabels.js';
+import { latestDeployDrift } from './deployDrift.js';
 import * as nodeDb from '../db/nodes.js';
 import { recordFieldChanges } from '../db/events.js';
 import { broadcast } from '../ws.js';
@@ -157,6 +166,13 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
     for (const id of queue?.needsBriefIds ?? []) {
       const node = byId.get(id);
       if (node) out.push(openRow(buildBriefAsk(node, mapId), mapId, now, node.updatedAt));
+    }
+
+    // The fleet merges into the repo; nothing says whether it goes live.
+    const own = latestDeployDrift()?.repo?.toLowerCase();
+    const repo = data.map.githubRepoOwner && data.map.githubRepoName ? `${data.map.githubRepoOwner}/${data.map.githubRepoName}`.toLowerCase() : null;
+    if (!data.map.deployProbe && data.map.fleetId && repo && repo !== own) {
+      out.push(openRow(buildDeployProbeAsk(data.map, 'Dan'), mapId, now, data.map.createdAt));
     }
   }
   return out;
@@ -248,6 +264,7 @@ async function stepIssueWrites(
  * left to answer.
  */
 export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput, userId: string | null): Promise<AnswerAskOutcome> {
+  if (deployProbeAskMapId(key.askId)) return answerDeployProbeAsk(key, input, userId);
   const nodeId = derivedAskNodeId(key.askId);
   if (!nodeId || !key.mapId) throw new AskNotFoundError(key.askId);
   const now = new Date();
@@ -296,6 +313,39 @@ export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput
   const status = input.action === 'answered' ? 'answered' : input.action === 'later' ? 'later' : 'delegated';
   const saved = await asksDb.recordAnswer(key, row.ask, { status, answer, answeredBy: by, answeredAt: now, writes, workerPending: false });
   return { row: saved, plan: planAskWrites(row.ask, answer, null, date), ok: writes.every((w) => w.done), node, changedFields };
+}
+
+/**
+ * "How is <map> deployed?": a URL becomes the map's deploy probe, "none"
+ * says it is not deployed — either way the question is gone for good. Any
+ * other text is refused (nothing to store), so the row stays open.
+ */
+async function answerDeployProbeAsk(key: asksDb.AskKey, input: AskAnswerInput, userId: string | null): Promise<AnswerAskOutcome> {
+  const mapId = deployProbeAskMapId(key.askId);
+  if (!mapId || mapId !== key.mapId) throw new AskNotFoundError(key.askId);
+  const now = new Date();
+  const [row] = (await derivedAskRows([mapId], now)).filter((r) => r.ask.id === key.askId);
+  if (!row) throw new AskNotFoundError(key.askId);
+  const by = input.by?.trim() || 'Dan';
+  const answer: AskAnswerInput = { ...input, by };
+  const writes: AskWrite[] = [];
+  if (input.action === 'answered') {
+    const probe = deployProbeFromAnswer(input.decision ?? '');
+    if (!probe) throw new AskValidationError('answer with the probe URL (it returns the deployed commit) or "none"');
+    const w: AskWrite = { kind: 'mb-put', target: 'map', detail: `deployProbe → ${probe}`, done: false };
+    writes.push(w);
+    try {
+      if (!(await mapDb.updateMap(mapId, { deployProbe: probe }, userId))) w.error = 'map not found';
+      else w.done = true;
+    } catch (err) {
+      w.error = err instanceof Error ? err.message : String(err);
+    }
+  } else {
+    writes.push({ kind: 'ledger-only', target: row.ask.id, detail: input.action + (input.delegateTo ? ` → ${input.delegateTo}` : ''), done: true });
+  }
+  const status = input.action === 'answered' ? 'answered' : input.action === 'later' ? 'later' : 'delegated';
+  const saved = await asksDb.recordAnswer(key, row.ask, { status, answer, answeredBy: by, answeredAt: now, writes, workerPending: false });
+  return { row: saved, plan: planAskWrites(row.ask, answer, null, now.toISOString().slice(0, 10)), ok: writes.every((w) => w.done), node: null, changedFields: [] };
 }
 
 /**
