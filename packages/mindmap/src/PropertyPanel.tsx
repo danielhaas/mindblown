@@ -149,7 +149,9 @@ export function TitleField({ value, onChange, onBlur }: { value: string; onChang
       onBlur={onBlur}
       onKeyDown={(e) => {
         e.stopPropagation();
-        if (e.key === 'Enter') {
+        // Not while an IME is composing: there Enter picks the candidate
+        // (keyCode 229 covers Safari, which reports isComposing late).
+        if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
           e.preventDefault();
           e.currentTarget.blur();
         }
