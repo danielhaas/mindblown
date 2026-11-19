@@ -313,6 +313,13 @@ export const nodes = pgTable('nodes', {
   // cleared with started_at when the node goes back to todo.
   expectedDoneAt: timestamp('expected_done_at', { withTimezone: true }),
 
+  // ── Lead time (#654) ──────────────────────────────────────────
+  // A wait on someone outside the team: how long (map effort unit), when
+  // we asked, and who we wait on. Not worker effort.
+  leadTime: real('lead_time'),
+  requestedAt: date('requested_at'),
+  waitingOn: text('waiting_on'),
+
   // ── Requirements register ─────────────────────────────────────
   // requirement_id: stable business requirement ID (e.g. 'MAN-01').
   //   Non-null marks the node as a requirement. Unique per map,

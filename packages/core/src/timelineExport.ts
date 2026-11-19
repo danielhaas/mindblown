@@ -11,7 +11,7 @@
  * other internal fields; `'full'` adds them.
  */
 import type { EffortUnit, Node, NodeId, StatusDef } from './types.js';
-import { isForgeLink } from './types.js';
+import { isForgeLink, isLeadTimeNode } from './types.js';
 import { computeProgress } from './compute.js';
 import { buildIsDonePredicate, resolveStatusDef } from './statusWorkflow.js';
 import { proseMirrorToPlainText } from './richtext.js';
@@ -148,17 +148,27 @@ function leavesOf(node: Node, byId: Map<NodeId, Node>): Node[] {
   return out;
 }
 
-/** Is the leaf waiting on someone: blocked by hand, or tagged external. */
+/** Is the leaf waiting on someone: blocked by hand, tagged external, or a lead time (#654). */
 export function isWaitingLeaf(node: Node): boolean {
   return (
+    isLeadTimeNode(node) ||
     node.blockedReason != null ||
     node.tags.includes(BLOCKED_TAG) ||
     node.tags.some((t) => t.toLowerCase() === EXTERNAL_TAG)
   );
 }
 
-function waitingNote(node: Node): string {
+function waitingNote(node: Node, span: TimelineSpan | undefined): string {
   const parts: string[] = [];
+  if (isLeadTimeNode(node)) {
+    // A wait with a lead time (#654): who, since when, and when it lands.
+    const bits = [
+      node.waitingOn ? `waiting on ${node.waitingOn.trim()}` : 'waiting',
+      node.requestedAt ? `asked ${formatTimelineDay(node.requestedAt)}` : 'not asked yet',
+    ];
+    if (span) bits.push(`expected ${formatTimelineDay(span.end)}`);
+    parts.push(bits.join(', '));
+  }
   if (node.blockedReason) parts.push(node.blockedReason.trim());
   const desc = proseMirrorToPlainText(node.description).trim();
   if (desc) {
@@ -191,7 +201,7 @@ export function timelineMilestones(input: TimelineInput): TimelineMilestone[] {
     const leaves = leavesOf(node, byId);
     const done = leaves.filter(leafDone);
     const remaining = leaves.filter((l) => !leafDone(l));
-    const waiting = remaining.filter(isWaitingLeaf).map((n) => ({ node: n, note: waitingNote(n) }));
+    const waiting = remaining.filter(isWaitingLeaf).map((n) => ({ node: n, note: waitingNote(n, input.spans.get(n.id)) }));
     const waitingIds = new Set(waiting.map((w) => w.node.id));
     const open = remaining.filter((l) => !waitingIds.has(l.id));
     const progress = Math.round(computeProgress(node, byId));

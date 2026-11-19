@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node, NodeId, ComputedNodeValues, Priority } from '@mindblown/core';
-import { isForgeLink } from '@mindblown/core';
+import { isForgeLink, isLeadTimeNode } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { ForgeIcon } from './icons/ForgeIcon.js';
 import { pickCurrentCycle } from './roles.js';
@@ -978,9 +978,20 @@ export function ListView() {
 
         {/* Computed Effort (parents) */}
         <div style={{ width: 80, minWidth: 80, height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', padding: '0 6px', borderRight: '1px solid #f1f5f9', boxSizing: 'border-box' }}>
-          <span style={{ fontSize: 11, color: '#94a3b8' }}>
-            {!isLeaf ? (cv?.computedEffort ?? '-') : '-'}
-          </span>
+          {isLeadTimeNode(node) ? (
+            // A wait on someone outside the team (#654): lead time, not work.
+            <span
+              data-testid="list-wait"
+              title={`Waiting${node.waitingOn ? ` on ${node.waitingOn}` : ''} — not work. ${node.requestedAt ? `Requested ${node.requestedAt.slice(0, 10)}.` : 'Not requested yet.'}`}
+              style={{ fontSize: 11, color: '#b45309' }}
+            >
+              ⏳ wait {node.leadTime}
+            </span>
+          ) : (
+            <span style={{ fontSize: 11, color: '#94a3b8' }}>
+              {!isLeaf ? (cv?.computedEffort ?? '-') : '-'}
+            </span>
+          )}
         </div>
 
         {/* Computed Progress (parents) */}

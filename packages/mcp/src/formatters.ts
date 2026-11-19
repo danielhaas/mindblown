@@ -260,6 +260,7 @@ export function formatScheduleReport(mapData: MapDetail, scheduleData: ScheduleR
   // Critical path — capacity-aware (#112): the chain that decides the
   // projected end under the map's worker count, dependencies AND waiting
   // for a free worker.
+  const waitingIds = new Set(scheduleData.schedule.filter((s) => s.waiting).map((s) => s.nodeId));
   lines.push(`## Critical Path (capacity-aware, ${workers} worker${workers === 1 ? '' : 's'})`);
   if (scheduleData.criticalPath.path.length === 0) {
     lines.push('No critical path computed (no open tasks).');
@@ -270,7 +271,12 @@ export function formatScheduleReport(mapData: MapDetail, scheduleData: ScheduleR
       const progress = node ? Math.round(node.computedProgress) : 0;
       // The id on every line: callers act on these nodes (tag, claim,
       // re-prioritise) and otherwise had to look each title up (#191).
-      lines.push(`  -> ${name} [${nodeId}] (${progress}% complete)`);
+      // A wait on someone outside the team is not work (#654).
+      lines.push(
+        waitingIds.has(nodeId)
+          ? `  -> ${name} [${nodeId}] (waiting${node?.waitingOn ? ` on ${node.waitingOn}` : ''})`
+          : `  -> ${name} [${nodeId}] (${progress}% complete)`,
+      );
     }
   }
   lines.push('');
@@ -287,7 +293,8 @@ export function formatScheduleReport(mapData: MapDetail, scheduleData: ScheduleR
     const isCritical = onPath.has(s.nodeId);
     const slack = scheduleData.criticalPath.float[s.nodeId];
     const marker = isCritical ? ' **CRITICAL**' : slack !== undefined ? ` slack: ${slack}` : '';
-    lines.push(`- ${name} [${s.nodeId}]: day ${s.computedStart} - ${s.computedEnd} (${dates(s.computedStart, s.computedEnd)}${s.duration} duration)${marker}`);
+    const kind = s.waiting ? ` waiting${node?.waitingOn ? ` on ${node.waitingOn}` : ''}${node?.requestedAt ? `, requested ${node.requestedAt}` : ', not requested yet'}` : '';
+    lines.push(`- ${name} [${s.nodeId}]: day ${s.computedStart} - ${s.computedEnd} (${dates(s.computedStart, s.computedEnd)}${s.duration} duration)${kind}${marker}`);
   }
 
   return lines.join('\n');

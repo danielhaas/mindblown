@@ -226,6 +226,9 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       startDate?: string;
       dueDate?: string;
       expectedDoneAt?: string | null;
+      leadTime?: number | null;
+      requestedAt?: string | null;
+      waitingOn?: string | null;
       autoProgress?: 'off' | 'children';
       priorityRank?: number | null;
       requirementId?: string | null;
@@ -260,6 +263,10 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
 
     if (!isValidExpectedDoneAt(body.expectedDoneAt)) {
       return reply.status(400).send({ error: EXPECTED_DONE_AT_ERROR });
+    }
+    const leadTimeError = leadTimeFieldsError(body);
+    if (leadTimeError) {
+      return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: leadTimeError } });
     }
 
     // `skipAutoLink` is not a column on the nodes table — strip it before
@@ -1002,6 +1009,27 @@ function isValidExpectedDoneAt(v: unknown): boolean {
   return day.getUTCMonth() === +m[2] - 1 && day.getUTCDate() === +m[3];
 }
 
+/**
+ * Lead-time fields (#654): leadTime a non-negative number, requestedAt a
+ * calendar date (YYYY-MM-DD), waitingOn text — each may be null (clear) or
+ * omitted. Returns the problem, or null when they are fine.
+ */
+export function leadTimeFieldsError(body: { leadTime?: unknown; requestedAt?: unknown; waitingOn?: unknown }): string | null {
+  const { leadTime, requestedAt, waitingOn } = body;
+  if (leadTime != null && (typeof leadTime !== 'number' || !Number.isFinite(leadTime) || leadTime < 0)) {
+    return 'leadTime must be a non-negative number or null';
+  }
+  if (requestedAt != null) {
+    const m = typeof requestedAt === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(requestedAt) : null;
+    const day = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
+    if (!m || !day || day.getUTCMonth() !== +m[2] - 1 || day.getUTCDate() !== +m[3]) {
+      return 'requestedAt must be a date (YYYY-MM-DD) or null';
+    }
+  }
+  if (waitingOn != null && typeof waitingOn !== 'string') return 'waitingOn must be text or null';
+  return null;
+}
+
 const EXPECTED_DONE_AT_ERROR = {
   code: 'VALIDATION_ERROR',
   message: 'expectedDoneAt must be an ISO 8601 timestamp or null',
@@ -1022,6 +1050,10 @@ async function applyNodeUpdate(
 ): Promise<NodeUpdateResult> {
   if (!isValidExpectedDoneAt(body.expectedDoneAt)) {
     return { ok: false, status: 400, error: EXPECTED_DONE_AT_ERROR };
+  }
+  const leadTimeError = leadTimeFieldsError(body);
+  if (leadTimeError) {
+    return { ok: false, status: 400, error: { code: 'VALIDATION_ERROR', message: leadTimeError } };
   }
 
   // Snapshot current values of tracked fields before mutating so we can

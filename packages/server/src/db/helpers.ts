@@ -62,6 +62,9 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     expectedDoneAt: (get('expectedDoneAt', 'expected_done_at') instanceof Date
       ? (get('expectedDoneAt', 'expected_done_at') as Date).toISOString()
       : (get('expectedDoneAt', 'expected_done_at') as string)) ?? null,
+    leadTime: (get('leadTime', 'lead_time') as number) ?? null,
+    requestedAt: (get('requestedAt', 'requested_at') as string) ?? null,
+    waitingOn: (get('waitingOn', 'waiting_on') as string) ?? null,
     requirementId: (get('requirementId', 'requirement_id') as string) ?? null,
     requirementPriority:
       (get('requirementPriority', 'requirement_priority') as CoreNode['requirementPriority']) ?? null,
