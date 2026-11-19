@@ -26,6 +26,8 @@ import { forgeProblemForMap } from '../lib/forgeProblem.js';
 import * as asksDb from '../db/asks.js';
 import * as fleetEntityDb from '../db/fleets.js';
 import { applyLintFix, LintFixError } from '../lint/fix.js';
+import { misfiledForMap } from '../services/misfiled.js';
+import { MoveToMapError } from '../services/moveToMap.js';
 import {
   buildDonePredicate,
   computePlanLint,
@@ -270,7 +272,7 @@ export async function lintRoutes(app: FastifyInstance) {
     }
     const wantsForge = rule == null || rule === 'done-without-pr';
 
-    const [history, dismissalRows, acceptances, forge, sprints, stalled, forgeProblem, openAskNodeIds] = await Promise.all([
+    const [history, dismissalRows, acceptances, forge, sprints, stalled, forgeProblem, openAskNodeIds, misfiled] = await Promise.all([
       loadHistory(req.params.id, now),
       lintDb.listDismissals(req.params.id),
       // Best-effort: a failed acceptance load skips stale-acceptance
@@ -293,6 +295,8 @@ export async function lintRoutes(app: FastifyInstance) {
       forgeProblemForMap(data.map).catch(() => undefined),
       // Same contract: no fleet (no Questions card) or a failed read skips blocker-without-question.
       openAskNodeIdsForMap(req.params.id).catch(() => undefined),
+      // Same contract: an unbound map or a failed read skips misfiled-repo.
+      misfiledForMap(req.params.id, data.nodes, userId).catch(() => undefined),
     ]);
 
     // Rolled-up progress so requirement rules work on parent nodes too.
@@ -314,6 +318,7 @@ export async function lintRoutes(app: FastifyInstance) {
       stalled,
       forgeProblem,
       openAskNodeIds,
+      misfiled,
       nodeId: req.query.nodeId,
       versionId: effectiveVersionId,
       cycleId: req.query.cycleId,
@@ -480,6 +485,9 @@ export async function lintRoutes(app: FastifyInstance) {
       if (err instanceof LintFixError) {
         const status = err.code === 'NODE_NOT_FOUND' ? 404 : err.code === 'BAD_ACTION' ? 400 : 409;
         return reply.status(status).send({ error: { code: err.code, message: err.message } });
+      }
+      if (err instanceof MoveToMapError) {
+        return reply.status(err.status).send({ error: { code: err.code, message: err.message } });
       }
       throw err;
     }

@@ -41,6 +41,8 @@ import { forgeProblemForMap } from '../lib/forgeProblem.js';
 import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
 import { readAttachmentText } from '../lib/attachmentText.js';
 import { checkMapAccess } from '../lib/mapAccess.js';
+import { detectMisfiled, withMisfiledHold } from '../services/misfiled.js';
+import { moveNodeToMap as moveNodeToMapService } from '../services/moveToMap.js';
 import { listRepoDocs, proposeRepoDocEdit, proposerName, readRepoDoc } from '../services/repoDocs.js';
 
 function toIsoString(value: unknown): string {
@@ -272,18 +274,23 @@ export function createChatBackend(userId: string): ToolBackend {
     },
 
     async createNode(mapId, parentId, text, fields) {
+      // Wrong-map guard: same as the REST create — created, held, reported.
+      const misfiled = await detectMisfiled({ text, description: fields?.description }, mapId, userId).catch(() => null);
+      const tags = misfiled ? withMisfiledHold(fields?.tags as string[] | undefined) : undefined;
       const node = await nodeDb.createNode({
         mapId,
         parentId,
         text,
         createdBy: userId,
         ...(fields ?? {}),
+        ...(tags ? { tags } : {}),
         // After the spread: a tool-supplied reportedBy never wins (#490).
         reportedBy: { kind: 'user', userId },
       });
       broadcast(mapId, { type: 'node:created', node });
       scheduleEmbedNode(node.id);
-      return toNodeWithComputed(node, undefined);
+      const out = toNodeWithComputed(node, undefined);
+      return misfiled ? { ...out, misfiled } : out;
     },
 
     async updateNode(mapId, nodeId, fields) {
@@ -328,6 +335,11 @@ export function createChatBackend(userId: string): ToolBackend {
       if (!moved) throw new Error(`Node ${nodeId} not found`);
       broadcast(mapId, { type: 'node:moved', nodeId, newParentId });
       return toNodeWithComputed(moved, undefined);
+    },
+
+    async moveNodeToMap(fromMapId, nodeId, toMapId, parentId) {
+      const r = await moveNodeToMapService({ nodeId, fromMapId, toMapId, parentId: parentId ?? null, userId });
+      return { ...r, node: toNodeWithComputed(r.node, undefined) };
     },
 
     // ── Soft-delete + restore (#107) ────────────────────────────

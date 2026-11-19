@@ -22,6 +22,7 @@ import {
   type IntakeContext,
 } from '../ai/intake.js';
 import { forgeLinkOf } from '../ai/intakeExisting.js';
+import { detectMisfiled, withMisfiledHold } from '../services/misfiled.js';
 import {
   commentOnExisting,
   reopenExisting,
@@ -1325,6 +1326,10 @@ Parent node: "${parentNode.text}"`;
       description = `${description}\n\n_Related: ${label}_`.trim();
     }
 
+    // Wrong-map guard: a draft naming another map's repo is still created,
+    // held from the fleet, and the answer says where it belongs.
+    const intakeTags = Array.isArray(d.tags) ? d.tags.filter((t) => typeof t === 'string' && t.trim()) : undefined;
+    const misfiled = await detectMisfiled({ text: d.title, description }, body.mapId, (req as any).userId).catch(() => null);
     let node: CoreNode;
     try {
       node = await nodeDb.createNode({
@@ -1338,7 +1343,7 @@ Parent node: "${parentNode.text}"`;
         priority: d.priority ?? undefined,
         versionId: d.versionId ?? undefined,
         phaseId: d.phaseId ?? undefined,
-        tags: Array.isArray(d.tags) ? d.tags.filter((t) => typeof t === 'string' && t.trim()) : undefined,
+        tags: misfiled ? withMisfiledHold(intakeTags) : intakeTags,
         effortEstimate,
       });
     } catch (err: any) {
@@ -1400,6 +1405,7 @@ Parent node: "${parentNode.text}"`;
       issue,
       ...(issueError ? { issueError } : {}),
       ...(dependencyErrors.length > 0 ? { dependencyErrors } : {}),
+      ...(misfiled ? { misfiled } : {}),
     });
   });
 

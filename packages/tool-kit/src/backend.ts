@@ -8,7 +8,7 @@
  * Adding a new backend method requires adding it to both implementations.
  */
 
-import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
+import type { MapDetail, MapSummary, MoveNodeToMapResult, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
 import type { CommentKind, NodeComment, AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookSubscription } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
@@ -519,6 +519,13 @@ export interface ToolBackend {
     newParentId: string,
     position?: number,
   ): Promise<NodeWithComputed>;
+  /** Re-home a node (and its subtree) in another map of the same workspace (wrong-map guard). */
+  moveNodeToMap(
+    fromMapId: string,
+    nodeId: string,
+    toMapId: string,
+    parentId?: string,
+  ): Promise<MoveNodeToMapResult>;
 
   // ── Soft-delete + restore (#107) ───────────────────────────────
   restoreNode(

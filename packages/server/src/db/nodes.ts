@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { linksAnyExternalId } from './externalLinkFilter.js';
 import { db } from './connection.js';
-import { nodes, maps, changeEvents, mediaOwners } from './schema.js';
+import { nodes, maps, changeEvents, mediaOwners, reporterChecks } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { hasCycle, resolveStatusDef, isForgeLink, isPrematureCloseLink } from '@mindblown/core';
 import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, NodeApproval, NodeReporter, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
@@ -1722,6 +1722,99 @@ export async function moveNode(
   invalidateMapContext(node.mapId as string);
 
   return dbNodeToCore(updated as unknown as Record<string, unknown>);
+}
+
+// ── Move to another map (wrong-map guard) ──────────────────────────
+
+/** What services/moveToMap.ts decided; this applies it in one transaction. */
+export interface MoveToMapWrite {
+  rootId: string;
+  fromMapId: string;
+  toMapId: string;
+  fromParentId: string;
+  toParentId: string;
+  /** Every node of the moved subtree (root first) with the lists it keeps. */
+  moved: Array<{
+    id: string;
+    externalLinks: ExternalLink[];
+    dependencies: Dependency[];
+    tags: string[];
+    linkedPr: LinkedPrState | null;
+  }>;
+  /** Nodes left in the source map whose dependency on a moved node goes. */
+  leftBehind: Array<{ id: string; dependencies: Dependency[] }>;
+}
+
+const MEDIA_ID = /\/api\/media\/([0-9a-f]{40})\//g;
+
+/**
+ * Re-home a subtree: same ids, so comments, attachments and the change log
+ * go with it. Versions, sprints and phase are per map and cleared; a claim
+ * is released. Uploaded documents the source map owned follow the node
+ * (media_owners), and so do open reporter checks.
+ */
+export async function moveSubtreeToMap(w: MoveToMapWrite): Promise<CoreNode[]> {
+  const now = new Date();
+  const movedIds = w.moved.map((m) => m.id);
+  const rows = await db.transaction(async (tx) => {
+    const [oldParent] = await tx.select({ childrenOrder: nodes.childrenOrder }).from(nodes).where(eq(nodes.id, w.fromParentId));
+    if (oldParent) {
+      await tx
+        .update(nodes)
+        .set({ childrenOrder: ((oldParent.childrenOrder as string[]) ?? []).filter((id) => id !== w.rootId), updatedAt: now })
+        .where(eq(nodes.id, w.fromParentId));
+    }
+    const [newParent] = await tx.select({ childrenOrder: nodes.childrenOrder }).from(nodes).where(eq(nodes.id, w.toParentId));
+    await tx
+      .update(nodes)
+      .set({ childrenOrder: [...((newParent?.childrenOrder as string[]) ?? []).filter((id) => id !== w.rootId), w.rootId], updatedAt: now })
+      .where(eq(nodes.id, w.toParentId));
+
+    const out: Array<typeof nodes.$inferSelect> = [];
+    for (const m of w.moved) {
+      const [row] = await tx
+        .update(nodes)
+        .set({
+          mapId: w.toMapId,
+          ...(m.id === w.rootId ? { parentId: w.toParentId } : {}),
+          versionId: null,
+          cycleId: null,
+          phaseId: null,
+          claimedBySession: null,
+          claimedAt: null,
+          externalLinks: m.externalLinks,
+          dependencies: m.dependencies,
+          tags: m.tags,
+          linkedPr: m.linkedPr,
+          updatedAt: now,
+          revision: sql`${nodes.revision} + 1`,
+        })
+        .where(and(eq(nodes.id, m.id), eq(nodes.mapId, w.fromMapId), notDeleted))
+        .returning();
+      if (row) out.push(row);
+    }
+    for (const l of w.leftBehind) {
+      await tx.update(nodes).set({ dependencies: l.dependencies, updatedAt: now }).where(eq(nodes.id, l.id));
+    }
+    if (movedIds.length > 0) {
+      await tx.update(reporterChecks).set({ mapId: w.toMapId }).where(inArray(reporterChecks.nodeId, movedIds));
+      const mediaIds = new Set<string>();
+      for (const row of out) {
+        const text = JSON.stringify([row.attachments, row.description, row.verificationUrl]);
+        for (const m of text.matchAll(MEDIA_ID)) mediaIds.add(m[1]);
+      }
+      if (mediaIds.size > 0) {
+        await tx
+          .update(mediaOwners)
+          .set({ mapId: w.toMapId })
+          .where(and(inArray(mediaOwners.mediaId, [...mediaIds]), eq(mediaOwners.mapId, w.fromMapId)));
+      }
+    }
+    return out;
+  });
+  invalidateMapContext(w.fromMapId);
+  invalidateMapContext(w.toMapId);
+  return rows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
 }
 
 // ── Reorder children ───────────────────────────────────────────────

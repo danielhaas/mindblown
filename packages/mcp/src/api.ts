@@ -14,7 +14,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CommentKind, NodeComment, RequirementGate } from '@mindblown/core';
-import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult } from '@mindblown/tool-kit';
+import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult, MoveNodeToMapResult } from '@mindblown/tool-kit';
 import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookSubscription } from '@mindblown/core';
 
 /**
@@ -656,6 +656,19 @@ export function moveNode(
   });
 }
 
+/** Re-home a node (and its subtree) in another map (wrong-map guard). */
+export function moveNodeToMap(
+  fromMapId: string,
+  nodeId: string,
+  toMapId: string,
+  parentId?: string,
+): Promise<MoveNodeToMapResult> {
+  return request<MoveNodeToMapResult>(`/api/maps/${fromMapId}/nodes/${nodeId}/move-to-map`, {
+    method: 'POST',
+    body: JSON.stringify({ toMapId, ...(parentId ? { parentId } : {}) }),
+  });
+}
+
 // ── Soft-delete + restore (#107) ────────────────────────────────
 
 export interface DeletedNodeSummary {
@@ -1012,6 +1025,8 @@ export interface LintFixOutcome {
   node: { id: string; text: string; status: string | null; percentComplete: number | null };
   changedFields: string[];
   issue?: { externalId: string; state: 'open' | 'closed' };
+  /** move-to-map: where the node went and what did not come along. */
+  moved?: { toMapId: string; toMapName: string; movedIds: string[]; notes: string[] };
 }
 
 export function applyLintFix(
