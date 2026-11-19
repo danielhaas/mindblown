@@ -405,7 +405,6 @@ export function CalendarView() {
   const getNodeBreadcrumb = useMindmapStore((s) => s.getNodeBreadcrumb);
   const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
   const focusNodeId = useMindmapStore((s) => s.focusNodeId);
-  const maxDepth = useMindmapStore((s) => s.maxDepth);
   const rootNodeId = useMindmapStore((s) => s.rootNodeId);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
@@ -527,8 +526,10 @@ export function CalendarView() {
 
   const tasks = useMemo<CalendarTask[]>(() => {
     const todayKey = toDateKey(today);
-    // Filter to only visible nodes
-    const visibleNodes = getVisibleNodes();
+    // Drill-down focus and the version/sprint/phase scope narrow the
+    // calendar; the mindmap's Depth and fold state don't — a dated task
+    // must not vanish because a branch is folded on another view.
+    const visibleNodes = getVisibleNodes({ respectCollapsed: false });
     const visibleIds = new Set(visibleNodes.filter((v) => !v.isDimmed).map((v) => v.node.id));
     const doneOf = (n: Node) =>
       n.status != null &&
@@ -578,7 +579,7 @@ export function CalendarView() {
       });
     }
     return result;
-  }, [nodes, computed, today, currentMap, getNodeBreadcrumb, getVisibleNodes, scheduleDates, focusNodeId, maxDepth, rootNodeId, activeVersionFilter, activeCycleFilter, activePhaseFilter]);
+  }, [nodes, computed, today, currentMap, getNodeBreadcrumb, getVisibleNodes, scheduleDates, focusNodeId, rootNodeId, activeVersionFilter, activeCycleFilter, activePhaseFilter]);
 
   // ── Group tasks by date key ─────────────────────────────────
 

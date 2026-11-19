@@ -520,7 +520,7 @@ export function MindmapEditor() {
 
   // ── Visible nodes computation ───────────────────────────────
 
-  const visibleNodes = useMemo(() => getVisibleNodes(), [nodes, focusNodeId, maxDepth, rootNodeId, activeVersionFilter, activeCycleFilter, activePhaseFilter, getVisibleNodes]);
+  const visibleNodes = useMemo(() => getVisibleNodes({ respectDepth: true }), [nodes, focusNodeId, maxDepth, rootNodeId, activeVersionFilter, activeCycleFilter, activePhaseFilter, getVisibleNodes]);
 
   // Build a filtered nodes record containing only visible (non-dimmed) nodes
   // with adjusted parentId for the layout algorithm
