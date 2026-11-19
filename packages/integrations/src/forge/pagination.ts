@@ -261,13 +261,15 @@ export async function paginateGitHub<T>(
     onPage: (batch: T[]) => boolean | void;
     /** Called once when `maxPages` trips, for the call site's own log line. */
     onTruncated?: () => void;
+    /** Aborts the walk: passed to every page request. */
+    signal?: AbortSignal;
   },
 ): Promise<{ pages: number; truncated: boolean }> {
   let url: string | null = firstPath;
   let pages = 0;
 
   while (url) {
-    const page: GitHubPage<T[] | null> = await githubFetchPage<T[] | null>(url, forge);
+    const page: GitHubPage<T[] | null> = await githubFetchPage<T[] | null>(url, forge, { signal: opts.signal });
     // Gitea answers an empty list with `null` (e.g. the timeline of an
     // issue nothing has happened on yet) — an empty page, not a shape change.
     if (page.data === null && forge.endpoint.kind === 'gitea') page.data = [];

@@ -1,12 +1,15 @@
 /**
- * Daily mail with open questions (#597).
+ * Daily mail with open questions (#597) and stale pull requests.
  *
  * Once a day, at a fixed local hour (DIGEST_MAIL_HOUR, default 8, in
  * DIGEST_MAIL_TZ, default Europe/Zurich), each person gets one mail listing
  * what waits for them: the open rows of the asks inbox (what the Questions
  * card on the Fleet tab shows — worker asks, blockers, derived asks) and
- * the tickets waiting for approval, on maps they can view. Nothing open,
- * no mail. Fleet service users get none; a person can switch it off
+ * the tickets waiting for approval, on maps they can view — plus the PRs
+ * open longer than STALE_PR_DAYS (default 7, bots and drafts left out) on
+ * the repo of each map they administer (#499 sat open a month because
+ * nothing outside the fleet loop looked at it). Nothing open, no mail.
+ * Fleet service users get none; a person can switch it off
  * (routes/digestMail.ts).
  *
  * The first tick at or after the hour takes the day per person
@@ -18,9 +21,12 @@
  */
 import { isNoQuestion } from '@mindblown/core';
 import type { AskRow, PendingApproval } from '@mindblown/core';
+import { paginateGitHub } from '@mindblown/integrations';
 import * as digestDb from '../db/digestMails.js';
 import * as mapDb from '../db/maps.js';
 import { emailConfigured, escapeHtml, sendEmail } from '../lib/email.js';
+import { getGitHubContextForMap, type ForgeMapContext } from '../lib/githubContext.js';
+import { checkMapAccess } from '../lib/mapAccess.js';
 import { listPendingApprovals } from './approvals.js';
 import { fleetInbox } from './asksInbox.js';
 import { listFleetsForUser } from './fleets.js';
@@ -106,6 +112,163 @@ export function approvalItems(list: PendingApproval[], maps: Map<string, string>
     }));
 }
 
+const DAY_MS = 86_400_000;
+
+/** Days a PR may stay open before the mail names it (env STALE_PR_DAYS, default 7). */
+export function stalePrDays(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number.parseInt(env.STALE_PR_DAYS ?? '', 10);
+  return Number.isInteger(n) && n > 0 ? n : 7;
+}
+
+/** The fields of an open PR (GitHub and Gitea list rows) the mail needs. */
+export interface OpenPrRow {
+  number: number;
+  title: string;
+  created_at: string;
+  html_url: string;
+  draft?: boolean;
+  /** GitHub sets `type: 'Bot'` for app accounts; Gitea has no type. */
+  user?: { login?: string; type?: string } | null;
+}
+
+/** Bot accounts that run as plain users on Gitea (no `type` there). */
+const BOT_LOGINS = new Set(['renovate', 'renovate-bot', 'dependabot']);
+
+/** Dependency bots open PRs nobody owns; the mail does not chase them. */
+export function isBotPr(pr: OpenPrRow): boolean {
+  const login = pr.user?.login?.toLowerCase() ?? '';
+  return pr.user?.type === 'Bot' || login.endsWith('[bot]') || BOT_LOGINS.has(login);
+}
+
+/** Open, non-draft, human-authored PRs created more than `days` days before `now`, as items of `map`. */
+export function stalePrItems(prs: OpenPrRow[], map: { id: string; name: string }, now: Date, days: number): DigestItem[] {
+  const out: DigestItem[] = [];
+  for (const pr of prs) {
+    if (pr.draft === true || isBotPr(pr)) continue;
+    const ageMs = now.getTime() - Date.parse(pr.created_at);
+    if (!(ageMs > days * DAY_MS)) continue;
+    const age = Math.floor(ageMs / DAY_MS);
+    out.push({
+      groupId: map.id,
+      groupName: map.name,
+      question: `PR #${pr.number} has been open ${age} days — merge, update or close it?`,
+      title: pr.title,
+      since: pr.created_at,
+      url: pr.html_url,
+    });
+  }
+  return out;
+}
+
+/** Pages of open PRs read per repo (oldest first, so the stale ones come first). */
+const STALE_PR_MAX_PAGES = 2;
+/**
+ * Deadline for one repo's whole PR walk. Recipients go one after another,
+ * so a forge that hangs (a Gitea mid-reboot) must not hold up the run.
+ */
+export const STALE_PR_FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * One digest run's forge reads, shared by every recipient: each map's
+ * binding is resolved once and each repo listed once, however many maps
+ * bind it and however many people share those maps. A failed read is
+ * remembered as `null` — logged once, skipped for everyone.
+ */
+export interface DigestRunCache {
+  contexts: Map<string, Promise<ForgeMapContext | null>>;
+  repos: Map<string, Promise<OpenPrRow[] | null>>;
+}
+
+export function newDigestRunCache(): DigestRunCache {
+  return { contexts: new Map(), repos: new Map() };
+}
+
+async function fetchOpenPrs(ctx: ForgeMapContext): Promise<OpenPrRow[]> {
+  const rows: OpenPrRow[] = [];
+  const ac = new AbortController();
+  const timer = setTimeout(
+    () => ac.abort(new Error(`timed out after ${STALE_PR_FETCH_TIMEOUT_MS / 1000} s`)),
+    STALE_PR_FETCH_TIMEOUT_MS,
+  );
+  // The race backs up the signal: a request that ignores it still lets go.
+  const aborted = new Promise<never>((_, reject) => {
+    ac.signal.addEventListener('abort', () => reject(ac.signal.reason));
+  });
+  try {
+    await Promise.race([
+      paginateGitHub<OpenPrRow>(
+        ctx.forge.pullRequestsListPath(ctx.owner, ctx.repo, { state: 'open', sort: 'created', direction: 'asc', perPage: 100 }),
+        ctx.forge,
+        {
+          maxPages: STALE_PR_MAX_PAGES,
+          signal: ac.signal,
+          onPage: (page) => {
+            rows.push(...page);
+            return page.length > 0;
+          },
+        },
+      ),
+      aborted,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+  return rows;
+}
+
+function mapContext(cache: DigestRunCache, mapId: string): Promise<ForgeMapContext | null> {
+  let p = cache.contexts.get(mapId);
+  if (!p) {
+    p = getGitHubContextForMap(mapId).catch((err) => {
+      console.warn(`[digest-mail] map ${mapId}: forge binding failed, PRs skipped: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
+    cache.contexts.set(mapId, p);
+  }
+  return p;
+}
+
+const repoKey = (ctx: ForgeMapContext) => `${ctx.owner}/${ctx.repo}`.toLowerCase();
+
+function repoPrs(cache: DigestRunCache, ctx: ForgeMapContext): Promise<OpenPrRow[] | null> {
+  const key = repoKey(ctx);
+  let p = cache.repos.get(key);
+  if (!p) {
+    p = fetchOpenPrs(ctx).catch((err) => {
+      console.warn(`[digest-mail] ${key}: open PR list failed, skipped: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
+    cache.repos.set(key, p);
+  }
+  return p;
+}
+
+/**
+ * Stale PRs on the repos of the live maps this person administers. Only
+ * owners/admins: one dead PR should nag the people who decide about it,
+ * not every editor every day. A repo bound by several of
+ * their maps is listed once, under the first of them.
+ */
+async function stalePrItemsForUser(
+  userId: string,
+  liveMaps: Array<{ id: string; name: string }>,
+  now: Date,
+  cache: DigestRunCache,
+): Promise<DigestItem[]> {
+  const days = stalePrDays();
+  const seen = new Set<string>();
+  const items: DigestItem[] = [];
+  for (const m of liveMaps) {
+    if (await checkMapAccess(userId, m.id, 'admin')) continue;
+    const ctx = await mapContext(cache, m.id);
+    if (!ctx || seen.has(repoKey(ctx))) continue;
+    seen.add(repoKey(ctx));
+    const prs = await repoPrs(cache, ctx);
+    if (prs) items.push(...stalePrItems(prs, m, now, days));
+  }
+  return items;
+}
+
 export interface DigestGroup {
   name: string;
   items: DigestItem[];
@@ -136,7 +299,7 @@ export function waitingFor(since: string | null, now: Date): string | null {
 
 export function buildDigestMail(items: DigestItem[], now: Date): { subject: string; html: string; text: string } {
   const n = items.length;
-  const subject = `${n} open ${n === 1 ? 'question' : 'questions'} in MindBlown`;
+  const subject = `${n} open ${n === 1 ? 'item' : 'items'} in MindBlown`;
   const settingsUrl = `${FRONTEND_URL}/?settings=account`;
   const groups = groupByMap(items);
 
@@ -163,7 +326,7 @@ export function buildDigestMail(items: DigestItem[], now: Date): { subject: stri
         `<ul style="margin:0;padding-left:18px;">${lis.join('')}</ul>`,
     );
   }
-  const footer = 'You get this mail once a day while questions in MindBlown wait for you. To turn it off, open Settings → Daily mail';
+  const footer = 'You get this mail once a day while questions or pull requests in MindBlown wait for you. To turn it off, open Settings → Daily mail';
   textLines.push('--', `${footer}: ${settingsUrl}`);
 
   const html = `<!DOCTYPE html>
@@ -179,9 +342,17 @@ export function buildDigestMail(items: DigestItem[], now: Date): { subject: stri
   return { subject, html, text: textLines.join('\n') };
 }
 
-/** Everything open for this person, on the maps they can view (archived maps left out). */
-export async function openItemsForUser(userId: string): Promise<DigestItem[]> {
-  const live = new Map((await mapDb.listMapsForUser(userId)).filter((m) => !m.archivedAt).map((m) => [m.id, m.name]));
+/**
+ * Everything open for this person, on the maps they can view (archived
+ * maps left out). `cache` shares forge reads across one run's recipients.
+ */
+export async function openItemsForUser(
+  userId: string,
+  now: Date = new Date(),
+  cache: DigestRunCache = newDigestRunCache(),
+): Promise<DigestItem[]> {
+  const liveMaps = (await mapDb.listMapsForUser(userId)).filter((m) => !m.archivedAt);
+  const live = new Map(liveMaps.map((m) => [m.id, m.name]));
   const items: DigestItem[] = [];
   for (const fleet of await listFleetsForUser(userId)) {
     const inbox = await fleetInbox(userId, fleet.id, { status: 'open' });
@@ -190,6 +361,7 @@ export async function openItemsForUser(userId: string): Promise<DigestItem[]> {
   }
   const approvals = await listPendingApprovals(userId, {});
   if (!('status' in approvals)) items.push(...approvalItems(approvals.items, live));
+  items.push(...(await stalePrItemsForUser(userId, liveMaps, now, cache)));
   return items;
 }
 
@@ -207,10 +379,11 @@ export async function runDigestMails(now: Date = new Date(), cfg: DigestConfig =
   const out: DigestRunResult = { checked: 0, sent: 0, errors: [] };
   if (!emailConfigured() || localHour(now, cfg.timeZone) < cfg.hour) return out;
   const day = localDay(now, cfg.timeZone);
+  const cache = newDigestRunCache();
   for (const r of await digestDb.listDigestRecipients()) {
     if (!digestDue(now, r.lastSentOn, cfg)) continue;
     try {
-      const items = await openItemsForUser(r.id);
+      const items = await openItemsForUser(r.id, now, cache);
       // Taken even when nothing is open: the day's round is done for them.
       if (!(await digestDb.claimDigestDay(r.id, day))) continue;
       out.checked++;

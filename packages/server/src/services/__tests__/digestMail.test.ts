@@ -22,7 +22,16 @@ const state = vi.hoisted(() => ({
   fleets: {} as Record<string, Array<{ id: string; name: string }>>,
   asks: {} as Record<string, AskRow[]>,
   approvals: {} as Record<string, PendingApproval[]>,
+  /** map id → bound repo `owner/repo`; absent = no repo. */
+  repoOf: {} as Record<string, string>,
+  /** `owner/repo` → open PR rows, or an Error the forge throws. */
+  prs: {} as Record<string, unknown[] | Error>,
+  /** `user|map` → level; absent = admin. */
+  role: {} as Record<string, 'view' | 'edit' | 'admin'>,
+  /** Repos whose PR list never answers. */
+  hang: new Set<string>(),
 }));
+const forgeCalls = vi.hoisted(() => [] as string[]);
 type SendResult = { ok: true } | { ok: false; error: string };
 const sendEmail = vi.hoisted(() => vi.fn(async (): Promise<SendResult> => ({ ok: true })));
 
@@ -53,6 +62,32 @@ vi.mock('../fleets.js', () => ({ listFleetsForUser: async (u: string) => state.f
 vi.mock('../asksInbox.js', () => ({
   fleetInbox: async (u: string, fleetId: string) => ({ items: (state.asks[`${u}|${fleetId}`] ?? []) }),
 }));
+vi.mock('../../lib/mapAccess.js', () => ({
+  checkMapAccess: async (u: string, mapId: string, level: 'view' | 'edit' | 'admin') => {
+    const rank = { view: 1, edit: 2, admin: 3 };
+    const has = state.role[`${u}|${mapId}`] ?? 'admin';
+    return rank[has] >= rank[level] ? null : { status: 403, code: 'FORBIDDEN', message: level };
+  },
+}));
+vi.mock('../../lib/githubContext.js', () => ({
+  getGitHubContextForMap: async (mapId: string) => {
+    const full = state.repoOf[mapId];
+    if (!full) return null;
+    const [owner, repo] = full.split('/');
+    return { owner, repo, token: 't', forge: { pullRequestsListPath: (o: string, r: string) => `${o}/${r}` } };
+  },
+}));
+vi.mock('@mindblown/integrations', () => ({
+  paginateGitHub: async (path: string, _forge: unknown, opts: { onPage: (rows: unknown[]) => boolean | void; signal?: AbortSignal }) => {
+    forgeCalls.push(path);
+    // Ignores the signal on purpose: the service's own deadline must still let go.
+    if (state.hang.has(path)) return new Promise(() => {});
+    const rows = state.prs[path] ?? [];
+    if (rows instanceof Error) throw rows;
+    opts.onPage(rows);
+    return { pages: 1, truncated: false };
+  },
+}));
 vi.mock('../approvals.js', () => ({ listPendingApprovals: async (u: string) => ({ items: state.approvals[u] ?? [] }) }));
 
 import {
@@ -63,8 +98,13 @@ import {
   digestDue,
   groupByMap,
   localDay,
+  newDigestRunCache,
+  openItemsForUser,
   runDigestMails,
+  stalePrDays,
+  stalePrItems,
   waitingFor,
+  STALE_PR_FETCH_TIMEOUT_MS,
   DIGEST_MAX_ATTEMPTS,
   type DigestItem,
 } from '../digestMail.js';
@@ -128,7 +168,16 @@ beforeEach(() => {
   state.fleets = { u1: [{ id: 'f1', name: 'Fleet' }] };
   state.asks = {};
   state.approvals = {};
+  state.repoOf = {};
+  state.prs = {};
+  state.role = {};
+  state.hang = new Set();
+  forgeCalls.length = 0;
 });
+
+function pr(number: number, createdAt: string, over: Record<string, unknown> = {}) {
+  return { number, title: `PR title ${number}`, created_at: createdAt, html_url: `https://forge/pr/${number}`, ...over };
+}
 
 describe('selection', () => {
   const maps = new Map([['m1', 'Alpha']]);
@@ -189,8 +238,8 @@ describe('grouping and mail', () => {
 
   it('subject counts, body names question, title, wait and link, footer says how to stop', () => {
     const mail = buildDigestMail([item('m1', 'Alpha', '2026-10-28T07:10:00Z', 'Ship <it>?'), item('m2', 'Beta', null)], MORNING);
-    expect(mail.subject).toBe('2 open questions in MindBlown');
-    expect(buildDigestMail([item('m1', 'Alpha', null)], MORNING).subject).toBe('1 open question in MindBlown');
+    expect(mail.subject).toBe('2 open items in MindBlown');
+    expect(buildDigestMail([item('m1', 'Alpha', null)], MORNING).subject).toBe('1 open item in MindBlown');
     expect(mail.html).toContain('Ship &lt;it&gt;?');
     expect(mail.text).toContain('## Alpha');
     expect(mail.text).toContain('T · waiting 3 days');
@@ -223,7 +272,7 @@ describe('once a day', () => {
     expect(sendEmail).toHaveBeenCalledTimes(1);
     const mail = (sendEmail.mock.calls[0] as unknown as [{ to: string; subject: string; text: string }])[0];
     expect(mail.to).toBe('u1@example.com');
-    expect(mail.subject).toBe('2 open questions in MindBlown');
+    expect(mail.subject).toBe('2 open items in MindBlown');
     expect(mail.text).toContain('Question a?');
     expect(mail.text).toContain('Question b?');
 
@@ -241,7 +290,7 @@ describe('once a day', () => {
     state.approvals.u1 = [approval('n1', 'm2')];
     await runDigestMails(MORNING, CFG);
     const mail = (sendEmail.mock.calls[0] as unknown as [{ subject: string; text: string }])[0];
-    expect(mail.subject).toBe('2 open questions in MindBlown');
+    expect(mail.subject).toBe('2 open items in MindBlown');
     expect(mail.text).toContain('Proposed n1');
   });
 
@@ -257,7 +306,7 @@ describe('once a day', () => {
     state.approvals.u1 = [approval('n-secret', 'secret')];
     await runDigestMails(MORNING, CFG);
     const mail = (sendEmail.mock.calls[0] as unknown as [{ subject: string; text: string }])[0];
-    expect(mail.subject).toBe('1 open question in MindBlown');
+    expect(mail.subject).toBe('1 open item in MindBlown');
     expect(mail.text).not.toContain('theirs');
     expect(mail.text).not.toContain('archived');
     expect(mail.text).not.toContain('n-secret');
@@ -333,5 +382,124 @@ describe('once a day', () => {
     expect(await runDigestMails(MORNING, CFG)).toEqual({ checked: 0, sent: 0, errors: [] });
     expect(sendEmail).not.toHaveBeenCalled();
     expect(state.recipients[0].lastSentOn).toBeNull();
+  });
+});
+
+describe('stale pull requests', () => {
+  const map = { id: 'm1', name: 'Alpha' };
+  const DAY = 86_400_000;
+  const ago = (ms: number) => new Date(MORNING.getTime() - ms).toISOString();
+
+  it('builds one item per PR open more than 7 days; drafts and younger PRs left out', () => {
+    const items = stalePrItems(
+      [pr(499, ago(31 * DAY)), pr(500, ago(3 * DAY)), pr(501, ago(20 * DAY), { draft: true }), pr(502, ago(8 * DAY), { draft: false })],
+      map,
+      MORNING,
+      7,
+    );
+    expect(items).toEqual([
+      {
+        groupId: 'm1',
+        groupName: 'Alpha',
+        question: 'PR #499 has been open 31 days — merge, update or close it?',
+        title: 'PR title 499',
+        since: ago(31 * DAY),
+        url: 'https://forge/pr/499',
+      },
+      expect.objectContaining({ question: 'PR #502 has been open 8 days — merge, update or close it?' }),
+    ]);
+  });
+
+  it('7-day boundary: exactly 7 days is not yet stale, a minute more is', () => {
+    expect(stalePrItems([pr(1, ago(7 * DAY))], map, MORNING, 7)).toEqual([]);
+    const [it] = stalePrItems([pr(1, ago(7 * DAY + 60_000))], map, MORNING, 7);
+    expect(it.question).toBe('PR #1 has been open 7 days — merge, update or close it?');
+  });
+
+  it('threshold: 7 unless STALE_PR_DAYS says otherwise', () => {
+    expect(stalePrDays({})).toBe(7);
+    expect(stalePrDays({ STALE_PR_DAYS: '14' })).toBe(14);
+    expect(stalePrDays({ STALE_PR_DAYS: '0' })).toBe(7);
+    expect(stalePrDays({ STALE_PR_DAYS: 'x' })).toBe(7);
+  });
+
+  it('two maps on one repo, two people: the repo is read once per run', async () => {
+    state.recipients.push({ id: 'u2', email: 'u2@example.com', name: 'U2', enabled: true, lastSentOn: null });
+    state.maps.u2 = [{ id: 'm2', name: 'Beta', archivedAt: null }];
+    state.repoOf = { m1: 'dan/app', m2: 'Dan/App' };
+    state.prs['dan/app'] = [pr(499, ago(31 * DAY))];
+    state.prs['Dan/App'] = [pr(499, ago(31 * DAY))];
+    const r = await runDigestMails(MORNING, CFG);
+    expect(r).toMatchObject({ sent: 2, errors: [] });
+    expect(forgeCalls).toHaveLength(1);
+    const mails = sendEmail.mock.calls.map((c) => (c as unknown as [{ subject: string; text: string }])[0]);
+    // u1 sees m1 and m2 on the same repo: the PR is listed once.
+    expect(mails[0].subject).toBe('1 open item in MindBlown');
+    expect(mails[0].text).toContain('PR #499 has been open 31 days');
+    expect(mails[1].text).toContain('PR #499 has been open 31 days');
+  });
+
+  it('a forge error on one repo keeps the other items', async () => {
+    state.repoOf = { m1: 'dan/broken', m2: 'dan/ok' };
+    state.prs['dan/broken'] = new Error('401 Bad credentials');
+    state.prs['dan/ok'] = [pr(7, ago(10 * DAY))];
+    state.asks['u1|f1'] = [ask('a', 'm1')];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const items = await openItemsForUser('u1', MORNING, newDigestRunCache());
+    warn.mockRestore();
+    expect(items.map((i) => i.question)).toEqual(['Question a?', 'PR #7 has been open 10 days — merge, update or close it?']);
+  });
+
+  it('bot-authored PRs are left out (GitHub type Bot, [bot] login, Gitea renovate)', () => {
+    const items = stalePrItems(
+      [
+        pr(1, ago(30 * DAY), { user: { login: 'renovate[bot]', type: 'Bot' } }),
+        pr(2, ago(30 * DAY), { user: { login: 'some-app', type: 'Bot' } }),
+        pr(3, ago(30 * DAY), { user: { login: 'dependabot[bot]' } }),
+        pr(4, ago(30 * DAY), { user: { login: 'Renovate' } }),
+        pr(5, ago(30 * DAY), { user: { login: 'dan', type: 'User' } }),
+      ],
+      map,
+      MORNING,
+      7,
+    );
+    expect(items.map((i) => i.title)).toEqual(['PR title 5']);
+  });
+
+  it('a repo that never answers is skipped after the deadline; the rest stays', async () => {
+    vi.useFakeTimers();
+    try {
+      state.repoOf = { m1: 'dan/hang', m2: 'dan/ok' };
+      state.hang.add('dan/hang');
+      state.prs['dan/ok'] = [pr(7, ago(10 * DAY))];
+      state.asks['u1|f1'] = [ask('a', 'm1')];
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = openItemsForUser('u1', MORNING, newDigestRunCache());
+      await vi.advanceTimersByTimeAsync(STALE_PR_FETCH_TIMEOUT_MS);
+      const items = await pending;
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('timed out'));
+      warn.mockRestore();
+      expect(items.map((i) => i.question)).toEqual(['Question a?', 'PR #7 has been open 10 days — merge, update or close it?']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('editors who are not admins get no PR items', async () => {
+    state.repoOf = { m1: 'dan/app' };
+    state.prs['dan/app'] = [pr(1, ago(30 * DAY))];
+    state.role['u1|m1'] = 'edit';
+    expect(await openItemsForUser('u1', MORNING, newDigestRunCache())).toEqual([]);
+    expect(forgeCalls).toEqual([]);
+  });
+
+  it('viewers are not asked to merge; archived maps are skipped', async () => {
+    state.maps.u1 = [{ id: 'm1', name: 'Alpha', archivedAt: null }, { id: 'old', name: 'Old', archivedAt: '2026-01-01T00:00:00Z' }];
+    state.repoOf = { m1: 'dan/app', old: 'dan/old' };
+    state.prs['dan/app'] = [pr(1, ago(30 * DAY))];
+    state.prs['dan/old'] = [pr(2, ago(30 * DAY))];
+    state.role['u1|m1'] = 'view';
+    expect(await openItemsForUser('u1', MORNING, newDigestRunCache())).toEqual([]);
+    expect(forgeCalls).toEqual([]);
   });
 });
