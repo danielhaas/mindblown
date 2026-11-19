@@ -270,6 +270,81 @@ export function resolvedSiblingOrder(children: Node[]): Node[] {
 }
 
 /**
+ * Kahn's algorithm with a priority queue: every node comes after all of its
+ * in-set dependencies, and whenever several nodes are ready the one `compare`
+ * ranks first goes next (ties: input order). `dependents` maps a target id to
+ * the ids that depend on it, one entry per dependency edge.
+ */
+function priorityTopologicalOrder(
+  nodes: Node[],
+  dependents: Map<NodeId, NodeId[]>,
+  compare: (a: Node, b: Node) => number,
+): Node[] {
+  const byId = new Map<NodeId, Node>();
+  const index = new Map<NodeId, number>();
+  nodes.forEach((n, i) => {
+    byId.set(n.id, n);
+    index.set(n.id, i);
+  });
+  const inDegree = new Map<NodeId, number>();
+  for (const n of nodes) {
+    inDegree.set(n.id, n.dependencies.filter((d) => byId.has(d.targetNodeId)).length);
+  }
+
+  const before = (a: Node, b: Node): boolean => {
+    const c = compare(a, b);
+    return c !== 0 ? c < 0 : index.get(a.id)! < index.get(b.id)!;
+  };
+  // Binary min-heap of ready nodes.
+  const heap: Node[] = [];
+  const push = (n: Node): void => {
+    heap.push(n);
+    let i = heap.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (!before(heap[i], heap[p])) break;
+      [heap[i], heap[p]] = [heap[p], heap[i]];
+      i = p;
+    }
+  };
+  const pop = (): Node => {
+    const top = heap[0];
+    const last = heap.pop()!;
+    if (heap.length > 0) {
+      heap[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1;
+        const r = l + 1;
+        let m = i;
+        if (l < heap.length && before(heap[l], heap[m])) m = l;
+        if (r < heap.length && before(heap[r], heap[m])) m = r;
+        if (m === i) break;
+        [heap[i], heap[m]] = [heap[m], heap[i]];
+        i = m;
+      }
+    }
+    return top;
+  };
+
+  for (const n of nodes) if (inDegree.get(n.id) === 0) push(n);
+  const out: Node[] = [];
+  while (heap.length > 0) {
+    const n = pop();
+    out.push(n);
+    for (const depId of dependents.get(n.id) ?? []) {
+      const d = inDegree.get(depId)! - 1;
+      inDegree.set(depId, d);
+      if (d === 0) push(byId.get(depId)!);
+    }
+  }
+  if (out.length !== nodes.length) {
+    throw new Error('Cycle detected in dependency graph — topological sort failed');
+  }
+  return out;
+}
+
+/**
  * Priority-inheritance scheduler.
  *
  * Model: every node has a priority. The Gantt is a single linear queue
@@ -362,11 +437,14 @@ export function schedule(
     effective.set(node.id, eff);
   }
 
-  // Step 5: Build the global ordered queue. Sort starting from the
-  // topo-sorted list (so equal-priority deps stay in dep order, since
-  // Array.sort is stable). Within an effective-priority tier, use
-  // priorityRank ASC NULLS LAST → createdAt ASC as the tiebreaker.
-  const queue = [...sorted].sort((a, b) => {
+  // Step 5: Build the global ordered queue: a topological order that, among
+  // the nodes whose deps are all placed, always takes the best one by
+  // effective priority → priorityRank ASC NULLS LAST → createdAt ASC.
+  // A plain sort by those keys is NOT enough (#636): a blocker inherits its
+  // dependent's priority tier but not its rank or age, so a dependent that is
+  // older (e.g. moved into place) or ranked higher sorted ahead of its
+  // blocker, and the forward pass then skipped the not-yet-scheduled edge.
+  const byPriority = (a: Node, b: Node): number => {
     const ea = effective.get(a.id)!;
     const eb = effective.get(b.id)!;
     if (ea !== eb) return ea - eb;
@@ -380,7 +458,8 @@ export function schedule(
       return 1;
     }
     return a.createdAt.localeCompare(b.createdAt);
-  });
+  };
+  const queue = priorityTopologicalOrder(expanded, dependents, byPriority);
 
   // Step 6: Schedule the leaves linearly. Parents derive from rollup.
   const useHoursConversion =
