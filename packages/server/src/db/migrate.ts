@@ -1665,5 +1665,17 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
     ALTER TABLE comments ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ
   `);
 
+  // ── Blocker kinds (every blocker reaches a person) ─────────────
+  // blocked_at: when the reason was set (an unkinded blocker is classified
+  // an hour later); blocker_info: its kind — question / external, null =
+  // unkinded. Blockers from before stay without a clock: the hourly run
+  // leaves them to the one-time scripts/classify-blockers.ts (dry run first).
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS blocked_at TIMESTAMPTZ
+  `);
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS blocker_info JSONB
+  `);
+
   console.log('[db] Migrations complete.');
 }

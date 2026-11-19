@@ -48,6 +48,7 @@ export const httpBackend: ToolBackend = {
   claimNode: (mapId, nodeId, sessionId) => api.claimNode(mapId, nodeId, sessionId),
   releaseNode: (mapId, nodeId, sessionId, reason) => api.releaseNode(mapId, nodeId, sessionId, reason),
   unblockNode: (mapId, nodeId) => api.unblockNode(mapId, nodeId),
+  flagBlocker: (mapId, nodeId, input) => api.flagBlocker(mapId, nodeId, input),
   conflictScan: (mapId, candidateNodeId?) => api.conflictScan(mapId, candidateNodeId),
   getFleetStatus: (mapId, opts) => api.getFleetStatus(mapId, opts),
   getFleetJournal: (mapId, opts) => api.getFleetJournal(mapId, opts),

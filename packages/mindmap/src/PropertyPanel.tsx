@@ -15,6 +15,7 @@ import { NoteToAgentSection } from './NoteToAgent.js';
 import { AgentOutputSection } from './AgentOutputSection.js';
 import { NeedsYouSection } from './NeedsYouSection.js';
 import { BlockedParentSection } from './BlockedParentSection.js';
+import { BlockerKindChoices } from './BlockerKindChoices.js';
 
 // ── Styles ───────────────────────────────────────────────────────
 
@@ -599,6 +600,7 @@ function PropertyPanelInner({
               </button>
             )}
           </div>
+          <BlockerKindChoices node={node} reason={blockedReason} onBeforeFlag={() => debouncedUpdate.cancelField('blockedReason')} />
           {predecessorTitles.length > 0 && (
             <div
               style={{

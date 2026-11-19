@@ -128,6 +128,18 @@ describe('computePlanLint — stuck-work pack', () => {
     expect(LINT_FIX_ACTIONS['blocker-without-question']).toEqual(['needs-human']);
   });
 
+  it('blocker-without-question: a blocker with a kind or a fleet worker\'s note reaches its person by itself', () => {
+    const kinded = [
+      makeNode({ id: 'root', childrenIds: ['q', 'ext', 'worker', 'free'] }),
+      makeNode({ id: 'q', parentId: 'root', blockedReason: 'Stripe or Adyen?', blockerInfo: { kind: 'question', answerer: 'Dan' } }),
+      makeNode({ id: 'ext', parentId: 'root', blockedReason: 'LOKE sends keys', blockerInfo: { kind: 'external', recheckAt: '2026-11-26T00:00:00Z' } }),
+      makeNode({ id: 'worker', parentId: 'root', blockedReason: 'Fleet worker claudia: CI failed on PR #9' }),
+      makeNode({ id: 'free', parentId: 'root', blockedReason: 'needs a design choice from Dan' }),
+    ];
+    const r = rule(lint(kinded, { map, openAskNodeIds: new Set() }), 'blocker-without-question');
+    expect(r.findings.map((f) => f.nodeId)).toEqual(['free']);
+  });
+
   it('blocker-without-question is skipped for a map with no Questions card', () => {
     const r = rule(lint(nodes, { map }), 'blocker-without-question');
     expect(r.skipped).toBe('no Questions card (map not in a fleet)');

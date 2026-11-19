@@ -58,6 +58,7 @@ import { fleetJournalRoutes, fleetJournalByFleetRoutes } from './routes/fleetJou
 import { repoDocsRoutes } from './routes/repoDocs.js';
 import { prRoutes } from './routes/prs.js';
 import { runStaleClaimSweep } from './sync/staleClaimSweeper.js';
+import { runBlockerTriage } from './services/flagBlocker.js';
 import { runAutoCheck } from './services/asksInbox.js';
 import { runApprovalNotifications } from './services/approvalNotifications.js';
 import { runApprovalReviews } from './services/approvalReview.js';
@@ -466,6 +467,23 @@ async function main(): Promise<void> {
     }
   };
   setInterval(autoCheckTick, AUTO_CHECK_INTERVAL_MS);
+
+  // ── Unkinded blockers ─────────────────────────────────────────
+  // Every 10 min: a blocker set without a kind (update_node blockedReason,
+  // old clients) that has sat an hour becomes a dependency when it names an
+  // open ticket of its map, else a question to the map owner on the
+  // Questions card (services/flagBlocker). Fleet workers' notes are left alone.
+  const BLOCKER_TRIAGE_INTERVAL_MS = 10 * 60 * 1000;
+  const blockerTriageTick = async (): Promise<void> => {
+    try {
+      const r = await runBlockerTriage();
+      if (r.classified > 0 || r.errors.length > 0) console.log(`[blocker-triage] maps=${r.maps} classified=${r.classified} errors=${r.errors.length}`);
+      for (const err of r.errors.slice(0, 5)) console.warn(`[blocker-triage] ${err}`);
+    } catch (err) {
+      console.error('[blocker-triage] tick caught unexpected error:', err);
+    }
+  };
+  setInterval(blockerTriageTick, BLOCKER_TRIAGE_INTERVAL_MS);
 
   // ── Approval pushes (#493) ───────────────────────────────────
   // Every 5 min: a map whose proposed tickets wait gets one batched

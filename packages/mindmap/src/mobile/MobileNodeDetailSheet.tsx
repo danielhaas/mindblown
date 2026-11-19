@@ -68,6 +68,8 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged, onO
   const pct = draftPct ?? Math.round(isLeaf ? node.percentComplete ?? 0 : node.computedProgress ?? 0);
 
   const [blockerDraft, setBlockerDraft] = useState<string | null>(null);
+  // What the blocker is (flag_blocker's kind); '' = not sure — sorted after an hour.
+  const [blockerKind, setBlockerKind] = useState<'' | 'question' | 'person-step' | 'external'>('');
   // A fleet agent working this ticket can be stopped from here (#549): Stop is a blocker.
   const agentRunning = useTicketPhasesFor(map.id, map.fleetId ?? null).get(node.id)?.agentRunning ?? false;
   const user = useMindmapStore((s) => s.user);
@@ -109,6 +111,21 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged, onO
     try {
       const updated = await api.updateNode(map.id, node.id, fields);
       onChanged(updated);
+    } catch (e) {
+      setSaveError((e as Error).message ?? 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // A blocker with a kind goes where it is answered (Questions card, Your steps, a re-check date).
+  const flag = async (reason: string) => {
+    if (!blockerKind) return save({ blockedReason: reason });
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await api.flagBlocker(map.id, node.id, { kind: blockerKind, reason });
+      onChanged(await api.fetchNode(map.id, node.id));
     } catch (e) {
       setSaveError((e as Error).message ?? 'Save failed');
     } finally {
@@ -297,6 +314,17 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged, onO
                   value={blockerDraft}
                   onChange={(e) => setBlockerDraft(e.target.value)}
                 />
+                <select
+                  className="mb-select"
+                  data-testid="mobile-blocker-kind"
+                  value={blockerKind}
+                  onChange={(e) => setBlockerKind(e.target.value as typeof blockerKind)}
+                >
+                  <option value="">What is it? (sorted in an hour if unsure)</option>
+                  <option value="question">A question — asked on the Questions card</option>
+                  <option value="person-step">A person's step — goes to Your steps</option>
+                  <option value="external">Waiting on someone outside — asked again in 7 days</option>
+                </select>
                 <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                   <button className="mb-link" onClick={() => setBlockerDraft(null)}>
                     Cancel
@@ -305,7 +333,7 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged, onO
                     className="mb-btn-primary"
                     disabled={saving || !blockerDraft.trim()}
                     onClick={() =>
-                      void save({ blockedReason: blockerDraft.trim() }).then(() => setBlockerDraft(null))
+                      void flag(blockerDraft.trim()).then(() => setBlockerDraft(null))
                     }
                   >
                     Flag blocker

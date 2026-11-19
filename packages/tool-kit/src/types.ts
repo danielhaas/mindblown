@@ -84,6 +84,18 @@ export interface NodeWithComputed {
   requestedAt?: string | null;
   /** Who we wait on. */
   waitingOn?: string | null;
+  /** The manual blocker text; null = not blocked. Older servers omit it. */
+  blockedReason?: string | null;
+  /** When the blocker text was set (ISO 8601). */
+  blockedAt?: string | null;
+  /** The blocker's kind (flag_blocker); null = unkinded free text, classified after an hour. */
+  blockerInfo?: {
+    kind: 'question' | 'external';
+    answerer?: string | null;
+    options?: string[];
+    recheckAt?: string | null;
+    auto?: boolean;
+  } | null;
   computedEffort: number;
   /** Effort in parked branches below this node, left out of computedEffort (#655). */
   parkedEffort?: number;

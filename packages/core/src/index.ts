@@ -43,6 +43,8 @@ export type {
   NodeMap,
 } from './types.js';
 
+export { FLAG_BLOCKER_KINDS } from './types.js';
+export type { FlagBlockerKind, BlockerInfo } from './types.js';
 export { FORGE_LINK_PROVIDERS, isForgeLink, forgeLabel, userReporter, isLeadTimeNode } from './types.js';
 export type { ApprovalState, ForgeKindName, ForgeProblem, NodeApproval, NodeReporter } from './types.js';
 
@@ -453,6 +455,32 @@ export {
   briefAnswerAction,
 } from './humanSteps.js';
 export type { StepAnswer, StepParts, BlockerAnswer, BriefAnswer } from './humanSteps.js';
+
+// Every blocker reaches a person or resolves itself: flag_blocker's kinds
+export {
+  UNKINDED_GRACE_MINUTES,
+  EXTERNAL_RECHECK_DAYS,
+  QUESTION_ASK_PREFIX,
+  EXTERNAL_ASK_PREFIX,
+  EXTERNAL_ASK_OPTIONS,
+  questionAskId,
+  questionAskNodeId,
+  externalAskId,
+  externalAskNodeId,
+  externalRecheckAt,
+  externalRecheckDue,
+  answererName,
+  isWorkerNote,
+  isUnkindedBlocker,
+  unkindedDue,
+  blockerRefs,
+  waitedOnNode,
+  classifyUnkinded,
+  buildQuestionAsk,
+  buildExternalAsk,
+  externalAnswerAction,
+} from './blockerKinds.js';
+export type { BlockerRef, UnkindedPlan, ExternalAnswer } from './blockerKinds.js';
 
 // Which uploaded files stay public capability URLs (#292, decision D)
 export { PUBLIC_MEDIA_EXTENSIONS, isPublicMediaFileName } from './media.js';

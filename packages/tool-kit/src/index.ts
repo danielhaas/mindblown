@@ -11,6 +11,8 @@ export type {
   ClaimNodeResult,
   ReleaseNodeResult,
   UnblockNodeResult,
+  FlagBlockerInput,
+  FlagBlockerResult,
   FleetStatusResult,
   // Asks inbox (/leidang-asks)
   AskListOptions,

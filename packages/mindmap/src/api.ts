@@ -1,5 +1,6 @@
 import type {
   CommentKind,
+  FlagBlockerKind,
   Node,
   MindMap,
   Cycle,
@@ -1151,6 +1152,29 @@ export function unblockNode(mapId: string, nodeId: string): Promise<{ node: Node
     method: 'POST',
     body: JSON.stringify({}),
   });
+}
+
+/** What a blocker is (flag_blocker's kind) and what it carries. */
+export interface FlagBlockerBody {
+  kind?: FlagBlockerKind;
+  reason: string;
+  answerer?: string;
+  options?: string[];
+  recheckDays?: number;
+  waitsOn?: string;
+}
+
+/**
+ * Flag a blocker with a kind: question → an ask on the Questions card,
+ * person-step → needs-human with the text as the next step, external →
+ * re-checked on a date, waits-on → a dependency, no blocker.
+ */
+export function flagBlocker(
+  mapId: string,
+  nodeId: string,
+  body: FlagBlockerBody,
+): Promise<{ node: Node; kind: FlagBlockerKind | null; dependsOn?: { id: string; text: string } }> {
+  return request(`/api/maps/${mapId}/nodes/${nodeId}/flag-blocker`, { method: 'POST', body: JSON.stringify(body) });
 }
 
 // ── Fleets (#477) ────────────────────────────────────────────────
