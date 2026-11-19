@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node, NodeId, ComputedNodeValues, Priority } from '@mindblown/core';
-import { isForgeLink, isLeadTimeNode, parkedNodeIds } from '@mindblown/core';
+import { describeLeave, isForgeLink, isLeadTimeNode, parkedNodeIds } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { ForgeIcon } from './icons/ForgeIcon.js';
 import { pickCurrentCycle } from './roles.js';
@@ -229,15 +229,22 @@ export function ListView() {
   // An empty Start/Due cell shows the projected date instead of "-".
   const currentMapId = currentMap?.id ?? null;
   const [projected, setProjected] = useState<Map<string, { start: string; end: string }>>(() => new Map());
+  // Personal leave inside the projection (#664): "Includes leave: Dan 21 Dec – 4 Jan".
+  const [leaveLine, setLeaveLine] = useState<string | null>(null);
   useEffect(() => {
     if (!currentMapId) {
       setProjected(new Map());
+      setLeaveLine(null);
       return;
     }
     let cancelled = false;
     fetchSchedule(currentMapId)
-      .then((d) => { if (!cancelled) setProjected(scheduleSpans(d)); })
-      .catch(() => { if (!cancelled) setProjected(new Map()); });
+      .then((d) => {
+        if (cancelled) return;
+        setProjected(scheduleSpans(d));
+        setLeaveLine(describeLeave(d.leave ?? []));
+      })
+      .catch(() => { if (!cancelled) { setProjected(new Map()); setLeaveLine(null); } });
     return () => { cancelled = true; };
   }, [currentMapId, nodes]);
 
@@ -1150,6 +1157,15 @@ export function ListView() {
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: '#ffffff' }}>
+      {leaveLine && (
+        <div
+          data-testid="list-leave-line"
+          title="The projected dates work around this leave"
+          style={{ padding: '4px 12px', fontSize: 12, color: '#7c3aed', background: '#f5f3ff', borderBottom: '1px solid #e2e8f0' }}
+        >
+          {leaveLine}
+        </div>
+      )}
       {/* ── Filter bar ─────────────────────────────────────────── */}
       <div
         style={{

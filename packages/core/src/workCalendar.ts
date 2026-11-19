@@ -55,6 +55,11 @@ function isWorking(d: Date, holidays: Set<string>): boolean {
   return dow !== 0 && dow !== 6 && !holidays.has(d.toISOString().slice(0, 10));
 }
 
+/** Does this date count on the calendar? `holidays` null = every day counts. */
+export function isWorkingDate(date: Date | string, holidays: Set<string> | null): boolean {
+  return holidays ? isWorking(utcMidnight(date), holidays) : true;
+}
+
 function roundBy(n: number, rounding: OffsetRounding): number {
   return rounding === 'floor' ? Math.floor(n) : rounding === 'ceil' ? Math.ceil(n) : Math.round(n);
 }

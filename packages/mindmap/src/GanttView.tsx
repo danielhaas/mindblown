@@ -8,12 +8,14 @@ import {
   businessDaysBetween,
   makeDayMapper,
   isLeadTimeNode,
+  describeLeave,
 } from '@mindblown/core';
 import { GanttHolidays } from './GanttHolidays.js';
+import { GanttWorkers } from './GanttWorkers.js';
 import { useMindmapStore } from './store.js';
 import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import { collectDoneNodeIds, collectRequirementKeepIds } from './viewScope.js';
-import { fetchSchedule, updateMap as updateMapApi, createBaseline, deleteBaseline, type DueViolation } from './api.js';
+import { fetchSchedule, updateMap as updateMapApi, createBaseline, deleteBaseline, type DueViolation, type ScheduleLeave } from './api.js';
 
 // ── Schedule response shape (from GET /api/maps/:id/schedule) ────
 
@@ -28,6 +30,10 @@ interface ScheduleResponse {
   dueViolations?: DueViolation[];
   /** #110 — null: calendar days; else working days minus these holidays. */
   workingCalendar?: { jurisdiction: string | null; holidays: string[] } | null;
+  /** #664 — personal leave inside the projection, per person / track. */
+  leave?: ScheduleLeave[];
+  /** #664 — open leaves whose dates follow a person's leave: nodeId → userId. */
+  nodeLeave?: Record<string, string>;
 }
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -1258,6 +1264,25 @@ export function GanttView() {
           </span>
         )}
 
+        {/* Who does the work (#664): their personal leave moves the schedule */}
+        {currentMapId && (
+          <GanttWorkers
+            mapId={currentMapId}
+            workers={currentMap?.workers ?? []}
+            onSaved={async () => {
+              const refreshed = (await fetchSchedule(currentMapId)) as ScheduleResponse;
+              setServerScheduleData(refreshed);
+              setSavedFlash('People saved');
+              window.setTimeout(() => setSavedFlash(null), 2000);
+            }}
+          />
+        )}
+        {scheduleData?.leave && scheduleData.leave.length > 0 && (
+          <span data-testid="gantt-leave-line" style={{ fontSize: 11, color: '#6d28d9' }}>
+            {describeLeave(scheduleData.leave)}
+          </span>
+        )}
+
         {/* Holidays (#110): jurisdiction + own days off → working calendar */}
         {currentMapId && (
           <GanttHolidays
@@ -1907,6 +1932,39 @@ export function GanttView() {
                     />,
                   );
                 }
+                return boxes;
+              })()}
+
+              {/* Personal leave (#664): shaded bands on the rows of the
+                  work that follows that person — the bars pause there */}
+              {scheduleData?.leave && scheduleData.leave.length > 0 && scheduleData.nodeLeave && (() => {
+                const byUser = new Map(scheduleData.leave.map((p) => [p.userId, p]));
+                const boxes: React.ReactElement[] = [];
+                rows.forEach((row, idx) => {
+                  const person = byUser.get(scheduleData.nodeLeave?.[row.node.id] ?? '');
+                  if (!person) return;
+                  for (const day of person.days) {
+                    const [y, m, d] = day.split('-').map(Number);
+                    const i = Math.round((new Date(y, m - 1, d).getTime() - rangeStart.getTime()) / 86_400_000);
+                    if (i < 0 || i * pxPerDay > totalTimelineWidth) continue;
+                    boxes.push(
+                      <div
+                        key={`leave-${row.node.id}-${day}`}
+                        title={`${day}: ${person.name} on leave`}
+                        data-testid="gantt-leave-band"
+                        style={{
+                          position: 'absolute',
+                          left: i * pxPerDay,
+                          top: idx * ROW_HEIGHT,
+                          width: Math.max(1, pxPerDay),
+                          height: ROW_HEIGHT,
+                          background: 'repeating-linear-gradient(45deg, rgba(139, 92, 246, 0.16) 0 4px, rgba(139, 92, 246, 0.06) 4px 8px)',
+                          pointerEvents: 'none',
+                        }}
+                      />,
+                    );
+                  }
+                });
                 return boxes;
               })()}
 

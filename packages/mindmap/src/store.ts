@@ -26,6 +26,8 @@ const BROADCAST_MAP_SETTINGS = [
   'wipLimit',
   'focusFactor',
   'workerCount',
+  // Who does the work (#664): the Gantt's People picker follows it.
+  'workers',
   // Fleet connection (#477) — another tab or an agent connects the map.
   'fleetId',
   'fleetShare',

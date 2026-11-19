@@ -152,3 +152,19 @@ export function holidaySettingsError(input: {
   }
   return null;
 }
+
+/**
+ * Validate a map update's `workers` (#664) and normalise it in place
+ * (duplicates dropped, order kept — track t is workers[t]). Returns an
+ * error message, or null.
+ */
+export function normalizeWorkers(input: { workers?: unknown }): string | null {
+  if (input.workers === undefined) return null;
+  const w = input.workers;
+  if (!Array.isArray(w) || w.some((u) => typeof u !== 'string' || !/^[0-9a-f-]{36}$/i.test(u))) {
+    return 'workers must be a list of user ids.';
+  }
+  if (w.length > 100) return 'workers may name at most 100 people.';
+  input.workers = [...new Set(w as string[])];
+  return null;
+}
