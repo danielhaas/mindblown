@@ -67,6 +67,8 @@ import { pushoverConfigured } from './lib/pushover.js';
 import { onBroadcast, registerWebSocket } from './ws.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { wikiRoutes } from './routes/wiki.js';
+import { deployDriftRoutes } from './routes/deployDrift.js';
+import { driftGit, runDeployDriftCheck, setLatestDeployDrift } from './services/deployDrift.js';
 import { handleBroadcast, startWebhooks } from './services/webhooks.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -163,6 +165,7 @@ async function main(): Promise<void> {
   await app.register(prRoutes);
   await app.register(webhookRoutes);
   await app.register(wikiRoutes);
+  await app.register(deployDriftRoutes);
   await app.register(systemRoutes);
   await registerWebSocket(app);
 
@@ -552,6 +555,36 @@ async function main(): Promise<void> {
   };
   setTimeout(reporterCheckTick, 60 * 1000);
   setInterval(reporterCheckTick, REPORTER_CHECK_INTERVAL_MS);
+
+  // ── Merged, not deployed ──────────────────────────────────────
+  // Every 15 min (prod only — selfGit is null elsewhere): fetch the
+  // checkout's upstream, count the commits the running process doesn't
+  // have, and push once the oldest has waited DEPLOY_DRIFT_ALERT_HOURS
+  // (default 2), again daily while it still waits. Feeds /api/health and
+  // the Fleet tab of the maps bound to this repo (signed in, view access —
+  // not /api/health: the repo is public, and an unauthenticated "prod is N
+  // merges behind since X" says whether a published fix is live yet).
+  const DEPLOY_DRIFT_INTERVAL_MS = 15 * 60 * 1000;
+  const selfDriftGit = selfGit ? driftGit(selfGit) : null;
+  let deployDriftRunning = false;
+  const deployDriftTick = async (): Promise<void> => {
+    if (!selfDriftGit || deployDriftRunning) return;
+    deployDriftRunning = true;
+    try {
+      const { drift, pushed } = await runDeployDriftCheck(selfDriftGit);
+      if (drift.undeployed.length > 0) {
+        console.log(`[deploy-drift] ${drift.undeployed.length} undeployed since ${drift.undeployed[0].at}${pushed ? ' (pushed)' : ''}`);
+      }
+    } catch (err) {
+      // No stale numbers on the Fleet tab: a failed check shows nothing.
+      setLatestDeployDrift(null);
+      console.warn('[deploy-drift] check failed:', err instanceof Error ? err.message : err);
+    } finally {
+      deployDriftRunning = false;
+    }
+  };
+  setTimeout(deployDriftTick, 2 * 60 * 1000);
+  setInterval(deployDriftTick, DEPLOY_DRIFT_INTERVAL_MS);
 
   // ── Daily mail with open questions (#597) ─────────────────────
   // Every 10 min: from DIGEST_MAIL_HOUR (default 08:00 in DIGEST_MAIL_TZ,

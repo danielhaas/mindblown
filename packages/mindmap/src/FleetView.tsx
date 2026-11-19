@@ -38,6 +38,7 @@ import { MapFleetPanel } from './MapFleetPanel.js';
 import { FleetTelemetry } from './FleetTelemetry.js';
 import { FleetScopeContext } from './fleetScope.js';
 import { PairMachine } from './PairMachine.js';
+import { DeployDriftBanner } from './DeployDriftBanner.js';
 import type { FleetScope } from './fleetScope.js';
 
 /** Claims move without a telemetry push, and the fleet page has no socket room — poll. */
@@ -110,6 +111,8 @@ export function FleetView() {
         {/* Which fleet works this map (#480) — and, without one, the way to
             connect it, before any card explains an empty rollup. */}
         <MapFleetPanel variant="tab" readOnly={readOnly} />
+        {/* Merged work prod doesn't run yet (MindBlown's own map only). */}
+        <DeployDriftBanner mapId={currentMap.id} />
         {fleet && <FleetOverview fleet={fleet} mapId={currentMap.id} all={all} onAll={setAll} onRenamed={renamed} />}
         {/* The pull queue needs a status workflow; Questions do not (the push
             route never checks it), so only the cards sit behind the gate. */}
