@@ -1634,5 +1634,17 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
     )
   `);
 
+  // ── Notes to the agent (claude-fleet#92) ───────────────────────
+  // kind: 'comment' | 'fleet-note' — a fleet note is a person's note to the
+  // agent running the ticket; the worker polls them (kind + since) and marks
+  // each one delivered_at once it handed it over. The default keeps every
+  // existing comment a plain comment.
+  await db.execute(sql`
+    ALTER TABLE comments ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'comment'
+  `);
+  await db.execute(sql`
+    ALTER TABLE comments ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ
+  `);
+
   console.log('[db] Migrations complete.');
 }

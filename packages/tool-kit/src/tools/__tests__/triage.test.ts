@@ -169,6 +169,9 @@ function makeRecorder(): Recorder {
     updateWebhook: async () => { throw new Error('not used'); },
     deleteWebhook: async () => { throw new Error('not used'); },
     pingWebhook: async () => { throw new Error('not used'); },
+    addComment: async () => { throw new Error('not used'); },
+    listComments: async () => { throw new Error('not used'); },
+    ackFleetNote: async () => { throw new Error('not used'); },
   };
   return state;
 }

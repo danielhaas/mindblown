@@ -392,6 +392,10 @@ export const comments = pgTable('comments', {
   nodeId: uuid('node_id').notNull().references(() => nodes.id, { onDelete: 'cascade' }),
   userId: uuid('user_id').notNull().references(() => users.id),
   text: text('text').notNull(),
+  // 'comment' | 'fleet-note' (core CommentKind) — a fleet note is for the agent running the ticket.
+  kind: text('kind').notNull().default('comment'),
+  // fleet-note: when the fleet worker picked it up; null until then.
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

@@ -924,6 +924,34 @@ export function isAiPolicy(v: unknown): v is AiPolicy {
   return v === 'any' || v === 'local' || v === 'none';
 }
 
+// ── Comments ────────────────────────────────────────────────────
+
+/**
+ * What a comment on a node is. `fleet-note` is a person's note to the
+ * fleet agent running the ticket (claude-fleet#92): the worker polls for
+ * them, hands them to the agent and marks each one delivered.
+ */
+export type CommentKind = 'comment' | 'fleet-note';
+export const COMMENT_KINDS: readonly CommentKind[] = ['comment', 'fleet-note'];
+export function isCommentKind(v: unknown): v is CommentKind {
+  return v === 'comment' || v === 'fleet-note';
+}
+
+/** A comment on a node as the API returns it. */
+export interface NodeComment {
+  id: string;
+  nodeId: string;
+  userId: string;
+  /** The author's name — a fleet note is handed to the agent under it. */
+  userName?: string | null;
+  text: string;
+  kind: CommentKind;
+  /** fleet-note: when the worker picked it up; null until then (always null for a plain comment). */
+  deliveredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // ── User / Workspace / Team ─────────────────────────────────────
 
 export interface User {

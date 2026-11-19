@@ -3,6 +3,10 @@ import * as commentDb from '../db/comments.js';
 import * as nodeDb from '../db/nodes.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
 import { broadcast } from '../ws.js';
+import { ackFleetNote, isCommentError, parseCommentFilter, parseCommentKind, type CommentError } from '../services/comments.js';
+
+const sendError = (reply: import('fastify').FastifyReply, e: CommentError) =>
+  reply.status(e.status).send({ error: { code: e.code, message: e.message } });
 
 export async function commentRoutes(app: FastifyInstance): Promise<void> {
   // The map-scoped routes: view to read, edit to write, 404 for a node on
@@ -19,17 +23,21 @@ export async function commentRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const body = req.body as { text?: string };
+      const body = (req.body ?? {}) as { text?: string; kind?: unknown };
       if (!body.text) {
         return reply.status(400).send({
           error: { code: 'VALIDATION_ERROR', message: 'text is required' },
         });
       }
+      // 'comment' (default) or 'fleet-note' — a note to the agent running the ticket.
+      const kind = parseCommentKind(body.kind);
+      if (isCommentError(kind)) return sendError(reply, kind);
 
       const comment = await commentDb.createComment({
         nodeId: req.params.nodeId,
         userId,
         text: body.text,
+        kind,
       });
 
       // Broadcast to connected clients
@@ -44,11 +52,31 @@ export async function commentRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // ── GET /api/maps/:mapId/nodes/:nodeId/comments — List comments ─
-  app.get<{ Params: { mapId: string; nodeId: string } }>(
+  // ?kind=fleet-note&since=<iso>: the fleet worker's cheap poll for new notes.
+  app.get<{ Params: { mapId: string; nodeId: string }; Querystring: { kind?: string; since?: string } }>(
     '/api/maps/:mapId/nodes/:nodeId/comments',
     async (req, reply) => {
-      const allComments = await commentDb.listComments(req.params.nodeId);
+      const filter = parseCommentFilter(req.query ?? {});
+      if (isCommentError(filter)) return sendError(reply, filter);
+      const allComments = await commentDb.listComments(req.params.nodeId, filter);
       return reply.send(allComments);
+    },
+  );
+
+  // ── PATCH /api/maps/:mapId/nodes/:nodeId/comments/:commentId — Fleet note picked up ─
+  // Body `{ deliveredAt?: iso }` (default now). Edit on the map, like writing one.
+  app.patch<{ Params: { mapId: string; nodeId: string; commentId: string } }>(
+    '/api/maps/:mapId/nodes/:nodeId/comments/:commentId',
+    async (req, reply) => {
+      const body = (req.body ?? {}) as { deliveredAt?: unknown };
+      const comment = await ackFleetNote(req.params.nodeId, req.params.commentId, body.deliveredAt);
+      if (isCommentError(comment)) return sendError(reply, comment);
+      broadcast(req.params.mapId, {
+        type: 'comment:updated',
+        nodeId: req.params.nodeId,
+        comment,
+      });
+      return reply.send(comment);
     },
   );
 

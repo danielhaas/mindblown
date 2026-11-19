@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { Comment } from './api.js';
+import { noteStatus } from './NoteToAgent.js';
 
 function formatTime(iso: string): string {
   const d = new Date(iso);
@@ -69,7 +70,8 @@ export function CommentsPanel({
           return [...prev, msg.comment];
         });
       } else if (msg.type === 'comment:updated') {
-        setComments((prev) => prev.map((c) => c.id === msg.comment.id ? msg.comment : c));
+        // Merge: a fleet note's "picked up" update carries no author name.
+        setComments((prev) => prev.map((c) => c.id === msg.comment.id ? { ...c, ...msg.comment } : c));
       } else if (msg.type === 'comment:deleted') {
         setComments((prev) => prev.filter((c) => c.id !== msg.commentId));
       }
@@ -196,6 +198,15 @@ export function CommentsPanel({
                   <span style={{ fontSize: 10, color: '#94a3b8' }}>
                     {formatTime(comment.createdAt)}
                   </span>
+                  {comment.kind === 'fleet-note' && (
+                    <span
+                      data-testid="comment-fleet-note"
+                      title="A note to the fleet agent working this ticket"
+                      style={{ fontSize: 10, fontWeight: 600, color: '#6d28d9', background: '#f5f3ff', borderRadius: 4, padding: '0 5px' }}
+                    >
+                      Note to the agent · {noteStatus(comment)}
+                    </span>
+                  )}
                 </div>
                 {isOwn && !isEditing && (
                   <div style={{ display: 'flex', gap: 4 }}>

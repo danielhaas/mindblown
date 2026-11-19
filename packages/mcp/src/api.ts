@@ -13,7 +13,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { RequirementGate } from '@mindblown/core';
+import type { CommentKind, NodeComment, RequirementGate } from '@mindblown/core';
 import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult } from '@mindblown/tool-kit';
 import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookSubscription } from '@mindblown/core';
 
@@ -2072,4 +2072,28 @@ export function deleteWebhook(mapId: string, webhookId: string): Promise<{ delet
 
 export function pingWebhook(mapId: string, webhookId: string): Promise<WebhookPingResult> {
   return request(`/api/maps/${mapId}/webhooks/${encodeURIComponent(webhookId)}/ping`, { method: 'POST' });
+}
+
+// ── Comments / notes to the agent (claude-fleet#92) ────────────────
+
+export function addComment(mapId: string, nodeId: string, input: { text: string; kind?: CommentKind }): Promise<NodeComment> {
+  return request<NodeComment>(`/api/maps/${mapId}/nodes/${nodeId}/comments`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function listComments(mapId: string, nodeId: string, opts: { kind?: CommentKind; since?: string } = {}): Promise<NodeComment[]> {
+  const params = new URLSearchParams();
+  if (opts.kind) params.set('kind', opts.kind);
+  if (opts.since) params.set('since', opts.since);
+  const qs = params.toString();
+  return request<NodeComment[]>(`/api/maps/${mapId}/nodes/${nodeId}/comments${qs ? `?${qs}` : ''}`);
+}
+
+export function ackFleetNote(mapId: string, nodeId: string, commentId: string, deliveredAt?: string): Promise<NodeComment> {
+  return request<NodeComment>(`/api/maps/${mapId}/nodes/${nodeId}/comments/${commentId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(deliveredAt ? { deliveredAt } : {}),
+  });
 }

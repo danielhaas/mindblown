@@ -11,6 +11,7 @@ import type { EstimateResult } from './api.js';
 import { useAiCapabilities } from './aiCapabilities.js';
 import { useTicketPhases } from './useTicketPhases.js';
 import { StopTicketButton } from './StopTicketButton.js';
+import { NoteToAgentSection } from './NoteToAgent.js';
 import { AgentOutputSection } from './AgentOutputSection.js';
 import { NeedsYouSection } from './NeedsYouSection.js';
 import { BlockedParentSection } from './BlockedParentSection.js';
@@ -993,6 +994,9 @@ function PropertyPanelInner({
 
         {/* The running agent's last lines (#585) — the card clicked on the Kanban opens here. */}
         <AgentOutputSection mapId={node.mapId} nodeId={nodeId} phase={ticketPhases.get(nodeId)} />
+
+        {/* A note to the agent while the fleet holds the claim (claude-fleet#92). */}
+        <NoteToAgentSection mapId={node.mapId} nodeId={nodeId} phase={ticketPhases.get(nodeId)} />
 
         {/* GitHub section */}
         <GitHubNodeSection mapId={node.mapId} node={node} />
