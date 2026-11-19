@@ -447,13 +447,14 @@ async function main(): Promise<void> {
   // ── Auto-check blockers ───────────────────────────────────────
   // Fleets with autoCheckBlockers on: a blocker that has sat 30 min goes
   // to the fleet once, as if its owner pressed "Fleet can fix it"
-  // (services/derivedAsks autoCheckBlockers). Ten minutes is fine-grained
+  // (services/derivedAsks autoCheckBlockers), and orphaned in-progress
+  // work goes back to todo (requeueOrphans). Ten minutes is fine-grained
   // enough against a 30-minute grace.
   const AUTO_CHECK_INTERVAL_MS = 10 * 60 * 1000;
   const autoCheckTick = async (): Promise<void> => {
     try {
       const result = await runAutoCheck();
-      if (result.sent > 0) console.log(`[auto-check] fleets=${result.fleets} sent=${result.sent} errors=${result.errors.length}`);
+      if (result.sent > 0 || result.requeued > 0) console.log(`[auto-check] fleets=${result.fleets} sent=${result.sent} requeued=${result.requeued} errors=${result.errors.length}`);
       for (const err of result.errors.slice(0, 5)) console.warn(`[auto-check] ${err}`);
     } catch (err) {
       console.error('[auto-check] tick caught unexpected error:', err);

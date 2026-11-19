@@ -397,6 +397,7 @@ export {
   isStalledAskDue,
   stalledAskAfterHours,
   DECISION_TITLE_RE,
+  isOrphanRequeueable,
   buildStalledAsk,
   stalledAnswerAction,
   stalledAnswerNote,

@@ -173,6 +173,19 @@ export function isStalledAskDue(s: StalledLeaf, now: Date = new Date(), title = 
   return now.getTime() - Date.parse(s.lastChangeAt) >= stalledAskAfterHours(title) * 3_600_000;
 }
 
+/**
+ * Orphaned work goes back to the queue without asking: a stalled leaf a
+ * worker held (its claim was released or swept) and that is not a
+ * "Decision:" ticket. The pull queue skips in progress, so nothing picked
+ * these up — the stalled ask came a day later, and its answer was nearly
+ * always "Back to the queue". A leaf no worker ever claimed was set in
+ * progress by a person, and a decision is a person's call: both wait on a
+ * person and stay for the stalled ask.
+ */
+export function isOrphanRequeueable(s: StalledLeaf, title: string): boolean {
+  return s.lastRelease !== null && !DECISION_TITLE_RE.test(title);
+}
+
 export function buildStalledAsk(
   node: { id: string; text: string; priority?: string | null; externalLinks?: ExternalLink[] },
   s: StalledLeaf,

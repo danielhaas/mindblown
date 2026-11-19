@@ -6,6 +6,7 @@ import {
   STALLED_AFTER_HOURS,
   STALLED_ASK_AFTER_HOURS,
   isStalledAskDue,
+  isOrphanRequeueable,
   stalledAskAfterHours,
   buildStalledAsk,
   stalledAskNodeId,
@@ -120,6 +121,13 @@ describe('stalled asks', () => {
     expect(isStalledAskDue(two, now, 'Implement the decision log')).toBe(false);
     expect(stalledAskAfterHours('Decision: x')).toBe(STALLED_AFTER_HOURS);
     expect(stalledAskAfterHours('Signed reports')).toBe(STALLED_ASK_AFTER_HOURS);
+  });
+
+  it('a worker\'s orphan goes back to the queue; never claimed or a decision waits on a person', () => {
+    expect(isOrphanRequeueable(s, 'Signed reports')).toBe(true);
+    expect(isOrphanRequeueable(s, 'Decision: STP participation')).toBe(false);
+    const [mine] = findStalled([node('m')], workflow, activity({ m: hoursAgo(30) }), now);
+    expect(isOrphanRequeueable(mine, 'Signed reports')).toBe(false);
   });
 
   it('ask about the node with three answers, the issue link and the last holder', () => {

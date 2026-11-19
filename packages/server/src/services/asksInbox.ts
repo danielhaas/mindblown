@@ -16,7 +16,7 @@ import * as fleetEntityDb from '../db/fleets.js';
 import * as permDb from '../db/permissions.js';
 import { getFleetForUser } from './fleets.js';
 import { authorizeTickPush, type TelemetryError } from './fleetTelemetry.js';
-import { autoCheckBlockers, openDerivedAsks, sendBlockersToFleet, type FleetCheckOutcome } from './derivedAsks.js';
+import { autoCheckBlockers, openDerivedAsks, requeueOrphans, sendBlockersToFleet, type FleetCheckOutcome } from './derivedAsks.js';
 import * as nodeDb from '../db/nodes.js';
 
 export interface AskInbox {
@@ -145,9 +145,11 @@ export async function fleetCheckBlockers(userId: string, fleetId: string, by: st
  * the person who switched it on — on the maps they may edit. A map on hold
  * (ceiling 0) is left out: the queue would not hand a check out there, and
  * the blocker would only vanish from Your steps.
+ * The same round puts orphaned in-progress tickets back in the queue
+ * (derivedAsks requeueOrphans).
  */
-export async function runAutoCheck(now: Date = new Date()): Promise<{ fleets: number; sent: number; errors: string[] }> {
-  const out = { fleets: 0, sent: 0, errors: [] as string[] };
+export async function runAutoCheck(now: Date = new Date()): Promise<{ fleets: number; sent: number; requeued: number; errors: string[] }> {
+  const out = { fleets: 0, sent: 0, requeued: 0, errors: [] as string[] };
   for (const fleet of await fleetEntityDb.listAutoCheckFleets()) {
     try {
       const view = await getFleetForUser(fleet.ownerId, fleet.id);
@@ -159,9 +161,13 @@ export async function runAutoCheck(now: Date = new Date()): Promise<{ fleets: nu
       }
       out.fleets++;
       if (mapIds.length === 0) continue;
-      const r = await autoCheckBlockers({ fleetId: fleet.id, visibleMapIds: mapIds, fleetLevel: false }, mapIds, fleet.ownerId, now);
+      const scope = { fleetId: fleet.id, visibleMapIds: mapIds, fleetLevel: false };
+      const r = await autoCheckBlockers(scope, mapIds, fleet.ownerId, now);
       out.sent += r.sent.length;
       for (const f of r.failed) out.errors.push(`fleet ${fleet.id} ${f.askId}: ${f.error}`);
+      const q = await requeueOrphans(scope, mapIds, fleet.ownerId, now);
+      out.requeued += q.requeued.length;
+      for (const f of q.failed) out.errors.push(`fleet ${fleet.id} ${f.askId}: ${f.error}`);
     } catch (err) {
       out.errors.push(`fleet ${fleet.id}: ${err instanceof Error ? err.message : String(err)}`);
     }
