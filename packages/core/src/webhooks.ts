@@ -65,6 +65,18 @@ export interface WebhookSubscription {
   lastError: string | null;
 }
 
+/**
+ * One event's traffic on one map: what reached the subscribers and what
+ * the dedupe ledger held back (the same ask / queue / blocker again
+ * within 24 h). A loop shows as a high `suppressed24h`.
+ */
+export interface WebhookEventStat {
+  event: WebhookEvent;
+  sentLastHour: number;
+  sent24h: number;
+  suppressed24h: number;
+}
+
 /** The JSON body of one delivery. */
 export interface WebhookPayload<D = Record<string, unknown>> {
   /** Unique per event (also X-MindBlown-Delivery); retries resend the same id. */

@@ -28,6 +28,7 @@ import type {
   ApproveInput,
   RejectInput,
   MisfiledRepo,
+  WebhookEventStat,
 } from '@mindblown/core';
 import { cachedResponse, clearApiCache, markOffline, markOnline, saveResponse } from './offline.js';
 
@@ -1235,6 +1236,11 @@ export function setFleetAutoCheck(fleetId: string, autoCheckBlockers: boolean): 
 }
 
 /** One fleet as this reader sees it — its cap, active claims and connected maps (#480). */
+/** The map's outgoing-webhook traffic per event (24 h): sent, and repeats the dedupe held back. */
+export async function fetchWebhookStats(mapId: string): Promise<WebhookEventStat[]> {
+  return (await request<{ stats: WebhookEventStat[] }>(`/api/maps/${mapId}/webhooks/stats`)).stats;
+}
+
 export function fetchFleetEntity(fleetId: string): Promise<FleetWithMaps> {
   return request<FleetWithMaps>(`/api/fleets/${fleetId}`);
 }

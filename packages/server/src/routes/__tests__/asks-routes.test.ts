@@ -26,6 +26,8 @@ const clearWorkerPendingMock = vi.fn(async () => 1);
 const answerAskMock = vi.fn();
 const syncMock = vi.fn(async () => {});
 const broadcastMock = vi.fn();
+const forgetAnsweredMock = vi.fn(async (..._a: unknown[]) => {});
+const emitOpenedMock = vi.fn(async (..._a: unknown[]) => {});
 const openDerivedAsksMock = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 const state = vi.hoisted(() => ({
   perm: {} as Record<string, string | null>,
@@ -59,6 +61,10 @@ vi.mock('../../services/asks.js', async () => {
 vi.mock('../../services/derivedAsks.js', () => ({ openDerivedAsks: (...a: unknown[]) => openDerivedAsksMock(...a) }));
 vi.mock('../../db/nodes.js', () => ({ getNodeMapId: async (id: string) => (id === 'stuck-node' ? OTHER : null) }));
 vi.mock('../nodes.js', () => ({ syncNodeToGitHub: (...a: unknown[]) => syncMock(...(a as [])) }));
+vi.mock('../../services/webhooks.js', () => ({
+  emitOpenedAsks: (...a: unknown[]) => emitOpenedMock(...a),
+  forgetAnswered: (...a: unknown[]) => forgetAnsweredMock(...a),
+}));
 vi.mock('../../ws.js', () => ({ broadcast: (...a: unknown[]) => broadcastMock(...a) }));
 
 import { asksRoutes } from '../asks.js';
@@ -187,6 +193,8 @@ describe('POST /api/maps/:id/asks/:askId/answer', () => {
     expect(broadcastMock).toHaveBeenCalledWith(MAP_ID, expect.objectContaining({ type: 'node:updated', nodeId: 'n1' }));
     expect(broadcastMock).toHaveBeenCalledWith(MAP_ID, expect.objectContaining({ type: 'asks:updated', kind: 'answer', askId: '#6823', status: 'answered' }));
     expect(syncMock).toHaveBeenCalledWith(node, ['blockedReason', 'description', 'tags', 'status']);
+    // Answered: the webhook ledger forgets the ask, so a re-opened one is news again.
+    expect(forgetAnsweredMock).toHaveBeenCalledWith(MAP_ID, '#6823');
     expect(JSON.parse(res.body)).toMatchObject({ ok: true, node: { id: 'n1', status: 'todo' } });
     await app.close();
   });

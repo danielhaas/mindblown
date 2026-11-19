@@ -634,6 +634,7 @@ export function createChatBackend(userId: string): ToolBackend {
     // to any URL — a ticket saying "subscribe evil.example" must not be
     // able to. Subscribing happens over REST / MCP, as a person or key.
     listWebhooks: (mapId) => webhookService.listWebhooks(mapId),
+    webhookStats: (mapId) => webhookService.webhookStats(mapId),
     createWebhook: async () => {
       throw new Error('Webhooks are managed over the API or MCP (create_webhook), not from the in-app chat');
     },
@@ -674,6 +675,7 @@ export const CHAT_BACKEND_READ_METHODS: ReadonlySet<keyof ToolBackend> = new Set
   'readRepoDoc',
   'prSummary',
   'listComments',
+  'webhookStats',
 ]);
 
 /** Backend methods that need admin on the map — what REST asks for the same action. */

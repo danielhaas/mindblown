@@ -1154,12 +1154,12 @@ function announcePull(outcome: PullOutcome, sessionId: string): void {
 
 /** queue.empty webhooks: which maps this pull found dry, and which gave a ticket. */
 function noteQueueStates(r: GetNextTicketResult): void {
-  if (r.granted && r.mapId) noteQueueState(r.mapId, false);
+  if (r.granted && r.mapId) void noteQueueState(r.mapId, false);
   const skipped = (mapId: string) => r.skipped.filter((s) => (s.mapId ?? r.mapId) === mapId).length;
   if (r.maps) {
-    for (const m of r.maps) if (m.reason === 'empty') noteQueueState(m.mapId, true, { mapName: m.name, skipped: skipped(m.mapId) });
+    for (const m of r.maps) if (m.reason === 'empty') void noteQueueState(m.mapId, true, { mapName: m.name, skipped: skipped(m.mapId) });
   } else if (!r.granted && r.reason === 'empty' && r.mapId) {
-    noteQueueState(r.mapId, true, { mapName: r.mapName ?? null, active: r.active, cap: r.cap, skipped: r.skipped.length });
+    void noteQueueState(r.mapId, true, { mapName: r.mapName ?? null, active: r.active, cap: r.cap, skipped: r.skipped.length });
   }
 }
 

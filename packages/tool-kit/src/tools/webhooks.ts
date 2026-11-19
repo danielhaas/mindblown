@@ -6,7 +6,7 @@
  */
 import { z } from 'zod';
 import { WEBHOOK_EVENTS } from '@mindblown/core';
-import type { WebhookSubscription } from '@mindblown/core';
+import type { WebhookEventStat, WebhookSubscription } from '@mindblown/core';
 import { defineTool } from '../spec.js';
 
 const eventEnum = z.enum(WEBHOOK_EVENTS);
@@ -23,6 +23,15 @@ export function renderWebhook(w: WebhookSubscription): string {
   ].join('\n');
 }
 
+/** One line per event: what reached the subscribers, and what the dedupe ledger held back as a repeat. */
+export function renderWebhookStats(stats: WebhookEventStat[]): string[] {
+  if (stats.length === 0) return ['Traffic (24 h): none'];
+  return [
+    'Traffic (24 h):',
+    ...stats.map((s) => `- ${s.event}: ${s.sentLastHour} this hour · ${s.sent24h} sent · ${s.suppressed24h} held back as repeats`),
+  ];
+}
+
 const SIGNING = [
   'Each delivery is a POST with JSON { id, event, occurredAt, workspaceId, mapId, data } and headers',
   'X-MindBlown-Event, X-MindBlown-Delivery (= id, stable across retries), X-MindBlown-Timestamp (unix s),',
@@ -32,12 +41,13 @@ const SIGNING = [
 
 export const listWebhooksTool = defineTool({
   name: 'list_webhooks',
-  description: "Outgoing webhooks that hear this map: its own and its workspace's. Shows URL, events, last delivery. Never the secret.",
+  description:
+    "Outgoing webhooks that hear this map: its own and its workspace's. Shows URL, events, last delivery, and the map's traffic per event over 24 h (sent, and repeats the dedupe held back — the same ask / blocker / empty queue goes out at most once a day until answered or reset). Never the secret.",
   schema: { mapId: z.string().describe('The map') },
   handler: async (backend, { mapId }) => {
     const list = await backend.listWebhooks(mapId);
     if (list.length === 0) return 'No webhooks on this map.';
-    return [`Webhooks: ${list.length}`, ...list.map(renderWebhook)].join('\n');
+    return [`Webhooks: ${list.length}`, ...list.map(renderWebhook), ...renderWebhookStats(await backend.webhookStats(mapId))].join('\n');
   },
 });
 
@@ -48,6 +58,8 @@ export const createWebhookTool = defineTool({
     `Events: ${WEBHOOK_EVENTS.join(', ')}. None given = all.`,
     'queue.empty fires once when a pull finds nothing claimable, again only after a grant.',
     'node.question = a session or AI asked a person (a new open ask). node.behind = a leaf\'s health turned behind.',
+    'node.question, node.blocked and queue.empty go out once per ask / node / map — again only after it was answered,',
+    'unblocked or granted, or after 24 h.',
     'fleet.waiting_on_human = the map\'s fleet stands idle (no active claims, workers parked) while decisions, steps,',
     'PR merges or approvals wait on a person: one per person, again when the counts grow, at most every 2 h, never while',
     'the fleet works. data: { fleetId, fleetName, person, idleSince, workers, decisions, steps, prs, approvals, unblocks,',

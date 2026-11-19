@@ -864,6 +864,35 @@ export const webhookSubscriptions = pgTable('webhook_subscriptions', {
   lastError: text('last_error'),
 });
 
+// What went out, per (event, map, key) — the dedupe ledger: the same key
+// is not sent again within 24 h unless its state was reset in between (an
+// ask answered, a queue granted, a blocker cleared). Persisted so a
+// restart or a second collector can't re-announce (services/webhooks.ts).
+export const webhookSent = pgTable(
+  'webhook_sent',
+  {
+    event: text('event').notNull(),
+    mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+    dedupeKey: text('dedupe_key').notNull(),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.event, t.mapId, t.dedupeKey] })],
+);
+
+// Hourly counts per map and event: sent = reached the subscribers,
+// suppressed = held back by the ledger. The next loop shows up here.
+export const webhookEventStats = pgTable(
+  'webhook_event_stats',
+  {
+    mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+    event: text('event').notNull(),
+    hour: timestamp('hour', { withTimezone: true }).notNull(),
+    sent: integer('sent').notNull().default(0),
+    suppressed: integer('suppressed').notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.mapId, t.event, t.hour] })],
+);
+
 // ── Wiki publish (#637) ──────────────────────────────────────────
 // The wiki document a map's timeline is published to: created on the first
 // publish, updated in place after that (a one-way push). The Outline base
