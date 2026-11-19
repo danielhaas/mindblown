@@ -1638,6 +1638,27 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
   await db.execute(sql`
     CREATE INDEX IF NOT EXISTS webhook_subscriptions_scope_idx ON webhook_subscriptions (workspace_id, map_id)
   `);
+  // The dedupe ledger (same event + map + key at most once per 24 h unless
+  // reset) and the hourly sent/suppressed counts per map and event.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS webhook_sent (
+      event TEXT NOT NULL,
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      dedupe_key TEXT NOT NULL,
+      sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (event, map_id, dedupe_key)
+    )
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS webhook_event_stats (
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      event TEXT NOT NULL,
+      hour TIMESTAMPTZ NOT NULL,
+      sent INTEGER NOT NULL DEFAULT 0,
+      suppressed INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (map_id, event, hour)
+    )
+  `);
 
   // ── Wiki publish (#637) ─────────────────────────────────────────
   // The wiki document each map's timeline goes to, so a second publish

@@ -9,11 +9,23 @@
  *     viewers (ws.ts `onBroadcast`). Every writer — routes, MCP, pulls,
  *     the stale-claim sweeper, GitHub ingest — already broadcasts, so
  *     tapping the broadcast covers them all without touching each.
+ *     node.blocked once per node until its blocker is cleared (ledger).
  *   queue.empty   — a pull that found nothing claimable (orchestration
  *     announcePull → `noteQueueState`). Edge-triggered per map: once when
  *     the queue runs dry, again only after a grant from that map.
  *   node.question — an ask that is new (or re-opened) in a collector push
- *     (routes/asks → `emitOpenedAsks`).
+ *     (routes/asks → `emitOpenedAsks`), once per ask until it is answered.
+ *
+ * The dedupe ledger (`webhook_sent`, db/webhooks claimSends): node.question
+ * (key = ask id), node.blocked (node id) and queue.empty (the map) go out
+ * at most once per (event, map, key) within 24 h unless the state was reset
+ * in between — the ask answered (routes/asks → `forgetAnswered`), the
+ * blocker cleared, a ticket granted. It is persisted, so neither an API
+ * restart nor an ask that drops out of one push and comes back in the next
+ * (two orchestrator hosts pushing one map, a collector sweep that failed
+ * once) announces it again: in November 2026 that re-sent the same ~50
+ * open asks ~300 times an hour. Sent and suppressed counts per hour, map
+ * and event land in `webhook_event_stats` (GET …/webhooks/stats).
  *   node.behind   — health is time-driven, so a sweep (`runBehindSweep`)
  *     compares each watched map's leaves against the last sweep. The first
  *     sweep after a start only seeds — a restart does not re-announce
@@ -60,6 +72,7 @@ import type {
   WaitingAlertState,
   WaitingItem,
   WebhookEvent,
+  WebhookEventStat,
   WebhookPayload,
   WebhookSubscription,
 } from '@mindblown/core';
@@ -82,6 +95,7 @@ export function startWebhooks(opts: { sweepMs?: number } = {}): void {
   const ms = opts.sweepMs ?? BEHIND_SWEEP_MS;
   if (ms > 0) {
     sweepTimer = setInterval(() => {
+      hookDb.pruneLedger().catch((err) => console.warn('[webhooks] ledger prune failed:', err instanceof Error ? err.message : err));
       runBehindSweep().catch((err) => console.warn('[webhooks] behind sweep failed:', err instanceof Error ? err.message : err));
       runWaitingOnHumanSweep().catch((err) => console.warn('[webhooks] waiting-on-human sweep failed:', err instanceof Error ? err.message : err));
     }, ms);
@@ -337,26 +351,72 @@ async function listened(mapId: string): Promise<string | null> {
   return scopeCache.maps.has(mapId) || scopeCache.workspaces.has(ws) ? ws : null;
 }
 
+/** One event to emit; with a `dedupeKey` it goes through the ledger (at most once per 24 h until reset). */
+export interface EmitItem {
+  event: WebhookEvent;
+  data: Record<string, unknown>;
+  dedupeKey?: string;
+}
+
 /**
- * Send these events of one map to every subscription that wants them.
+ * Send these events of one map to every subscription that wants them,
+ * minus the keyed ones the ledger already sent; count both per event.
  * Never throws — an event source must not fail because a receiver did.
  */
-export async function emitWebhookEvents(mapId: string, items: Array<{ event: WebhookEvent; data: Record<string, unknown> }>): Promise<void> {
+export async function emitWebhookEvents(mapId: string, items: EmitItem[]): Promise<void> {
   if (!started || items.length === 0) return;
   try {
     const workspaceId = await listened(mapId);
     if (!workspaceId) return;
     const targets = await hookDb.getDeliveryTargets(mapId, workspaceId);
+    const heard = items.filter((i) => targets.some((t) => wantsEvent(t.events, i.event)));
+    const out: EmitItem[] = [];
+    const counts = new Map<WebhookEvent, { sent: number; suppressed: number }>();
+    for (const event of new Set(heard.map((i) => i.event))) {
+      const mine = heard.filter((i) => i.event === event);
+      const keys = mine.filter((i) => i.dedupeKey !== undefined).map((i) => i.dedupeKey!);
+      const fresh = keys.length > 0 ? await hookDb.claimSends(event, mapId, keys) : new Set<string>();
+      for (const i of mine) {
+        const go = i.dedupeKey === undefined || fresh.delete(i.dedupeKey); // delete: a key twice in one batch goes once
+        const c = counts.get(event) ?? { sent: 0, suppressed: 0 };
+        if (go) c.sent++;
+        else c.suppressed++;
+        counts.set(event, c);
+        if (go) out.push(i);
+      }
+    }
+    for (const [event, c] of counts) await hookDb.countEvent(mapId, event, c.sent, c.suppressed).catch(() => {});
     const occurredAt = new Date().toISOString();
-    for (const { event, data } of items) {
+    for (const { event, data } of out) {
       const payload: WebhookPayload = { id: randomUUID(), event, occurredAt, workspaceId, mapId, data };
       for (const t of targets) {
-        if (t.events.length === 0 || t.events.includes(event)) void deliver(t, payload).catch(() => {});
+        if (wantsEvent(t.events, event)) void deliver(t, payload).catch(() => {});
       }
     }
   } catch (err) {
     console.warn(`[webhooks] emit on map ${mapId} failed:`, err instanceof Error ? err.message : err);
   }
+}
+
+/** The state behind these keys was reset — the next event for them is news. Never throws. */
+async function forgetSent(event: WebhookEvent, mapId: string, keys: string[]): Promise<void> {
+  if (!started || keys.length === 0) return;
+  try {
+    if (!(await listened(mapId))) return;
+    await hookDb.forgetSends(event, mapId, keys);
+  } catch (err) {
+    console.warn(`[webhooks] ledger reset on map ${mapId} failed:`, err instanceof Error ? err.message : err);
+  }
+}
+
+/** An ask was answered (or deferred / delegated): a re-opened one announces again. */
+export function forgetAnswered(mapId: string | null, askId: string): Promise<void> {
+  return mapId ? forgetSent('node.question', mapId, [askId]) : Promise.resolve();
+}
+
+/** The map's traffic per event over the last 24 h (the webhook settings / Fleet tab). */
+export function webhookStats(mapId: string): Promise<WebhookEventStat[]> {
+  return hookDb.eventStats(mapId);
 }
 
 // ── Event sources ───────────────────────────────────────────────
@@ -369,36 +429,53 @@ export async function handleBroadcast(mapId: string, message: unknown): Promise<
   try {
     if (!(await listened(mapId))) return;
     const fields = m.fields as string[];
+    const node = m.node as CoreNode;
     const workflow = fields.includes('status') ? ((await mapDb.getStatusWorkflow(mapId)) ?? []) : [];
-    await emitWebhookEvents(mapId, webhookEventsForNodeUpdate(fields, m.node as CoreNode, workflow));
+    // A blocker announces once; clearing it makes the next one news.
+    if (fields.includes('blockedReason') && !node.blockedReason) await forgetSent('node.blocked', mapId, [node.id]);
+    await emitWebhookEvents(
+      mapId,
+      webhookEventsForNodeUpdate(fields, node, workflow).map((e) => (e.event === 'node.blocked' ? { ...e, dedupeKey: node.id } : e)),
+    );
   } catch (err) {
     console.warn(`[webhooks] node:updated on map ${mapId} failed:`, err instanceof Error ? err.message : err);
   }
 }
 
-/** Maps whose queue last read empty — queue.empty fires on the edge into this set. */
+/**
+ * Maps whose queue last read empty — queue.empty fires on the edge into
+ * this set. It only spares the ledger a query per dry pull; the ledger
+ * (key = the map) is what holds across a restart.
+ */
 const emptyQueues = new Set<string>();
+const QUEUE_KEY = 'queue';
 
-/** A pull's verdict for one map: empty (nothing claimable) or not (a ticket was granted). */
-export function noteQueueState(mapId: string, empty: boolean, data: Record<string, unknown> = {}): void {
+/** A pull's verdict for one map: empty (nothing claimable) or not (a ticket was granted). Resolves once the ledger is written. */
+export async function noteQueueState(mapId: string, empty: boolean, data: Record<string, unknown> = {}): Promise<void> {
   if (!empty) {
     emptyQueues.delete(mapId);
+    await forgetSent('queue.empty', mapId, [QUEUE_KEY]);
     return;
   }
   if (emptyQueues.has(mapId)) return;
   emptyQueues.add(mapId);
-  void emitWebhookEvents(mapId, [{ event: 'queue.empty', data }]);
+  await emitWebhookEvents(mapId, [{ event: 'queue.empty', data, dedupeKey: QUEUE_KEY }]);
 }
 
-/** New or re-opened asks of a collector push → node.question, one per ask on a map. */
-export function emitOpenedAsks(opened: Array<{ mapId: string | null; ask: Ask }>): void {
+/**
+ * New or re-opened asks of a collector push → node.question, one per ask
+ * on a map — through the ledger, so an ask a push "opens" again without
+ * an answer in between (it dropped out of the last push) stays quiet.
+ */
+export async function emitOpenedAsks(opened: Array<{ mapId: string | null; ask: Ask }>): Promise<void> {
   if (!started) return;
-  const byMap = new Map<string, Array<{ event: WebhookEvent; data: Record<string, unknown> }>>();
+  const byMap = new Map<string, EmitItem[]>();
   for (const { mapId, ask } of opened) {
     if (!mapId || ask.moot) continue;
     const list = byMap.get(mapId) ?? [];
     list.push({
       event: 'node.question',
+      dedupeKey: ask.id,
       data: {
         askId: ask.id,
         question: ask.question,
@@ -415,7 +492,7 @@ export function emitOpenedAsks(opened: Array<{ mapId: string | null; ask: Ask }>
     });
     byMap.set(mapId, list);
   }
-  for (const [mapId, items] of byMap) void emitWebhookEvents(mapId, items);
+  for (const [mapId, items] of byMap) await emitWebhookEvents(mapId, items);
 }
 
 /** Per watched map: the leaves that read `behind` at the last sweep. */

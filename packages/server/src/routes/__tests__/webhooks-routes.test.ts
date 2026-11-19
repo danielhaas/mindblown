@@ -16,6 +16,7 @@ const svc = vi.hoisted(() => ({
   update: vi.fn(),
   del: vi.fn(),
   ping: vi.fn(),
+  stats: vi.fn(),
 }));
 
 vi.mock('../../services/webhooks.js', async () => {
@@ -30,6 +31,7 @@ vi.mock('../../services/webhooks.js', async () => {
     updateWebhook: (...a: unknown[]) => svc.update(...a),
     deleteWebhook: (...a: unknown[]) => svc.del(...a),
     pingWebhook: (...a: unknown[]) => svc.ping(...a),
+    webhookStats: (...a: unknown[]) => svc.stats(...a),
   };
 });
 vi.mock('../../db/permissions.js', () => ({
@@ -121,5 +123,18 @@ describe('webhook routes', () => {
       const r = await app.inject({ method, url: `/api/maps/${MAP}/webhooks/${url}`, payload: method === 'PATCH' ? { active: true } : undefined });
       expect(r.statusCode).toBe(404);
     }
+  });
+
+  it('stats: counts only, so view on the map is enough; none is a 403', async () => {
+    const app = await buildApp();
+    const stats = [{ event: 'node.question', sentLastHour: 1, sent24h: 9, suppressed24h: 297 }];
+    svc.stats.mockResolvedValue(stats);
+    state.perm = { [MAP]: 'view' };
+    const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP}/webhooks/stats` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ stats });
+    expect(svc.stats).toHaveBeenCalledWith(MAP);
+    state.perm = {};
+    expect((await app.inject({ method: 'GET', url: `/api/maps/${MAP}/webhooks/stats` })).statusCode).toBe(403);
   });
 });

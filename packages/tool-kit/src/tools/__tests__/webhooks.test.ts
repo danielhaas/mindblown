@@ -19,6 +19,9 @@ const sub: WebhookSubscription = {
 function backend(calls: unknown[][]): ToolBackend {
   return {
     listWebhooks: async (...a: unknown[]) => (calls.push(['list', ...a]), [sub, { ...sub, id: 'w2', mapId: null, events: [], lastDeliveryAt: null, lastStatus: null }]),
+    webhookStats: async (...a: unknown[]) => (calls.push(['stats', ...a]), [
+      { event: 'node.question', sentLastHour: 2, sent24h: 9, suppressed24h: 297 },
+    ]),
     createWebhook: async (...a: unknown[]) => (calls.push(['create', ...a]), { ...sub, secret: 'abc123' }),
     updateWebhook: async (...a: unknown[]) => (calls.push(['update', ...a]), { ...sub, active: false }),
     deleteWebhook: async (...a: unknown[]) => (calls.push(['delete', ...a]), { deleted: true, id: 'w1' }),
@@ -51,12 +54,13 @@ describe('webhook tools', () => {
   it('list renders scope, events and the last delivery — never a secret', async () => {
     const calls: unknown[][] = [];
     const out = await listWebhooksTool.handler(backend(calls), { mapId: 'm1' } as never);
-    expect(calls).toEqual([['list', 'm1']]);
+    expect(calls).toEqual([['list', 'm1'], ['stats', 'm1']]);
     expect(out).toContain('w1 · active · map · https://hub.example/hook');
     expect(out).toContain('last 2026-11-12 01:02 → 200');
     expect(out).toContain('w2 · active · workspace');
     expect(out).toContain('all events · never delivered');
     expect(out).not.toContain('secret');
+    expect(out).toContain('node.question: 2 this hour · 9 sent · 297 held back as repeats');
   });
 
   it('update, delete and ping forward map + webhook id', async () => {

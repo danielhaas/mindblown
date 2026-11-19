@@ -9,7 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, MoveNodeToMapResult, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { CommentKind, NodeComment, AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookSubscription } from '@mindblown/core';
+import type { CommentKind, NodeComment, AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookEventStat, WebhookSubscription } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
 export interface FleetStatusResult {
@@ -702,6 +702,8 @@ export interface ToolBackend {
   // ── Outgoing webhooks ───────────────────────────────────────────
   /** The map's subscriptions and its workspace's — `GET /api/maps/:id/webhooks`. Never the secret. */
   listWebhooks(mapId: string): Promise<WebhookSubscription[]>;
+  /** Traffic per event on the map: sent this hour, sent / held back as a repeat in 24 h — `GET …/webhooks/stats`. */
+  webhookStats(mapId: string): Promise<WebhookEventStat[]>;
   /** Subscribe a URL — `POST /api/maps/:id/webhooks`. The answer carries the signing secret, this once. */
   createWebhook(mapId: string, input: CreateWebhookInput): Promise<WebhookSubscription & { secret: string }>;
   /** `PATCH /api/maps/:id/webhooks/:webhookId`. */
