@@ -235,6 +235,16 @@ export interface ReadyNodesResult {
    * counted in `total`.
    */
   awaitingApproval: Array<{ id: string; text: string; approval: 'proposed' | 'rejected'; heldBy: { id: string; text: string } | null }>;
+  /**
+   * Ready leaves inside the dispatch gate but without a brief (core
+   * `hasBrief`) — get_next_ticket refuses them. Map-wide, not in `total`.
+   */
+  needsBrief?: Array<{ id: string; text: string; reason: string }>;
+  /**
+   * Ready leaves the map's dispatch gate keeps out — the fleet never pulls
+   * them. `missedGate` = the gate entries they fail. Map-wide, not in `total`.
+   */
+  outsideGate?: Array<{ id: string; text: string; reason: string; missedGate: string[] }>;
 }
 
 export interface ClaimNodeResult {

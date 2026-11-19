@@ -2,7 +2,8 @@
  * ready_nodes as a developer queue (#323): leaves only, the active sprint
  * by default, priority before rank, and the context to pick (parent path,
  * what waits on it). Real core; the db is a queue of select results in
- * call order: map row, node rows, cycle rows.
+ * call order: map row, node rows, version rows (only when the gate names
+ * a version), cycle rows.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -10,7 +11,7 @@ const selects: unknown[][] = [];
 vi.mock('../../db/connection.js', () => ({
   db: { select: () => ({ from: () => ({ where: async () => selects.shift() ?? [] }) }) },
 }));
-vi.mock('../../db/schema.js', () => ({ nodes: {}, maps: {}, cycles: {} }));
+vi.mock('../../db/schema.js', () => ({ nodes: {}, maps: {}, cycles: {}, versions: {} }));
 vi.mock('../../db/nodes.js', () => ({ notDeleted: {} }));
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../../db/events.js', () => ({ recordClaimed: vi.fn(), recordReleased: vi.fn() }));
@@ -28,6 +29,7 @@ function row(p: Record<string, unknown>) {
     createdAt: new Date(`2026-01-${String(seq).padStart(2, '0')}T00:00:00Z`),
     updatedAt: new Date('2026-01-01T00:00:00Z'), createdBy: 't',
     approval: { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' },
+    description: 'A brief the worker can act on.',
     ...p,
   };
 }
@@ -126,5 +128,63 @@ describe('readyNodes — developer queue (#323)', () => {
     ], []);
     const r = await readyNodes('m1', { sprint: 'all' });
     expect(r.ready.map((n) => n.id)).toEqual(['late']);
+  });
+});
+
+describe('readyNodes — the pull queue\'s own fences: gate and brief (19.11.2026)', () => {
+  it('a briefless leaf and a leaf outside the gate are listed apart with the reason; a briefed leaf inside the gate is ready', async () => {
+    selects.push(
+      [{ id: 'm1', statusWorkflow: [], dispatchGate: ['version:v1'] }],
+      [
+        root(),
+        row({ id: 'go', versionId: 'v1', text: 'Avatar picker' }),
+        row({ id: 'bare', versionId: 'v1', text: 'Avatar crop', description: null }),
+        row({ id: 'later', versionId: 'v2', text: 'Avatar frames' }),
+        row({ id: 'loose', text: 'Avatar upload', description: null }),
+        row({ id: 'linked', versionId: 'v1', text: 'Avatar cache', description: null, externalLinks: [{ provider: 'github', externalId: 'o/r#7', url: '', syncEnabled: true, lastSyncedAt: null }] }),
+      ],
+      [{ id: 'v1', name: 'V1' }, { id: 'v2', name: 'V2' }],
+    );
+    const r = await readyNodes('m1', { sprint: 'all' });
+    expect(r.ready.map((n) => n.id).sort()).toEqual(['go', 'linked']);
+    expect(r.total).toBe(2);
+    expect(r.needsBrief).toEqual([
+      { id: 'bare', text: 'Avatar crop', reason: 'no description, no linked issue, title under 10 words' },
+    ]);
+    expect(r.outsideGate).toEqual([
+      { id: 'later', text: 'Avatar frames', missedGate: ['version:v1'], reason: 'gate wants version "V1" — this leaf has version "V2"' },
+      { id: 'loose', text: 'Avatar upload', missedGate: ['version:v1'], reason: 'gate wants version "V1" — this leaf has no version; it has no brief either' },
+    ]);
+  });
+
+  it('milestone:current (#675): a later milestone\'s leaf waits outside the gate while the current one has work', async () => {
+    selects.push(
+      [{ id: 'm1', statusWorkflow: [], dispatchGate: ['milestone:current'] }],
+      [
+        row({ id: 'root', parentId: null, text: 'Root', childrenOrder: ['ms1', 'ms2'] }),
+        row({ id: 'ms1', text: 'M1 test VM' }),
+        row({ id: 'ms2', text: 'M2 pilot' }),
+        row({ id: 'a', parentId: 'ms1', text: 'Set up VM' }),
+        row({ id: 'b', parentId: 'ms2', text: 'Pilot rollout' }),
+      ],
+      [],
+    );
+    const r = await readyNodes('m1', { sprint: 'all' });
+    expect(r.ready.map((n) => n.id)).toEqual(['a']);
+    expect(r.outsideGate).toEqual([
+      { id: 'b', text: 'Pilot rollout', missedGate: ['milestone:current'], reason: 'gate wants the current milestone "M1 test VM" — this leaf is in "M2 pilot"' },
+    ]);
+  });
+
+  it('no gate: nothing is outside it; a long title is a brief', async () => {
+    selects.push([mapRow], [
+      root(),
+      row({ id: 'short', description: null, text: 'Fix it' }),
+      row({ id: 'long', description: null, text: 'Make the avatar upload accept PNG files up to five megabytes' }),
+    ]);
+    const r = await readyNodes('m1', { sprint: 'all' });
+    expect(r.ready.map((n) => n.id)).toEqual(['long']);
+    expect(r.needsBrief?.map((n) => n.id)).toEqual(['short']);
+    expect(r.outsideGate).toEqual([]);
   });
 });

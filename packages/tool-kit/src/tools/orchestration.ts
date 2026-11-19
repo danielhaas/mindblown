@@ -19,7 +19,8 @@ import type { FleetStatusResult } from '../backend.js';
 export const readyNodesTool = defineTool({
   name: 'ready_nodes',
   description: [
-    'Return the developer queue: LEAF nodes that are ready to be picked up.',
+    'Return the developer queue: LEAF nodes that are ready to be picked up — the same',
+    'predicate get_next_ticket pulls by, so "ready" means the fleet would take it.',
     '',
     'A node is ready when:',
     '  - It is a leaf (a node with children is a container — its children are the work)',
@@ -35,6 +36,17 @@ export const readyNodesTool = defineTool({
     '  - Its status is in the "todo" category (or status is null)',
     '  - It is not currently claimed by any session (claimedBySession = null)',
     '  - Every dependency predecessor (FS/SS/FF/SF) has status in the "done" category',
+    '  - It is inside the map\'s dispatch gate (update_map dispatchGate: every entry matches —',
+    '    version:<id> on its effective version, type:bug on a bug, "a|b" = either; milestone:current holds a later milestone\'s',
+    '    leaves while an earlier one still has agent work). Leaves the',
+    '    gate keeps out are listed apart under "Outside the dispatch gate", with the entries',
+    '    they miss',
+    '  - It has a brief: a non-empty description, a linked forge issue/PR, or a title of at',
+    '    least 10 words. Briefless leaves are listed apart under "Needs a brief" — the pull',
+    '    refuses them (and tags them needs-brief)',
+    '',
+    'The "Awaiting approval", "Outside the dispatch gate" and "Needs a brief" sections are',
+    'map-wide (not limited by sprint or scopeFilter) and not counted in the total.',
     '',
     'Scoped to the map\'s ACTIVE sprint by default (the node or an ancestor carries it);',
     'pass sprint: "all" for the whole map, or a sprint id. A map with no active sprint',
@@ -42,8 +54,8 @@ export const readyNodesTool = defineTool({
     '',
     'Ordered priority (P0–P3, unset last) → priorityRank within a priority → oldest first.',
     'Each row shows where the leaf sits (parent path) and how many nodes wait on it.',
-    'This is a read-only view; get_next_ticket is the atomic pull (it applies the map\'s',
-    'dispatch gate and policy, so its order can differ).',
+    'This is a read-only view; get_next_ticket is the atomic pull (it orders by the map\'s',
+    'dispatch policy and routes by worker profile, so its order can differ).',
   ].join('\n'),
   schema: {
     mapId: z.string().describe('The map ID'),
@@ -72,24 +84,32 @@ export const readyNodesTool = defineTool({
       scope == null || scope.mode === 'all' || scope.cycles.length === 0
         ? 'whole map'
         : `sprint ${scope.cycles.map((c) => `"${c.name}"`).join(', ')}`;
-    // Map-wide: approval is a gate before the sprint and scope filters.
+    // Map-wide: approval, gate and brief are fences before the sprint and scope filters.
+    const sectionLines: string[] = [];
+    const section = (title: string, rows: string[]): void => {
+      if (rows.length > 0) sectionLines.push('', title, ...rows);
+    };
     const awaiting = result.awaitingApproval ?? [];
-    const awaitingLines =
-      awaiting.length === 0
-        ? []
-        : [
-            '',
-            `Awaiting approval (${awaiting.length}) — not dispatched until a trusted person approves:`,
-            ...awaiting.map(
-              (a) => `  - ${a.id} "${a.text}" [${a.approval}${a.heldBy ? ` — via parent ${a.heldBy.id} "${a.heldBy.text}"` : ''}]`,
-            ),
-          ];
+    section(
+      `Awaiting approval (${awaiting.length}) — not dispatched until a trusted person approves:`,
+      awaiting.map((a) => `  - ${a.id} "${a.text}" [${a.approval}${a.heldBy ? ` — via parent ${a.heldBy.id} "${a.heldBy.text}"` : ''}]`),
+    );
+    const outside = result.outsideGate ?? [];
+    section(
+      `Outside the dispatch gate (${outside.length}) — the fleet does not pull these until the gate (update_map dispatchGate) or the leaf changes:`,
+      outside.map((o) => `  - ${o.id} "${o.text}" — ${o.reason}`),
+    );
+    const briefless = result.needsBrief ?? [];
+    section(
+      `Needs a brief (${briefless.length}) — the fleet refuses these until they get a description, a linked issue, or a longer title:`,
+      briefless.map((b) => `  - ${b.id} "${b.text}" — ${b.reason}`),
+    );
 
     if (result.ready.length === 0) {
       const base = scopeFilter && scopeFilter.length > 0
         ? `No ready leaves in map ${mapId} (${scopeText}) matching scopes [${scopeFilter.join(', ')}].`
-        : `No ready leaves in map ${mapId} (${scopeText}). Everything is done, in progress, claimed, or waiting on dependencies.`;
-      return [base, scope?.note, scope?.mode === 'active' && scope.cycles.length > 0 ? 'Pass sprint: "all" to look beyond the sprint.' : null, ...awaitingLines]
+        : `No ready leaves in map ${mapId} (${scopeText}). Everything is done, in progress, claimed, held, or waiting on dependencies.`;
+      return [base, scope?.note, scope?.mode === 'active' && scope.cycles.length > 0 ? 'Pass sprint: "all" to look beyond the sprint.' : null, ...sectionLines]
         .filter((l) => l !== null && l !== undefined)
         .join('\n');
     }
@@ -106,7 +126,7 @@ export const readyNodesTool = defineTool({
       const waiting = n.dependents ? ` · ${n.dependents} waiting on it` : '';
       lines.push(`  - ${n.id} "${n.text}"${priority}${where}${waiting}${scopes}`);
     }
-    lines.push(...awaitingLines);
+    lines.push(...sectionLines);
     return lines.join('\n');
   },
 });

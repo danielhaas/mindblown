@@ -157,6 +157,7 @@ export {
   defaultVersionForNewLeaf,
   GATE_OR,
   matchesDispatchGate,
+  missedGateEntries,
   pullableNodes,
   dispatchQueueSnapshot,
   dispatchSkipTag,

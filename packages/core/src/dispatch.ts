@@ -300,14 +300,22 @@ export function gateVersionIds(gate: string[]): string[] {
  * applies it on top.
  */
 export function matchesDispatchGate(node: Node, gate: string[], nodeMap: NodeMap): boolean {
+  return missedGateEntries(node, gate, nodeMap).length === 0;
+}
+
+/**
+ * The gate entries a node fails, in gate order — the reason it is outside
+ * the gate (ready_nodes' "Outside the dispatch gate"). Empty = inside.
+ */
+export function missedGateEntries(node: Node, gate: string[], nodeMap: NodeMap): string[] {
   const term = (t: GateTerm): boolean =>
     t.kind === 'bugs' ? isBugNode(node) : effectiveVersionId(node.id, nodeMap) === t.versionId;
-  return gate.every((entry) => {
+  return gate.filter((entry) => {
     const parsed = parseGateEntry(entry);
-    if (parsed.kind === 'any') return parsed.options.some(term);
-    if (parsed.kind === 'unknown') return false;
-    if (parsed.kind === 'milestone') return true;
-    return term(parsed);
+    if (parsed.kind === 'any') return !parsed.options.some(term);
+    if (parsed.kind === 'unknown') return true;
+    if (parsed.kind === 'milestone') return false;
+    return !term(parsed);
   });
 }
 
