@@ -555,3 +555,48 @@ export function dispatchQueueSnapshot(
     state,
   };
 }
+
+/**
+ * Ready work the gate keeps out: pullable leaves (`pullableNodes`) that
+ * `matchesDispatchGate` refuses and no hold keeps for a person — the
+ * tickets an idle fleet would take if the gate let them in. On Navy
+ * (19.11.2026) the gate named V1/V2, everything left there was a person's,
+ * and 10 such tickets sat outside it while the pull said `empty`.
+ * Empty gate = nothing is outside. `byVersion` counts the versioned ones
+ * per effective version id.
+ */
+export interface GatedOutReady {
+  ids: string[];
+  unversioned: number;
+  byVersion: Record<string, number>;
+}
+
+export function gatedOutReady(nodes: Node[], opts: { workflow: StatusDef[]; gate: string[] }): GatedOutReady {
+  const out: GatedOutReady = { ids: [], unversioned: 0, byVersion: {} };
+  if (opts.gate.length === 0) return out;
+  const { pullable, nodeMap } = pullableNodes(nodes, opts.workflow);
+  const ancestors = { nodeMap, isDone: buildIsDonePredicate(opts.workflow) };
+  for (const n of pullable) {
+    if (matchesDispatchGate(n, opts.gate, nodeMap) || dispatchHold(n, ancestors) !== null) continue;
+    out.ids.push(n.id);
+    const v = effectiveVersionId(n.id, nodeMap);
+    if (v === null) out.unversioned++;
+    else out.byVersion[v] = (out.byVersion[v] ?? 0) + 1;
+  }
+  return out;
+}
+
+/**
+ * The version a new unversioned leaf gets by default: in a map whose gate
+ * names versions, the active one (status `active`, the first by sort order
+ * when several are). No gate version or no active version → null, the
+ * leaf stays unversioned. Without it a ticket filed by an agent, the intake
+ * or the forge import landed outside the gate and the fleet never saw it.
+ */
+export function defaultVersionForNewLeaf<V extends { id: string; status: string; sortOrder: number }>(
+  gate: string[],
+  versions: V[],
+): V | null {
+  if (gateVersionIds(gate).length === 0) return null;
+  return [...versions].filter((v) => v.status === 'active').sort((a, b) => a.sortOrder - b.sortOrder)[0] ?? null;
+}

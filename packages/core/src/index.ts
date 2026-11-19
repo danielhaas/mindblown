@@ -146,6 +146,8 @@ export {
   TITLE_BRIEF_MIN_WORDS,
   parseGateEntry,
   gateVersionIds,
+  gatedOutReady,
+  defaultVersionForNewLeaf,
   GATE_OR,
   matchesDispatchGate,
   pullableNodes,
@@ -167,7 +169,7 @@ export {
   fleetFixAction,
   planUnblock,
 } from './dispatch.js';
-export type { DispatchPolicyKey, GateEntry, GateTerm, DispatchState, DispatchQueueSnapshot, DispatchHold, ParentHold, UnblockPlan } from './dispatch.js';
+export type { DispatchPolicyKey, GateEntry, GateTerm, DispatchState, DispatchQueueSnapshot, DispatchHold, ParentHold, UnblockPlan, GatedOutReady } from './dispatch.js';
 
 // Wrong-map guard — a ticket that names another map's repo
 export { MISFILED_TAG, namedRepos, parseRepoRef, findMisfiledRepo, misfiledHint } from './misfiled.js';
@@ -459,8 +461,15 @@ export {
   briefAskNodeId,
   buildBriefAsk,
   briefAnswerAction,
+  GATE_ASK_PREFIX,
+  GATE_ASK_OPTIONS,
+  gateAskId,
+  gateAskMapId,
+  gatedOutSplit,
+  buildGateAsk,
+  gateAnswerAction,
 } from './humanSteps.js';
-export type { StepAnswer, StepParts, BlockerAnswer, BriefAnswer } from './humanSteps.js';
+export type { StepAnswer, StepParts, BlockerAnswer, BriefAnswer, GateAnswer } from './humanSteps.js';
 
 // Every blocker reaches a person or resolves itself: flag_blocker's kinds
 export {

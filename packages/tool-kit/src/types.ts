@@ -113,6 +113,12 @@ export interface NodeWithComputed {
    * (tag `misfiled?`) — move it with move_node_to_map.
    */
   misfiled?: MisfiledRepoInfo | null;
+  /**
+   * Set on create's answer when the node came without a version and the
+   * server gave it the map's active version (the map's dispatch gate names
+   * versions — an unversioned ticket would be invisible to the fleet).
+   */
+  versionDefault?: { id: string; name: string } | null;
 }
 
 /** The repo a misfiled node names and the map that plans it (mirrors core MisfiledRepo). */

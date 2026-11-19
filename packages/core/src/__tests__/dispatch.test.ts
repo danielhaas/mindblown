@@ -22,7 +22,10 @@ import {
   planUnblock,
   MIX_BUGS_PREFIX,
   NEEDS_BRIEF_TAG,
+  gatedOutReady,
+  defaultVersionForNewLeaf,
 } from '../dispatch.js';
+import { buildGateAsk, gateAnswerAction, gateAskId, gateAskMapId, isDerivedAsk, isPersonStepAsk } from '../humanSteps.js';
 
 const APPROVED = { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' } as const;
 
@@ -471,5 +474,76 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
     // No stamp on the ticket waits like proposed (fail-closed).
     expect(dispatchHold(nodes[2] as never)).toEqual({ tag: null, blockedReason: null, approval: 'proposed', heldBy: null });
     expect(dispatchHold(nodes[4] as never)?.approval).toBe('rejected');
+  });
+});
+
+describe('gatedOutReady — ready work the gate keeps out', () => {
+  const nodes = [
+    n({ id: 'root', parentId: null, childrenIds: ['epic', 'bug', 'loose', 'v3', 'held'] }),
+    epic,
+    leaf,
+    bug,
+    loose,
+    n({ id: 'v3', status: 'todo', versionId: 'v3' }),
+    n({ id: 'held', status: 'todo', tags: ['needs-human'] }),
+  ];
+
+  it('counts ready, unheld leaves outside the gate, split by version', () => {
+    const g = gatedOutReady(nodes, { workflow: WORKFLOW, gate: ['version:v1'] });
+    expect(g.ids.sort()).toEqual(['bug', 'loose', 'v3']);
+    expect(g.unversioned).toBe(2);
+    expect(g.byVersion).toEqual({ v3: 1 });
+  });
+
+  it('an OR-entry lets the unversioned bug in; an empty gate keeps nothing out', () => {
+    expect(gatedOutReady(nodes, { workflow: WORKFLOW, gate: ['type:bug|version:v1'] }).ids.sort()).toEqual(['loose', 'v3']);
+    expect(gatedOutReady(nodes, { workflow: WORKFLOW, gate: [] }).ids).toEqual([]);
+  });
+});
+
+describe('defaultVersionForNewLeaf', () => {
+  const versions = [
+    { id: 'v2', status: 'active', sortOrder: 2 },
+    { id: 'v1', status: 'active', sortOrder: 1 },
+    { id: 'v3', status: 'planning', sortOrder: 3 },
+  ];
+  it('the active version (first by sort order) when the gate names a version', () => {
+    expect(defaultVersionForNewLeaf(['type:bug|version:v1'], versions)?.id).toBe('v1');
+  });
+  it('none without a gate version or an active version', () => {
+    expect(defaultVersionForNewLeaf([], versions)).toBeNull();
+    expect(defaultVersionForNewLeaf(['type:bug'], versions)).toBeNull();
+    expect(defaultVersionForNewLeaf(['version:v1'], [{ id: 'v3', status: 'planning', sortOrder: 3 }])).toBeNull();
+  });
+});
+
+describe('the gate ask', () => {
+  const MAP = '11111111-2222-3333-4444-555555555555';
+  const gated = { ids: ['a', 'b', 'c'], unversioned: 1, byVersion: { v4: 1, v3: 1 } };
+  const names: Record<string, string> = { v3: 'V3', v4: 'V4' };
+
+  it('one row per gated-out set: same set, same id; another set, another id; the id names the map', () => {
+    expect(gateAskId(MAP, ['b', 'a'])).toBe(gateAskId(MAP, ['a', 'b']));
+    expect(gateAskId(MAP, ['a'])).not.toBe(gateAskId(MAP, ['a', 'b']));
+    expect(gateAskMapId(gateAskId(MAP, ['a']))).toBe(MAP);
+    expect(gateAskMapId('gate-x')).toBeNull();
+    expect(gateAskMapId('step-' + MAP)).toBeNull();
+  });
+
+  it('asks the owner: the count, the split and the three options', () => {
+    const a = buildGateAsk({ id: MAP, name: 'Navy App' }, gated, { versionName: (id) => names[id], activeVersion: 'V1', answerer: 'Dan' });
+    expect(a.question).toMatch(/^Navy App: the fleet is idle, 3 ready tickets are outside the gate \(1 unversioned, 2 in V3\/V4\)\. Version them \/ widen the gate \/ leave it\./);
+    expect(a.question).toContain('into V1, the active version');
+    expect(a.options).toEqual(['Version them', 'Widen the gate', 'Leave it']);
+    expect(a.hint).toBe('decision');
+    expect(isDerivedAsk(a)).toBe(true);
+    expect(isPersonStepAsk(a)).toBe(false);
+  });
+
+  it('answers: Version them, Widen the gate, anything else leaves it', () => {
+    expect(gateAnswerAction('Version them')).toBe('version-them');
+    expect(gateAnswerAction('widen the gate')).toBe('widen-gate');
+    expect(gateAnswerAction('Leave it')).toBe('leave-it');
+    expect(gateAnswerAction('not now')).toBe('leave-it');
   });
 });

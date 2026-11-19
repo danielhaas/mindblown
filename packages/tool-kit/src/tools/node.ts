@@ -14,6 +14,11 @@ const REQUESTED_AT_DESC =
   'When we asked (YYYY-MM-DD). Starts the lead-time clock: asked early, the wait ends earlier and dependent work moves up. Unset = the scheduler assumes we ask as soon as possible, and risk_scan says "ask now" when the last day to ask comes close.';
 const WAITING_ON_DESC = 'Who we are waiting on (free text, e.g. "LOKE engineering"), shown with the wait.';
 
+/** What create_node / bulk_create_nodes say when the server gave a new node the active version. */
+export function versionDefaultHint(v: { id: string; name: string }): string {
+  return `Added to ${v.name} (versionId: ${v.id}), the map's active version: its dispatch gate names versions, so an unversioned ticket would be invisible to the fleet. Change it with update_node versionId, or pass versionId: null on create to keep it unversioned.`;
+}
+
 export const createNodeTool = defineTool({
   name: 'create_node',
   description: 'Create a new node (task/idea) in a map under a parent node',
@@ -56,7 +61,11 @@ export const createNodeTool = defineTool({
       .max(60 * 24 * 30)
       .optional()
       .describe('Your ETA as minutes from now (stored as expectedDoneAt, computed on the clock of the machine running the tool). Cannot be combined with expectedDoneAt.'),
-    versionId: z.string().optional().describe('Version ID to assign this node to'),
+    versionId: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("Version ID to assign this node to. Omitted in a map whose dispatchGate names versions: the map's active version (the answer says so). null keeps it unversioned — outside such a gate, invisible to the fleet."),
     tags: z.array(z.string()).optional().describe('Tags to set on the new node'),
     scopes: z
       .array(z.string())
@@ -152,6 +161,7 @@ export const createNodeTool = defineTool({
     }
     // Wrong-map guard: created, but held from the fleet until it is moved.
     if (node.misfiled) out += `\n${misfiledHint(node.misfiled)}`;
+    if (node.versionDefault) out += `\n${versionDefaultHint(node.versionDefault)}`;
     return out;
   },
 });
