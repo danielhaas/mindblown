@@ -70,6 +70,27 @@ test('"+N" pill drills into the node and shows what was hidden', async ({ page }
   await expect(page.getByText('Invoices', { exact: true })).toBeVisible();
 });
 
+test('"+N" pill: its left edge drills in too, not the hover "add child" handle', async ({ page }) => {
+  await open(page);
+  const pill = await pillFor(page, 'Billing');
+  const nodeCount = await page.evaluate(
+    () => Object.keys((window as never as { __store: { getState(): { nodes: object } } }).__store.getState().nodes).length,
+  );
+  // Hover the node first so the create handle is showing, as it is for a
+  // person who moves the mouse from the label to the pill.
+  const label = (await page.getByText('Billing', { exact: true }).boundingBox())!;
+  await page.mouse.move(label.x + label.width / 2, label.y + label.height / 2);
+  await page.mouse.move(pill.x + 2, pill.y + pill.height / 2, { steps: 5 });
+  await page.mouse.down();
+  await page.mouse.up();
+
+  expect((await state(page)).focus).toBe('area');
+  const after = await page.evaluate(
+    () => Object.keys((window as never as { __store: { getState(): { nodes: object } } }).__store.getState().nodes).length,
+  );
+  expect(after).toBe(nodeCount);
+});
+
 test('"+N" pill on a folded node unfolds it on the way in', async ({ page }) => {
   await open(page);
   await clickBox(page, await pillFor(page, 'Auth'));

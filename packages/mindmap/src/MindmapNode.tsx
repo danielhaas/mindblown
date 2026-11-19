@@ -496,10 +496,14 @@ export function MindmapNode({
       {hasHiddenChildren && hiddenDescendantCount > 0 && (() => {
         const badgeW = (hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40) * textScale;
         const badgeH = 20 * textScale;
+        // Start past the editor's hover "add child" handle (unscaled
+        // circle at x+width+8, r=10 → ends at x+width+18). It draws on
+        // top, so an overlap turns a click on the pill into a new child.
+        const badgeX = x + width + Math.max(20, 6 * textScale);
         return (
         <g
           data-testid="node-show-hidden"
-          transform={`translate(${x + width + 6 * textScale}, ${y + height / 2 - badgeH / 2})`}
+          transform={`translate(${badgeX}, ${y + height / 2 - badgeH / 2})`}
           style={{ cursor: 'pointer' }}
           onMouseDown={(e) => e.stopPropagation()}
           onDoubleClick={(e) => e.stopPropagation()}
