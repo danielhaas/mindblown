@@ -1571,6 +1571,13 @@ export function MindmapEditor() {
                       ? nodeData.childrenIds.length
                       : undefined
                   }
+                  onShowHidden={() => {
+                    // Drill in, same as double-click. A folded node would
+                    // open empty, so unfold it first.
+                    if (nodeData.collapsed) toggleCollapse(ln.id);
+                    setFocusNode(ln.id);
+                  }}
+                  onExpand={() => toggleCollapse(ln.id)}
                   onRefineClick={() =>
                     setRefine({ parentId: ln.id, parentText: nodeData.text })
                   }
