@@ -50,6 +50,9 @@ export type {
   CreateWebhookInput,
   UpdateWebhookInput,
   WebhookPingResult,
+  // Markdown timeline + wiki publish (#637)
+  ExportMarkdownOptions,
+  WikiPublishResult,
 } from './backend.js';
 export type { ToolSpec } from './spec.js';
 export { defineTool } from './spec.js';

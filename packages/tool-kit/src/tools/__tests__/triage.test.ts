@@ -92,6 +92,8 @@ function makeRecorder(): Recorder {
     createFleet: async () => { throw new Error('not used'); },
     updateFleet: async () => { throw new Error('not used'); },
     freezeBaseline: async () => { throw new Error('not used'); },
+    exportMarkdown: async () => { throw new Error('not used'); },
+    publishToWiki: async () => { throw new Error('not used'); },
     createNode: async () => { throw new Error('not used'); },
     updateNode: async () => { throw new Error('not used'); },
     deleteNode: async () => { throw new Error('not used'); },

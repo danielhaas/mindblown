@@ -451,4 +451,32 @@ export const projectSetupStatusTool = defineTool({
   },
 });
 
-export const mapTools = [listMapsTool, getMapTool, createMapTool, updateMapTool, deleteMapTool, freezeBaselineTool, listBaselinesTool, projectSetupStatusTool];
+export const exportMarkdownTool = defineTool({
+  name: 'export_markdown',
+  description:
+    "The map — or one subtree — as a Markdown timeline for someone who is not on the project: header (progress, projected end), a summary table (milestone | status | projected dates | waiting on), then one section per top-level child in schedule order with its status, projected dates, what it is waiting on (blocked leaves and leaves tagged `external`, with who owns them), the open work linked to its issues, and done milestones collapsed to what was delivered. Returns the Markdown itself, so you can paste it into any wiki or document through that tool's own MCP. detail 'summary' (default) shows no node ids or effort numbers; 'full' adds them.",
+  schema: {
+    mapId: z.string().describe('The map ID'),
+    rootNodeId: z.string().optional().describe('Render only this subtree; its children become the sections. Default: the whole map.'),
+    detail: z.enum(['summary', 'full']).optional().describe('"summary" (default) for outside readers; "full" adds node ids and effort.'),
+    timeZone: z.string().optional().describe('IANA time zone of the reader (e.g. "Europe/Zurich") for the "generated" stamp. Default UTC.'),
+  },
+  handler: async (backend, { mapId, rootNodeId, detail, timeZone }) => {
+    return backend.exportMarkdown(mapId, { rootNodeId, detail, timeZone });
+  },
+});
+
+export const publishToWikiTool = defineTool({
+  name: 'publish_to_wiki',
+  description:
+    "Publish the map's Markdown timeline (see export_markdown) to the workspace's Outline wiki. The first publish creates the page in the configured collection; every later one updates that same page. One-way: the page says it is generated and links back to the map — edits belong in the map. Needs the workspace's wiki connection (Outline URL, API token, collection), set by the workspace owner in Import / Export → Publish to wiki.",
+  schema: {
+    mapId: z.string().describe('The map ID'),
+  },
+  handler: async (backend, { mapId }) => {
+    const r = await backend.publishToWiki(mapId);
+    return `${r.created ? 'Created' : 'Updated'} the wiki page: ${r.documentUrl} (published ${r.publishedAt}).`;
+  },
+});
+
+export const mapTools = [listMapsTool, getMapTool, createMapTool, updateMapTool, deleteMapTool, freezeBaselineTool, listBaselinesTool, projectSetupStatusTool, exportMarkdownTool, publishToWikiTool];

@@ -66,6 +66,7 @@ import { digestConfig, runDigestMails } from './services/digestMail.js';
 import { pushoverConfigured } from './lib/pushover.js';
 import { onBroadcast, registerWebSocket } from './ws.js';
 import { webhookRoutes } from './routes/webhooks.js';
+import { wikiRoutes } from './routes/wiki.js';
 import { handleBroadcast, startWebhooks } from './services/webhooks.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -161,6 +162,7 @@ async function main(): Promise<void> {
   await app.register(repoDocsRoutes);
   await app.register(prRoutes);
   await app.register(webhookRoutes);
+  await app.register(wikiRoutes);
   await app.register(systemRoutes);
   await registerWebSocket(app);
 

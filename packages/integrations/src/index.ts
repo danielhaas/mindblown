@@ -156,3 +156,7 @@ export type {
   GitHubRepo,
   GitHubInstallationAccount,
 } from './github-app.js';
+
+// ── Outline wiki (#637): publish a map's timeline as a document ──
+export { createOutlineClient, outlineBase, OutlineApiError } from './outline.js';
+export type { OutlineClient, OutlineClientOptions, OutlineDocument } from './outline.js';

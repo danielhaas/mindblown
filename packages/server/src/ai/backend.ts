@@ -5,6 +5,8 @@
  * mutation so connected map viewers update in real time.
  */
 
+import { buildTimelineMarkdown } from '../export/timeline.js';
+import { publishMapToWiki } from '../services/wikiPublish.js';
 import { normalizeHolidaySettings } from '../lib/holidays.js';
 import type { ToolBackend, MapDetail, MapSummary, NodeWithComputed } from '@mindblown/tool-kit';
 import { computeTree, parseTickWindow } from '@mindblown/core';
@@ -253,6 +255,18 @@ export function createChatBackend(userId: string): ToolBackend {
       broadcast(mapId, { type: 'map:updated', map: created.map });
       const b = created.map.baselines[created.map.baselines.length - 1];
       return { id: b.id, name: b.name, createdAt: b.createdAt, nodeCount: Object.keys(b.nodes).length, dropped: created.dropped };
+    },
+
+    async exportMarkdown(mapId, opts) {
+      const data = await mapDb.getMap(mapId);
+      if (!data) throw new Error(`Map ${mapId} not found`);
+      return buildTimelineMarkdown(data, opts ?? {});
+    },
+
+    async publishToWiki(mapId) {
+      const result = await publishMapToWiki(mapId, { userId });
+      if (!result) throw new Error(`Map ${mapId} not found`);
+      return result;
     },
 
     async createNode(mapId, parentId, text, fields) {
@@ -603,6 +617,7 @@ export function createChatBackend(userId: string): ToolBackend {
 /** Backend methods that only read the map; every other map-scoped method writes. */
 export const CHAT_BACKEND_READ_METHODS: ReadonlySet<keyof ToolBackend> = new Set<keyof ToolBackend>([
   'getMap',
+  'exportMarkdown',
   'listDeleted',
   'listTriageDecisions',
   'listNotInMindBlown',

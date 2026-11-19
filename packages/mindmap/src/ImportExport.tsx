@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
+import { TimelineExport } from './TimelineExport.js';
 import { useMindmapStore } from './store.js';
 import type { Node } from '@mindblown/core';
 
@@ -577,6 +578,7 @@ export function ImportExport({ open, onClose }: { open: boolean; onClose: () => 
                 ext=".png"
                 onClick={handleExportPNG}
               />
+              {currentMap?.id && <TimelineExport mapId={currentMap.id} mapName={mapName} />}
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

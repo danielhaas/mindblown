@@ -1620,5 +1620,19 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
     CREATE INDEX IF NOT EXISTS webhook_subscriptions_scope_idx ON webhook_subscriptions (workspace_id, map_id)
   `);
 
+  // ── Wiki publish (#637) ─────────────────────────────────────────
+  // The wiki document each map's timeline goes to, so a second publish
+  // updates it instead of creating another (services/wikiPublish.ts).
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS map_wiki_documents (
+      map_id UUID PRIMARY KEY REFERENCES maps(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL DEFAULT 'outline',
+      document_id TEXT NOT NULL,
+      document_url TEXT NOT NULL,
+      published_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      published_by UUID REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
   console.log('[db] Migrations complete.');
 }

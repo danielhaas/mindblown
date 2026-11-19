@@ -849,3 +849,17 @@ export const webhookSubscriptions = pgTable('webhook_subscriptions', {
   lastStatus: integer('last_status'),
   lastError: text('last_error'),
 });
+
+// ── Wiki publish (#637) ──────────────────────────────────────────
+// The wiki document a map's timeline is published to: created on the first
+// publish, updated in place after that (a one-way push). The Outline base
+// URL, token and collection live on the workspace's `integrations` row
+// (provider 'outline').
+export const mapWikiDocuments = pgTable('map_wiki_documents', {
+  mapId: uuid('map_id').primaryKey().references(() => maps.id, { onDelete: 'cascade' }),
+  provider: text('provider').notNull().default('outline'),
+  documentId: text('document_id').notNull(),
+  documentUrl: text('document_url').notNull(),
+  publishedAt: timestamp('published_at', { withTimezone: true }).notNull().defaultNow(),
+  publishedBy: uuid('published_by').references(() => users.id, { onDelete: 'set null' }),
+});

@@ -74,6 +74,8 @@ function makeRecordingBackend(): {
     createFleet: async () => { throw new Error('not implemented'); },
     updateFleet: async () => { throw new Error('not implemented'); },
     freezeBaseline: async () => { throw new Error('not implemented'); },
+    exportMarkdown: async () => { throw new Error('not implemented'); },
+    publishToWiki: async () => { throw new Error('not implemented'); },
     createNode: async (mapId, parentId, text, fields) => {
       state.lastCreate = { mapId, parentId, text, fields };
       return stubNode;

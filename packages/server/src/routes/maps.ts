@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
 import { computeTree, schedule, criticalPath, capacityCriticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
+import { buildTimelineMarkdown, TimelineOptionError } from '../export/timeline.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap, TrustPolicy } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
@@ -401,6 +402,35 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       }
       reply.header('content-type', 'text/markdown; charset=utf-8');
       return reply.send(renderMarkdown(register));
+    },
+  );
+
+  // ── GET /api/maps/:id/export.md — the map as a Markdown timeline (#637) ──
+  //
+  // For readers outside the project: one section per milestone (the root's
+  // children, or ?root=<nodeId>'s) in schedule order, what each waits on,
+  // a summary table on top. ?detail=summary (default) | full; ?tz=<IANA>
+  // stamps "generated" on the viewer's clock (#595).
+  app.get<{ Params: { id: string }; Querystring: { root?: string; detail?: string; tz?: string } }>(
+    '/api/maps/:id/export.md',
+    async (req, reply) => {
+      const data = await mapDb.getMap(req.params.id);
+      if (!data) {
+        return reply.status(404).send({
+          error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+        });
+      }
+      let markdown: string;
+      try {
+        markdown = buildTimelineMarkdown(data, { rootNodeId: req.query.root, detail: req.query.detail, timeZone: req.query.tz });
+      } catch (err) {
+        if (err instanceof TimelineOptionError) {
+          return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: err.message } });
+        }
+        throw err;
+      }
+      reply.header('content-type', 'text/markdown; charset=utf-8');
+      return reply.send(markdown);
     },
   );
 
