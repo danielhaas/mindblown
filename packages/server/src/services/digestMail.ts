@@ -6,9 +6,10 @@
  * what waits for them: the open rows of the asks inbox (what the Questions
  * card on the Fleet tab shows — worker asks, blockers, derived asks) and
  * the tickets waiting for approval, on maps they can view — plus the PRs
- * open longer than STALE_PR_DAYS (default 7) on the repo of each map they
- * can edit (#499 sat open a month because nothing outside the fleet loop
- * looked at it). Nothing open, no mail. Fleet service users get none; a person can switch it off
+ * open longer than STALE_PR_DAYS (default 7, bots and drafts left out) on
+ * the repo of each map they administer (#499 sat open a month because
+ * nothing outside the fleet loop looked at it). Nothing open, no mail.
+ * Fleet service users get none; a person can switch it off
  * (routes/digestMail.ts).
  *
  * The first tick at or after the hour takes the day per person
@@ -126,13 +127,24 @@ export interface OpenPrRow {
   created_at: string;
   html_url: string;
   draft?: boolean;
+  /** GitHub sets `type: 'Bot'` for app accounts; Gitea has no type. */
+  user?: { login?: string; type?: string } | null;
 }
 
-/** Open, non-draft PRs created more than `days` days before `now`, as items of `map`. */
+/** Bot accounts that run as plain users on Gitea (no `type` there). */
+const BOT_LOGINS = new Set(['renovate', 'renovate-bot', 'dependabot']);
+
+/** Dependency bots open PRs nobody owns; the mail does not chase them. */
+export function isBotPr(pr: OpenPrRow): boolean {
+  const login = pr.user?.login?.toLowerCase() ?? '';
+  return pr.user?.type === 'Bot' || login.endsWith('[bot]') || BOT_LOGINS.has(login);
+}
+
+/** Open, non-draft, human-authored PRs created more than `days` days before `now`, as items of `map`. */
 export function stalePrItems(prs: OpenPrRow[], map: { id: string; name: string }, now: Date, days: number): DigestItem[] {
   const out: DigestItem[] = [];
   for (const pr of prs) {
-    if (pr.draft === true) continue;
+    if (pr.draft === true || isBotPr(pr)) continue;
     const ageMs = now.getTime() - Date.parse(pr.created_at);
     if (!(ageMs > days * DAY_MS)) continue;
     const age = Math.floor(ageMs / DAY_MS);
@@ -150,6 +162,11 @@ export function stalePrItems(prs: OpenPrRow[], map: { id: string; name: string }
 
 /** Pages of open PRs read per repo (oldest first, so the stale ones come first). */
 const STALE_PR_MAX_PAGES = 2;
+/**
+ * Deadline for one repo's whole PR walk. Recipients go one after another,
+ * so a forge that hangs (a Gitea mid-reboot) must not hold up the run.
+ */
+export const STALE_PR_FETCH_TIMEOUT_MS = 15_000;
 
 /**
  * One digest run's forge reads, shared by every recipient: each map's
@@ -168,17 +185,34 @@ export function newDigestRunCache(): DigestRunCache {
 
 async function fetchOpenPrs(ctx: ForgeMapContext): Promise<OpenPrRow[]> {
   const rows: OpenPrRow[] = [];
-  await paginateGitHub<OpenPrRow>(
-    ctx.forge.pullRequestsListPath(ctx.owner, ctx.repo, { state: 'open', sort: 'created', direction: 'asc', perPage: 100 }),
-    ctx.forge,
-    {
-      maxPages: STALE_PR_MAX_PAGES,
-      onPage: (page) => {
-        rows.push(...page);
-        return page.length > 0;
-      },
-    },
+  const ac = new AbortController();
+  const timer = setTimeout(
+    () => ac.abort(new Error(`timed out after ${STALE_PR_FETCH_TIMEOUT_MS / 1000} s`)),
+    STALE_PR_FETCH_TIMEOUT_MS,
   );
+  // The race backs up the signal: a request that ignores it still lets go.
+  const aborted = new Promise<never>((_, reject) => {
+    ac.signal.addEventListener('abort', () => reject(ac.signal.reason));
+  });
+  try {
+    await Promise.race([
+      paginateGitHub<OpenPrRow>(
+        ctx.forge.pullRequestsListPath(ctx.owner, ctx.repo, { state: 'open', sort: 'created', direction: 'asc', perPage: 100 }),
+        ctx.forge,
+        {
+          maxPages: STALE_PR_MAX_PAGES,
+          signal: ac.signal,
+          onPage: (page) => {
+            rows.push(...page);
+            return page.length > 0;
+          },
+        },
+      ),
+      aborted,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
   return rows;
 }
 
@@ -210,8 +244,9 @@ function repoPrs(cache: DigestRunCache, ctx: ForgeMapContext): Promise<OpenPrRow
 }
 
 /**
- * Stale PRs on the repos of the live maps this person can edit (viewers
- * cannot merge, so they are not asked to). A repo bound by several of
+ * Stale PRs on the repos of the live maps this person administers. Only
+ * owners/admins: one dead PR should nag the people who decide about it,
+ * not every editor every day. A repo bound by several of
  * their maps is listed once, under the first of them.
  */
 async function stalePrItemsForUser(
@@ -224,7 +259,7 @@ async function stalePrItemsForUser(
   const seen = new Set<string>();
   const items: DigestItem[] = [];
   for (const m of liveMaps) {
-    if (await checkMapAccess(userId, m.id, 'edit')) continue;
+    if (await checkMapAccess(userId, m.id, 'admin')) continue;
     const ctx = await mapContext(cache, m.id);
     if (!ctx || seen.has(repoKey(ctx))) continue;
     seen.add(repoKey(ctx));

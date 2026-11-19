@@ -26,8 +26,10 @@ const state = vi.hoisted(() => ({
   repoOf: {} as Record<string, string>,
   /** `owner/repo` → open PR rows, or an Error the forge throws. */
   prs: {} as Record<string, unknown[] | Error>,
-  /** `user|map` pairs with view only (no edit). */
-  viewOnly: new Set<string>(),
+  /** `user|map` → level; absent = admin. */
+  role: {} as Record<string, 'view' | 'edit' | 'admin'>,
+  /** Repos whose PR list never answers. */
+  hang: new Set<string>(),
 }));
 const forgeCalls = vi.hoisted(() => [] as string[]);
 type SendResult = { ok: true } | { ok: false; error: string };
@@ -61,8 +63,11 @@ vi.mock('../asksInbox.js', () => ({
   fleetInbox: async (u: string, fleetId: string) => ({ items: (state.asks[`${u}|${fleetId}`] ?? []) }),
 }));
 vi.mock('../../lib/mapAccess.js', () => ({
-  checkMapAccess: async (u: string, mapId: string) =>
-    state.viewOnly.has(`${u}|${mapId}`) ? { status: 403, code: 'FORBIDDEN', message: 'edit' } : null,
+  checkMapAccess: async (u: string, mapId: string, level: 'view' | 'edit' | 'admin') => {
+    const rank = { view: 1, edit: 2, admin: 3 };
+    const has = state.role[`${u}|${mapId}`] ?? 'admin';
+    return rank[has] >= rank[level] ? null : { status: 403, code: 'FORBIDDEN', message: level };
+  },
 }));
 vi.mock('../../lib/githubContext.js', () => ({
   getGitHubContextForMap: async (mapId: string) => {
@@ -73,8 +78,10 @@ vi.mock('../../lib/githubContext.js', () => ({
   },
 }));
 vi.mock('@mindblown/integrations', () => ({
-  paginateGitHub: async (path: string, _forge: unknown, opts: { onPage: (rows: unknown[]) => boolean | void }) => {
+  paginateGitHub: async (path: string, _forge: unknown, opts: { onPage: (rows: unknown[]) => boolean | void; signal?: AbortSignal }) => {
     forgeCalls.push(path);
+    // Ignores the signal on purpose: the service's own deadline must still let go.
+    if (state.hang.has(path)) return new Promise(() => {});
     const rows = state.prs[path] ?? [];
     if (rows instanceof Error) throw rows;
     opts.onPage(rows);
@@ -97,6 +104,7 @@ import {
   stalePrDays,
   stalePrItems,
   waitingFor,
+  STALE_PR_FETCH_TIMEOUT_MS,
   DIGEST_MAX_ATTEMPTS,
   type DigestItem,
 } from '../digestMail.js';
@@ -162,7 +170,8 @@ beforeEach(() => {
   state.approvals = {};
   state.repoOf = {};
   state.prs = {};
-  state.viewOnly = new Set();
+  state.role = {};
+  state.hang = new Set();
   forgeCalls.length = 0;
 });
 
@@ -441,12 +450,55 @@ describe('stale pull requests', () => {
     expect(items.map((i) => i.question)).toEqual(['Question a?', 'PR #7 has been open 10 days — merge, update or close it?']);
   });
 
+  it('bot-authored PRs are left out (GitHub type Bot, [bot] login, Gitea renovate)', () => {
+    const items = stalePrItems(
+      [
+        pr(1, ago(30 * DAY), { user: { login: 'renovate[bot]', type: 'Bot' } }),
+        pr(2, ago(30 * DAY), { user: { login: 'some-app', type: 'Bot' } }),
+        pr(3, ago(30 * DAY), { user: { login: 'dependabot[bot]' } }),
+        pr(4, ago(30 * DAY), { user: { login: 'Renovate' } }),
+        pr(5, ago(30 * DAY), { user: { login: 'dan', type: 'User' } }),
+      ],
+      map,
+      MORNING,
+      7,
+    );
+    expect(items.map((i) => i.title)).toEqual(['PR title 5']);
+  });
+
+  it('a repo that never answers is skipped after the deadline; the rest stays', async () => {
+    vi.useFakeTimers();
+    try {
+      state.repoOf = { m1: 'dan/hang', m2: 'dan/ok' };
+      state.hang.add('dan/hang');
+      state.prs['dan/ok'] = [pr(7, ago(10 * DAY))];
+      state.asks['u1|f1'] = [ask('a', 'm1')];
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = openItemsForUser('u1', MORNING, newDigestRunCache());
+      await vi.advanceTimersByTimeAsync(STALE_PR_FETCH_TIMEOUT_MS);
+      const items = await pending;
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('timed out'));
+      warn.mockRestore();
+      expect(items.map((i) => i.question)).toEqual(['Question a?', 'PR #7 has been open 10 days — merge, update or close it?']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('editors who are not admins get no PR items', async () => {
+    state.repoOf = { m1: 'dan/app' };
+    state.prs['dan/app'] = [pr(1, ago(30 * DAY))];
+    state.role['u1|m1'] = 'edit';
+    expect(await openItemsForUser('u1', MORNING, newDigestRunCache())).toEqual([]);
+    expect(forgeCalls).toEqual([]);
+  });
+
   it('viewers are not asked to merge; archived maps are skipped', async () => {
     state.maps.u1 = [{ id: 'm1', name: 'Alpha', archivedAt: null }, { id: 'old', name: 'Old', archivedAt: '2026-01-01T00:00:00Z' }];
     state.repoOf = { m1: 'dan/app', old: 'dan/old' };
     state.prs['dan/app'] = [pr(1, ago(30 * DAY))];
     state.prs['dan/old'] = [pr(2, ago(30 * DAY))];
-    state.viewOnly.add('u1|m1');
+    state.role['u1|m1'] = 'view';
     expect(await openItemsForUser('u1', MORNING, newDigestRunCache())).toEqual([]);
     expect(forgeCalls).toEqual([]);
   });
