@@ -222,6 +222,12 @@ describe('create_node — wrong-map guard', () => {
 });
 
 describe('POST /api/maps/:id/nodes/:nodeId/move-to-map', () => {
+  it('the fleet worker\'s body { targetMapId } moves it too (was a 400)', async () => {
+    const res = await move('ticket', { targetMapId: CF });
+    expect(res.statusCode).toBe(200);
+    expect(h.moveWrite.mock.calls[0][0]).toMatchObject({ rootId: 'ticket', fromMapId: MB, toMapId: CF });
+  });
+
   it('moves the subtree under the target root: fields carried, per-map fields cleared, hold off', async () => {
     const res = await move('ticket', { toMapId: CF });
     expect(res.statusCode).toBe(200);
