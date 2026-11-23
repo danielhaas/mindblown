@@ -354,10 +354,14 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   // Body: { toMapId, parentId? } — re-home a node (and its subtree) in
   // another map of the same workspace (services/moveToMap.ts). The guard
   // checks edit on this map; the service checks edit on the target.
-  app.post<{ Params: { id: string; nodeId: string }; Body: { toMapId?: unknown; parentId?: unknown } }>(
+  // `targetMapId` is read as toMapId: the claude-fleet worker's wrong-repo
+  // move sends that name, and a 400 here turned every such move into a
+  // "Move it to map X?" ask that came back after each answer (23.11.2026).
+  app.post<{ Params: { id: string; nodeId: string }; Body: { toMapId?: unknown; targetMapId?: unknown; parentId?: unknown } }>(
     '/api/maps/:id/nodes/:nodeId/move-to-map',
     async (req, reply) => {
-      const { toMapId, parentId } = req.body ?? {};
+      const { parentId } = req.body ?? {};
+      const toMapId = req.body?.toMapId ?? req.body?.targetMapId;
       if (typeof toMapId !== 'string' || toMapId === '') {
         return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'toMapId is required' } });
       }
